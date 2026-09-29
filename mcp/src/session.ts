@@ -1513,6 +1513,9 @@ export class Session {
   private refuseAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): void {
     if (areaSf == null || s.upp == null || vertsPx.length < 3) return;
     if (!s.spans) s.spans = textSpans(s.page);
+    // only on a sheet that tags rooms with printed areas (the same >= 3 test
+    // detect_rooms uses) — a lone metric note elsewhere is not a room's area
+    if (s.spans.filter((sp) => printedAreaM2((sp.str || "").trim()) != null).length < 3) return;
     const inside = (x: number, y: number) => {
       let hit = false;
       for (let i = 0, j = vertsPx.length - 1; i < vertsPx.length; j = i++) {

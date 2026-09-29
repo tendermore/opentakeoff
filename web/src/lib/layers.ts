@@ -92,8 +92,6 @@ export function classifyLayerName(raw: string): { role: LayerRole; confidence: n
   // the degenerate cases: everything on layer 0 / "Layer 1" / unnamed — the
   // exporter flattened or the drafter never layered; nothing is stated
   if (!s || /^0$/.test(s) || /^layer\s*\d*$/i.test(s)) return { role: "unknown", confidence: 0 };
-  const ns = NS3451_CODE_RE.exec(s);
-  if (ns) return { role: classifyNs3451(ns[1]), confidence: 0.9 };
   const toks = layerNameTokens(s);
   if (!toks.length) return { role: "unknown", confidence: 0 };
   const conforming = DISCIPLINES.has(toks[0]) && toks.length > 1;
@@ -109,6 +107,9 @@ export function classifyLayerName(raw: string): { role: LayerRole; confidence: n
   if (has(STRUCTURE)) return { role: "structure", confidence: grade(0.8) };
   if (has(BOUNDARY)) return { role: "boundary", confidence: grade(0.9) };
   if (has(FIXTURES)) return { role: "annotation", confidence: grade(0.65) };
+  // no AIA word: a Norwegian NS 3451 building-part code names the role instead
+  const ns = NS3451_CODE_RE.exec(s);
+  if (ns) return { role: classifyNs3451(ns[1]), confidence: 0.9 };
   return { role: "unknown", confidence: 0.2 };
 }
 
