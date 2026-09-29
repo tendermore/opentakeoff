@@ -72,14 +72,15 @@ export function layerNameTokens(raw: string): string[] {
  * innervegger", "2411 Bærende innervegger betong", "862- M___Nettoareal"). */
 const NS3451_CODE_RE = /^([2-8]\d{1,3})-{0,3}(?=[\s_-]|$)/;
 
-/** NS 3451 code → role. Walls (23/24) and stairs/rails/balconies (28) bound a
- * room; columns/beams (22) are structure; claddings (235, 246) and slabs (25)
- * are surface pattern; roofs, fixed furniture, services, outdoor works and the
- * 8x drawing layers (grid, text, dimensions, area zones) never bound one. */
+/** NS 3451 code → role. Walls (23/24), stairs/rails/balconies (28) and the area
+ * zones (86: the architect's own room outlines, the AIA "AREA"/"RM" family)
+ * bound a room; columns/beams (22) are structure; claddings (235, 246) and
+ * slabs (25) are surface pattern; roofs, fixed furniture, services, outdoor
+ * works and the other 8x drawing layers (grid, text, dimensions) never bound one. */
 function classifyNs3451(code: string): LayerRole {
   const two = code.slice(0, 2), three = code.slice(0, 3);
   if (three === "235" || three === "246") return "finish-pattern";
-  if (two === "23" || two === "24" || two === "28") return "boundary";
+  if (two === "23" || two === "24" || two === "28" || two === "86") return "boundary";
   if (two === "22") return "structure";
   if (two === "25") return "finish-pattern";
   return "annotation";   // 21, 26, 27, 3x–7x, 8x
