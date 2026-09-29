@@ -1497,7 +1497,41 @@ export class Session {
     return origin;
   }
 
+  /** A room outline must agree with the room area printed inside it. The one
+   * check every floor commit passes — detected, clicked, hand-traced, drawn —
+   * so an agent cannot route around a refusal by switching tools. Applies when
+   * the outline holds exactly one room-area stamp; stamps prefixed as totals
+   * ("BRA 59,7 m²", "BTA …") are apartment or building sums, not the room's. */
+  private refuseAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): void {
+    if (areaSf == null || s.upp == null || vertsPx.length < 3) return;
+    if (!s.spans) s.spans = textSpans(s.page);
+    const inside = (x: number, y: number) => {
+      let hit = false;
+      for (let i = 0, j = vertsPx.length - 1; i < vertsPx.length; j = i++) {
+        const [xi, yi] = vertsPx[i]!, [xj, yj] = vertsPx[j]!;
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+      }
+      return hit;
+    };
+    const stamps: { label: string; m2: number; x: number; y: number }[] = [];
+    for (const sp of s.spans) {
+      const label = (sp.str || "").trim();
+      const m2 = printedAreaM2(label);
+      if (m2 == null || /^[A-ZÆØÅ]{2,4}\s*:?\s*\d/i.test(label)) continue;   // totals ("BRA 59,7 m²") are not a room's own area
+      const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
+      if (!inside(x, y) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
+      stamps.push({ label, m2, x, y });
+    }
+    if (stamps.length !== 1) return;
+    const { label, m2 } = stamps[0]!;
+    const traced = areaSf * M2_PER_SF;
+    if (Math.abs(traced - m2) > 0.03 * m2 + 0.05) {
+      throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area printed inside it says ${label} (${m2} m²). Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
+    }
+  }
+
   private commit(s: SheetState, tag: string, role: MeasureRole, vertsPx: Point[], computed: Shape["computed"], origin?: Shape["origin"], flood?: FloodEvidence): Shape {
+    if (role === "floor_area") this.refuseAgainstPrintedArea(s, vertsPx, computed.area_sf);
     // Flood provenance + confidence (RFC #60) stamp HERE, exactly where the
     // assignment provenance already stamps: a commit path that hands over its
     // flood evidence gets the full engine account — confidence, sealed
@@ -1876,7 +1910,9 @@ export class Session {
         if (tag) {
           // flood provenance + confidence stamp centrally in commit() from
           // the harvested evidence — nothing hand-listed here (audit A2)
-          const shape = this.commit(s, tag, opts.role, c.ring, { area_sf, perimeter_lf }, {
+          let shape: Shape;
+          try {
+            shape = this.commit(s, tag, opts.role, c.ring, { area_sf, perimeter_lf }, {
             method: c.method,
             actor: "agent",
             seed_norm: [c.seed[0] / s.widthPx, c.seed[1] / s.heightPx],
@@ -1884,6 +1920,12 @@ export class Session {
             ...(c.netFaces != null ? { net_faces: c.netFaces, net_starved: c.netStarved } : {}),
             ...(assignment ? { assignment } : {}),
           }, c.ev ?? undefined);
+          } catch (error) {
+            // one room refused against its printed area is withheld, not a failed sweep
+            if (!(error instanceof UserError) || !error.message.startsWith("PRINTED_AREA_DISAGREES")) throw error;
+            withheld.area_disagrees++;
+            return null;
+          }
           // The room number this ring was traced FROM becomes the shape's
           // label — the same field the canvas's room/phase grouping reads. A
           // sweep that knows it flooded room 134 and then reports 40 anonymous
