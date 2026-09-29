@@ -39,6 +39,21 @@ import type { MaskObj, FloodResult } from "./oneclick.ts";
  *  (134, 139A, 170) — the same shape estimators read off a finish plan. */
 export const ROOM_LABEL_RE = /^\d{2,3}[A-Z]?$/;
 
+/** A European room tag: plans in Norway and much of Europe name the room and
+ *  print its area inside it ("Sov" over "12,0 m²") instead of numbering it.
+ *  The area stamp is the one token every such room carries, so it serves as
+ *  the room's label: optional "A:"/"BRA"-style prefix, comma or dot decimal,
+ *  "m²"/"m2"/"m" (the superscript often arrives as its own text run). */
+export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*:?\s*)?\d{1,4}(?:[.,]\d{1,2})?\s*m(?:²|2)?$/i;
+
+/** The m² a European area-stamp label prints ("A: 12,0 m²" → 12), or null for
+ *  any other label (a US room number carries no area). */
+export function printedAreaM2(label: string): number | null {
+  if (!AREA_STAMP_RE.test(label.trim())) return null;
+  const m = label.match(/(\d{1,4}(?:[.,]\d{1,2})?)\s*m/i);
+  return m ? Number(m[1].replace(",", ".")) : null;
+}
+
 /** One positioned text item, already resolved to the caller's seed-space px
  *  (image px for the browser canvas; the same for the MCP server, which
  *  resolves it via pdfjs.Util.transform in positionedText). */

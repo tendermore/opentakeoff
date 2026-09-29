@@ -38,7 +38,8 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 // scale-unpinned masks here, so an MCP trace and a canvas click at the same
 // seed measured DIFFERENT square footage under the same origin.method.
 import { sweepCommitRefusal } from "./sweepGuard.ts";
-import { ROOM_LABEL_RE, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
+import { ROOM_LABEL_RE, AREA_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
+import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { fingerprintSymbol, matchSymbol, buildNegative, SWEEP_TOL_PX, type SweepOptions, type SymbolFingerprint, type SymbolMatchResult, type SweepMatch, type SweepWithheld, type SweepRejected, type SymbolNegative } from "../../web/src/lib/symbolsweep.ts";
 import { labelPlacements, type PlacementLabel } from "../../web/src/lib/symbollabels.ts";
 import { buildSnapGrid, nearestSnap, closedMetrics, openLen } from "../../web/src/lib/geometry.js";
@@ -1163,7 +1164,8 @@ export class Session {
     if (layersOpt) {
       const resolve = (ref: string): LayerInfo => {
         const needle = ref.trim().toLowerCase();
-        const hit = infos.find((l) => l.id.toLowerCase() === needle || l.name.toLowerCase() === needle);
+        // Both sides trimmed: CAD exports keep trailing spaces in layer names ("222- Søyler ").
+        const hit = infos.find((l) => l.id.toLowerCase() === needle || l.name.trim().toLowerCase() === needle);
         if (!hit) throw new UserError(`No layer ${JSON.stringify(ref)} on ${s.key}. Layers: ${infos.map((l) => l.name || l.id).join(" | ")}`);
         return hit;
       };
@@ -1654,14 +1656,22 @@ export class Session {
     // and the bubble test need the label's box, not just its anchor
     const labels: { str: string; bbox: LabelBBox }[] = [];
     for (const sp of s.spans) {
-      const num = (sp.str || "").trim().split(/\s+/).find((tok) => ROOM_LABEL_RE.test(tok));
+      const text = (sp.str || "").trim();
+      const num = text.split(/\s+/).find((tok) => ROOM_LABEL_RE.test(tok));
       if (num) labels.push({ str: num, bbox: sp });
+      else if (AREA_STAMP_RE.test(text)) labels.push({ str: text, bbox: sp });
     }
+    // A sheet that tags its rooms with printed areas follows the European
+    // convention: there, bare 2–3 digit numbers are dimensions and levels far
+    // more often than room numbers, and a numbered room also carries a stamp.
+    const stamped = labels.filter((l) => printedAreaM2(l.str) != null);
+    if (stamped.length >= 3) labels.splice(0, labels.length, ...stamped);
 
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0 };
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0 };
+    const disagreements: { label: string; printed_m2: number; traced_m2: number; seed: [number, number] }[] = [];
     const unresolved: { label: string; reason: string; area_sf: number; perimeter_lf: number; seed: [number, number] }[] = [];
     type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence; merged: string[] };
     const byRing = new Map<string, Cand>();
@@ -1732,6 +1742,19 @@ export class Session {
         }
         const area_sf = round2(c.areaPx2 * upp * upp);
         if (area_sf < minAreaSf) { withheld.implausible++; return null; }
+        // A room tagged by its printed area (European plans) carries its own
+        // check: a trace that disagrees with the drawing's own number leaked
+        // through a doorway or stopped at furniture. Withheld with both
+        // numbers, never committed under a label that says otherwise.
+        const printed = printedAreaM2(c.label);
+        if (printed != null) {
+          const traced = area_sf * M2_PER_SF;
+          if (Math.abs(traced - printed) > 0.03 * printed + 0.05) {   // printed to 0.1 m²: ±0.05 is rounding
+            withheld.area_disagrees++;
+            disagreements.push({ label: c.label, printed_m2: printed, traced_m2: round2(traced), seed: [round1(c.seed[0]), round1(c.seed[1])] });
+            return null;
+          }
+        }
         const perimeter_lf = round2(c.perimPx * upp);
         // the same stamp commit() mints onto origin (floodStamp — confidence,
         // sealed openings, door wedges, min-passage, raster), per room
@@ -1791,7 +1814,7 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved;
+    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved + withheld.area_disagrees;
     return {
       detected: rooms.length,
       rooms,
@@ -1803,9 +1826,11 @@ export class Session {
       // assign mode always states the answer, empty array included: [] is the
       // positive claim "every detected room resolved against its own row"
       ...(assign ? { unresolved } : {}),
+      // printed-area disagreements: seed + both numbers, the question to put to the plan
+      ...(disagreements.length ? { area_disagrees: disagreements } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — one_click inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — one_click inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
