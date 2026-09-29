@@ -9,7 +9,7 @@ import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHan
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
-import { UserError, round1, round2 } from "./format.ts";
+import { UserError, round1, round2, displayUnits } from "./format.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
 import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPatch, propagateRowRemove,
@@ -525,6 +525,8 @@ interface SheetState {
   /** how the scale was set — report provenance (export_report scale_source),
    * canvas vocabulary: "standard" | "upp" | "calibrated" | "detected" */
   scaleSource?: string;
+  /** The standard scale label the scale came from ("1:100", '1/8" = 1\'-0"'), when it came from one. */
+  scaleLabel?: string;
   /** scale gate — agent proposes, human confirms. set_scale is the AGENT
    * surface, so a scale set here is false until a human confirms it in the
    * canvas (the flag rides export/import). undefined = confirmed: a human's
@@ -1392,6 +1394,7 @@ export class Session {
       s.rmask = undefined;
     }
     s.upp = upp;
+    s.scaleLabel = label ?? undefined;
     // the tool reply keeps this session's source vocabulary; the stored value
     // uses the canvas's report vocabulary so export_report's scale_source
     // reads the same as an app-side report.v1
@@ -1502,6 +1505,11 @@ export class Session {
    * so an agent cannot route around a refusal by switching tools. Applies when
    * the outline holds exactly one room-area stamp; stamps prefixed as totals
    * ("BRA 59,7 m²", "BTA …") are apartment or building sums, not the room's. */
+  /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS). */
+  displayUnits(): "imperial" | "metric" {
+    return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => s.scaleLabel));
+  }
+
   private refuseAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): void {
     if (areaSf == null || s.upp == null || vertsPx.length < 3) return;
     if (!s.spans) s.spans = textSpans(s.page);
@@ -5112,7 +5120,7 @@ export class Session {
     // RFIs go through liveRfis(): withdrawn tombstones never reach the app.
     return buildTakeoffDocument({
       project_name: "",
-      units: "imperial",
+      units: this.displayUnits(),
       sheets: [...this.sheets.values()].filter((s) => s.upp != null).map((s) => sheetEntry({ sheet_id: s.key, units_per_px: s.upp as number, scale_source: s.scaleSource, scale_confirmed: s.scaleConfirmed })),
       conditions: this.conditions,
       shapes: this.shapes,
@@ -5152,6 +5160,7 @@ export class Session {
       // carries every pending diff beside them — additive, present only when
       // any exist, so the document is byte-identical otherwise
       proposedConditionEdits: this.proposedConditionEdits(),
+      displayUnits: this.displayUnits(),
     });
   }
 

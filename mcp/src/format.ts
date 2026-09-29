@@ -41,3 +41,20 @@ export const fail = (err: unknown): ToolReply => ({
 /** SF/LF round to 2dp; raw px quantities to 1dp. */
 export const round2 = (n: number): number => +n.toFixed(2);
 export const round1 = (n: number): number => +n.toFixed(1);
+
+/** The unit system the marked set, the report and the export print in (a display
+ * conversion — stored quantities stay in feet, exactly as the canvas's metric
+ * toggle). OPENTAKEOFF_UNITS: "metric", "imperial" (default), or "auto" = metric
+ * when every scaled sheet was set from a metric ratio scale ("1:100"), imperial
+ * otherwise (an architectural/engineering label, or a calibrated sheet with no label). */
+export function displayUnits(scaleLabels: (string | undefined)[] = []): "imperial" | "metric" {
+  const pref = process.env.OPENTAKEOFF_UNITS;
+  if (pref === "metric") return "metric";
+  if (pref === "auto") return scaleLabels.length > 0 && scaleLabels.every((l) => /^1:\d+$/.test(l ?? "")) ? "metric" : "imperial";
+  return "imperial";
+}
+
+/** The marked set's language (OPENTAKEOFF_LOCALE, e.g. "nb"); English by default. */
+export function displayLocale(): string {
+  return process.env.OPENTAKEOFF_LOCALE || "en";
+}
