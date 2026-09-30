@@ -41,6 +41,7 @@ import { sweepCommitRefusal } from "./sweepGuard.ts";
 import { ROOM_LABEL_RE, AREA_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
+import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
 import { wallSegIndices } from "../../web/src/lib/wallpairs.ts";
 import { snapEdges } from "../../web/src/lib/edgesnap.ts";
 import { buildNet, netRoomAt } from "../../web/src/lib/netroom.js";
@@ -54,7 +55,7 @@ import { buildSnapGrid, nearestSnap, closedMetrics, openLen, pointInPoly } from 
 // agent states the bow point and the server lays the unique arc through it.
 import { flattenArcRing } from "../../web/src/lib/arc.js";
 import { recalibrateShapes, linearVerticalFt } from "../../web/src/lib/shapeMetrics.js";
-import { deriveTransitionRuns, type SheetFrame, type TransitionSourceShape } from "../../web/src/lib/transitions.ts";
+import { deriveTransitionRuns, distToRing, type SheetFrame, type TransitionSourceShape } from "../../web/src/lib/transitions.ts";
 // Real polygon boolean subtraction (#137/#206) — the canvas's own module, so a
 // headless cut and the app's Eraser can never disagree about what a hole holds.
 import { subtractCutout, recomposeCutouts, ringFullyInside, cutRun } from "../../web/src/lib/cutout.js";
@@ -270,16 +271,17 @@ export interface ShapeOrigin {
   /** A linear shape derived from committed floor shapes rather than traced.
    *
    * derive_base (#148): from ONE room's perimeter — the source, the gross
-   * figure, and the openings the agent STATED (its claim to make; the tool
-   * never guesses doors).
+   * figure, and the openings deducted: the widths of the doors drawn on the
+   * room's ring, or what the agent stated for that room instead.
    *
    * derive_transitions (#202): from where TWO rooms meet — both parents, the
-   * two finish tags, and the measured gap. `case` is always "butt" on a
-   * committed shape: a wall-separated run is a question, and questions do not
-   * become shapes. */
+   * two finish tags, and the measured gap. `case` is "butt" (the rings meet
+   * in one open space) or "door" (a threshold along a detected door's closed
+   * leaf, gap = the wall between the rings there): a wall-separated run with
+   * no door found is a question, and questions do not become shapes. */
   derived?:
     | { from_shape_id: string; gross_lf: number; openings_lf: number }
-    | { between_shape_ids: string[]; between: string[]; case: "butt"; gap_in: number };
+    | { between_shape_ids: string[]; between: string[]; case: "butt" | "door"; gap_in: number };
   /** rule_v1 (#88/#207): the correction rule that minted this deduct, the
    * estimator's seed correction it re-ran, and the room it landed in — the
    * same three-way citation the canvas's Apply stamps. */
@@ -561,6 +563,9 @@ interface SheetState {
   /** Walls-only masks for unlayered sheets (wallpairs.ts), doorways sealed, each with the per-segment
    * flag of the lines it was built from; scale baked in like `mask`. See ensureWallMasks. */
   wallMasks?: { mo: MaskObj; faces: Uint8Array }[];
+  /** Hinged doors read off their swings (doors.ts); scale baked in like `mask`.
+   * null = no vector linework or no scale to read them with. */
+  doors?: { doors: Door[]; rejected: RejectedSwing[] } | null;
   /** Wall-network faces and drawn closed figures (the canvas's other room engines), unlayered sheets only. */
   roomNet?: unknown;
   drawn?: DrawnRegion[];
@@ -1244,6 +1249,27 @@ export class Session {
     return s.mask;
   }
 
+  /** Every hinged door on the sheet (doors.ts), cached per scale: the swing
+   * radius bounds are feet-true, so the sheet needs its scale. null when it has
+   * none, or no vector linework (a scan) to read swings from. */
+  async ensureDoors(name: string): Promise<{ doors: Door[]; rejected: RejectedSwing[] } | null> {
+    const s = this.sheet(name);
+    if (s.doors === undefined) {
+      const ink = s.upp ? await this.ensureMask(name) : null;
+      s.doors = ink ? findDoors((await this.ensureGeometry(s)).segs, s.geo!.meta, ink, 1 / s.upp!) : null;
+    }
+    return s.doors;
+  }
+
+  /** The detected doors whose opening runs along a committed ring (image px). */
+  private async doorsOnRing(sheetKey: string, ringPx: Point[]): Promise<Door[] | null> {
+    const found = await this.ensureDoors(sheetKey);
+    if (!found) return null;
+    const s = this.sheet(sheetKey);
+    const wallPx = OPENING_WALL_M / 0.3048 / s.upp!;
+    return found.doors.filter((d) => doorOnRing(d, ringPx, wallPx));
+  }
+
   /** A flattened export draws furniture in the wall pen, so the ink mask stops
    * a flood at the first desk. These masks keep only paired wall faces and
    * filled wall poché (wallpairs.ts) and seal doorways at their swings, so
@@ -1428,6 +1454,7 @@ export class Session {
     if (s.upp !== upp) {
       s.mask = undefined;
       s.wallMasks = undefined;
+      s.doors = undefined;
       s.roomNet = undefined;
       s.drawn = undefined;
       s.rmask = undefined;
@@ -2564,18 +2591,22 @@ export class Session {
   }
 
   /** derive_base (#148): the estimator's most mechanical derivation — wall
-   * base LF = room perimeter − stated door openings — minted as committed
-   * linear shapes from the floor shapes an agent (or detect_rooms) already
-   * traced. Every committed floor shape carries its perimeter; the openings
-   * stay the CALLER'S stated claim per room (it can see the doors in
-   * view_sheet) — refusal over guessing, and the claim rides provenance.
+   * base LF = room perimeter − door openings — minted as committed linear
+   * shapes from the floor shapes an agent (or takeoff_rooms) already traced.
+   * Every committed floor shape carries its perimeter. The openings are the
+   * doors whose drawn swing closes along the room's ring (doors.ts: the
+   * closed-leaf chord, its width the leaf); openings the CALLER states for a
+   * room replace the detected ones for that room (its claim, e.g. a cased
+   * opening with no leaf, or lf 0 to deduct nothing). A room on a sheet the
+   * swings cannot be read from (a scan, no scale) keeps its gross perimeter
+   * and says so — refusal over guessing.
    * Geometry: each base shape re-uses its source ring CLOSED (ring + the
    * first vertex again) so the run traces the whole room boundary on the
    * canvas and in the marked set. NOTE: quantities are assigned at derive
    * time (net of openings); a later edit_shape re-measure of the polyline is
    * the gross boundary again — the openings deduction lives here and in
    * origin.derived, not in the geometry. */
-  deriveBase(opts: { source_condition: string; condition: string; openings?: { shape_id: string; lf: number }[] }) {
+  async deriveBase(opts: { source_condition: string; condition: string; openings?: { shape_id: string; lf: number }[] }) {
     const src = this.conditions.find((x) => x.finish_tag === opts.source_condition);
     if (!src) {
       throw new UserError(`No condition ${JSON.stringify(opts.source_condition)} — tags: ${this.conditions.map((x) => x.finish_tag).join(", ") || "(none)"}.`);
@@ -2587,43 +2618,59 @@ export class Session {
     if (!floors.length) {
       throw new UserError(`${src.finish_tag} has no floor_area shapes to derive from — commit rooms first (takeoff_rooms or measure {kind: "area"}).`);
     }
-    const byShape = new Map<string, number>();
+    const stated = new Map<string, number>();
     for (const [i, o] of (opts.openings ?? []).entries()) {
       const hit = floors.find((f) => f.id === o.shape_id);
       if (!hit) throw new UserError(`openings[${i}]: ${JSON.stringify(o.shape_id)} is not a floor_area shape of ${src.finish_tag} — edit_takeoff {action: "list"} for real ids.`);
       if (!(o.lf >= 0)) throw new UserError(`openings[${i}]: lf must be >= 0.`);
-      byShape.set(o.shape_id, (byShape.get(o.shape_id) ?? 0) + o.lf);
+      stated.set(o.shape_id, (stated.get(o.shape_id) ?? 0) + o.lf);
+    }
+    const ringOf = (f: Shape): Point[] => {
+      const s = this.sheet(f.sheet_id);
+      return f.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx]);
+    };
+    // openings per room: stated wins; otherwise the doors drawn on its ring
+    const plan = [];
+    for (const f of floors) {
+      const gross = f.computed.perimeter_lf ?? 0;
+      if (stated.has(f.id)) { plan.push({ f, gross, open: stated.get(f.id)!, source: "stated" as const, doors: [] as Door[] }); continue; }
+      const doors = await this.doorsOnRing(f.sheet_id, ringOf(f));
+      const upp = this.sheet(f.sheet_id).upp ?? 0;
+      const open = (doors ?? []).reduce((n, d) => n + d.width * upp, 0);
+      plan.push({ f, gross, open, source: doors === null ? "unread" as const : doors.length ? "detected" as const : "none" as const, doors: doors ?? [] });
     }
     // validate every net BEFORE committing anything — all-or-nothing
-    for (const f of floors) {
-      const open = byShape.get(f.id) ?? 0;
-      const gross = f.computed.perimeter_lf ?? 0;
-      if (open >= gross) {
-        throw new UserError(`Shape ${f.id}: stated openings (${round2(open)} LF) meet or exceed its perimeter (${round2(gross)} LF) — nothing would remain.`);
+    for (const p of plan) {
+      if (p.open >= p.gross) {
+        throw new UserError(`Shape ${p.f.id}: ${p.source === "stated" ? "stated" : "detected"} openings (${round2(p.open)} LF) meet or exceed its perimeter (${round2(p.gross)} LF) — nothing would remain.${p.source === "stated" ? "" : " State this room's openings (openings: [{shape_id, lf}]) to override."}`);
       }
     }
-    const rooms = floors.map((f) => {
+    const rooms = plan.map(({ f, gross, open, source, doors }) => {
       const s = this.sheet(f.sheet_id);
-      const gross = f.computed.perimeter_lf ?? 0;
-      const open = byShape.get(f.id) ?? 0;
       const net = round2(gross - open);
-      const ringPx: Point[] = f.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx]);
+      const ringPx = ringOf(f);
       const shape = this.commit(s, opts.condition, "linear", [...ringPx, ringPx[0]], { area_sf: 0, perimeter_lf: net }, {
         method: "agent_v1",
         actor: "agent",
         reviewed: false,
         derived: { from_shape_id: f.id, gross_lf: round2(gross), openings_lf: round2(open) },
       });
-      return { source_shape_id: f.id, base_shape_id: shape.id, sheet: f.sheet_id, gross_lf: round2(gross), openings_lf: round2(open), net_lf: net };
+      return {
+        source_shape_id: f.id, base_shape_id: shape.id, sheet: f.sheet_id, gross_lf: round2(gross), openings_lf: round2(open), net_lf: net,
+        openings_source: source,
+        ...(doors.length ? { doors: doors.map((d) => ({ at: [round1(d.at[0]), round1(d.at[1])], width_lf: round2(d.width * (s.upp ?? 0)), leaves: d.leaves })) } : {}),
+      };
     });
     this.flushCommits("derive_base");
+    const unread = rooms.filter((r) => r.openings_source === "unread").length;
     return {
       condition: opts.condition,
       source_condition: src.finish_tag,
       rooms,
       committed: rooms.length,
       total_lf: round2(rooms.reduce((n, r) => n + r.net_lf, 0)),
-      note: "Base runs trace each room's boundary; openings are your stated claim, recorded on origin.derived. Verify with view_sheet overlay:true.",
+      note: "Openings are the doors whose drawn swing closes on each room's ring (width = the leaf), or what you stated for that room. A cased opening with no swing is not a door here: state it. Verify with view_sheet overlay:true."
+        + (unread ? ` ${unread} room(s) are on sheets whose swings cannot be read (a scan, or no scale) — their base is the gross perimeter; state their openings.` : ""),
     };
   }
 
@@ -2903,7 +2950,7 @@ export class Session {
    * All-or-nothing like derive_base: unknown tags, a transition landing on
    * either source tag, or an unscaled sheet refuses the whole call before
    * anything commits. The sweep is ONE journal gesture. */
-  deriveTransitions(opts: { condition_a: string; condition_b: string; condition: string; max_gap_in?: number; min_run_in?: number }) {
+  async deriveTransitions(opts: { condition_a: string; condition_b: string; condition: string; max_gap_in?: number; min_run_in?: number }) {
     const findCond = (tag: string) => {
       const c = this.conditions.find((x) => x.finish_tag === tag);
       if (!c) throw new UserError(`No condition ${JSON.stringify(tag)} — tags: ${this.conditions.map((x) => x.finish_tag).join(", ") || "(none)"}.`);
@@ -2949,12 +2996,40 @@ export class Session {
       { max_gap_in: maxGapIn, min_run_in: minRunIn },
     );
 
+    // door thresholds: a detected door whose opening runs along a ring of each
+    // finish is the transition between them, the width of the door
+    const ringOf = (sh: typeof fa[number]): Point[] => {
+      const s = this.sheet(sh.sheet_id);
+      return sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx]);
+    };
+    const thresholds: { sheet: string; door: Door; a: typeof fa[number]; b: typeof fb[number]; gap_in: number }[] = [];
+    const unread: string[] = [];
+    for (const key of sheetsInPlay) {
+      const found = await this.ensureDoors(key);
+      if (!found) { unread.push(key); continue; }
+      const s = this.sheet(key);
+      const wallPx = OPENING_WALL_M / 0.3048 / s.upp!;
+      const onA = fa.filter((x) => x.sheet_id === key).map((x) => ({ x, ring: ringOf(x) }));
+      const onB = fb.filter((x) => x.sheet_id === key).map((x) => ({ x, ring: ringOf(x) }));
+      for (const door of found.doors) {
+        const as = onA.filter((r) => doorOnRing(door, r.ring, wallPx)), bs = onB.filter((r) => doorOnRing(door, r.ring, wallPx));
+        for (const ra of as) for (const rb of bs) {
+          if (ra.x.id === rb.x.id) continue;
+          const gapPx = distToRing(door.at, ra.ring) + distToRing(door.at, rb.ring);
+          thresholds.push({ sheet: key, door, a: ra.x, b: rb.x, gap_in: round1(gapPx * s.upp! * 12) });
+        }
+      }
+    }
+    const pairKey = (ids: string[]) => [...ids].sort().join("|");
+    const doorPairs = new Set(thresholds.map((t) => pairKey([t.a.id, t.b.id])));
+
     const committed: any[] = [], withheld: any[] = [];
     for (const w of derived.withheld) {
+      if (doorPairs.has(pairKey(w.between_shape_ids))) continue;   // its doorway was found: the threshold commits below
       withheld.push({
         sheet: w.sheet_id, between_shape_ids: w.between_shape_ids, length_lf: w.length_lf, gap_in: w.gap_in, at: w.at,
         reason: "wall_separated",
-        detail: `${a.finish_tag} and ${b.finish_tag} run ${w.length_lf} LF apart across ${w.gap_in}" of wall — adjacent rooms, not a butt joint. If a door opens here the transition is a threshold at the door, which this cannot see.`,
+        detail: `${a.finish_tag} and ${b.finish_tag} run ${w.length_lf} LF apart across ${w.gap_in}" of wall — adjacent rooms, not a butt joint. No door swing was found on this wall; if a door or a cased opening is here, place its threshold by hand.`,
       });
     }
     for (const r of derived.runs) {
@@ -2966,7 +3041,19 @@ export class Session {
         reviewed: false,
         derived: { between_shape_ids: r.between_shape_ids, between: [a.finish_tag, b.finish_tag], case: "butt", gap_in: r.gap_in },
       });
-      committed.push({ sheet: r.sheet_id, between_shape_ids: r.between_shape_ids, length_lf: r.length_lf, gap_in: r.gap_in, at: r.at, shape_id: shape.id });
+      committed.push({ sheet: r.sheet_id, between_shape_ids: r.between_shape_ids, length_lf: r.length_lf, gap_in: r.gap_in, at: r.at, shape_id: shape.id, case: "butt" });
+    }
+    for (const t of thresholds) {
+      const s = this.sheet(t.sheet);
+      const length_lf = round2(t.door.width * s.upp!);
+      const between_shape_ids = [t.a.id, t.b.id];
+      const shape = this.commit(s, opts.condition, "linear", [t.door.opening[0], t.door.opening[1]], { area_sf: 0, perimeter_lf: length_lf }, {
+        method: "agent_v1",
+        actor: "agent",
+        reviewed: false,
+        derived: { between_shape_ids, between: [a.finish_tag, b.finish_tag], case: "door", gap_in: t.gap_in },
+      });
+      committed.push({ sheet: t.sheet, between_shape_ids, length_lf, gap_in: t.gap_in, at: [round1(t.door.at[0]), round1(t.door.at[1])], shape_id: shape.id, case: "door" });
     }
     if (committed.length) this.flushCommits("derive_transitions");
     return {
@@ -2977,9 +3064,11 @@ export class Session {
       runs: committed,
       withheld,
       withheld_lf: round2(withheld.reduce((n, r) => n + r.length_lf, 0)),
-      note: withheld.length
-        ? `${withheld.length} run(s) are adjacency ACROSS A WALL, not a butt joint — the transition there is a threshold in the doorway, and the trace record does not say where the doorway is. view_sheet each \`at\` and place them with measure {kind: "length"} / count {action: "place"}.`
-        : "Every run was a butt joint inside one open space. Verify with view_sheet overlay:true before trusting the total.",
+      note: (thresholds.length ? `${thresholds.length} door threshold(s) committed along the door's closed leaf, the door's width each. ` : "")
+        + (withheld.length
+          ? `${withheld.length} run(s) are adjacency ACROSS A WALL with no door swing found on it — view_sheet each \`at\`; place a threshold there by hand with measure {kind: "length"} if there is an opening.`
+          : "Verify with view_sheet overlay:true before trusting the total.")
+        + (unread.length ? ` Door swings could not be read on ${unread.join(", ")} (a scan, or no vector linework): no thresholds there.` : ""),
     };
   }
 
@@ -3269,6 +3358,49 @@ export class Session {
       .filter((x) => x.condition_id === c.id && x.measure_role === "count")
       .reduce((n, x) => n + (x.computed.count || 1), 0);
     return { committed: ids.length, shape_ids: ids, condition: c.finish_tag, ea_total };
+  }
+
+  /** count {action: "doors"}: every hinged door on a sheet, one per drawn swing
+   * (a double door's two leaves are one door), read by doors.ts — no example
+   * to pick, no symbol matching, so a door drawn in any wall, at any angle,
+   * mirrored or not, counts once. Swings that did not behave like a door
+   * (stair rails and winders, turning circles, flaps with no leaf) come back
+   * in `rejected` with the reason, never counted. commit files one EA marker
+   * per door at its opening; a door already marked under the condition is
+   * never counted twice. */
+  async countDoors(name: string, opts: { condition?: string; commit?: boolean } = {}) {
+    const s = this.sheet(name);
+    if (s.upp == null) throw new UserError(`${s.key} has no scale — door swings are recognised by their real leaf width, so set_scale first (${this.scaleGate(s)})`);
+    const found = await this.ensureDoors(name);
+    if (!found) throw new UserError(`${s.key} has no vector linework to read door swings from (a scan) — count them with count {action: "place"} after view_sheet.`);
+    const mm = (px: number) => Math.round(px * s.upp! * 304.8);
+    const doors = found.doors.map((d, i) => ({
+      n: i + 1, at: [round1(d.at[0]), round1(d.at[1])], leaves: d.leaves, width_lf: round2(d.width * s.upp!), width_mm: mm(d.width),
+      opening: d.opening.map(([x, y]) => [round1(x), round1(y)]),
+    }));
+    const rejected = found.rejected.map((r) => ({ at: [round1(r.hinge[0]), round1(r.hinge[1])], radius_mm: mm(r.r), reason: r.reason }));
+    const base = {
+      sheet: s.key, found: doors.length, doors, rejected,
+      by_width: Object.entries(doors.reduce((m: Record<string, number>, d) => {
+        const k = `${d.leaves === 2 ? "2x" : ""}${Math.round(d.width_mm / (d.leaves * 100)) * 100}`;
+        m[k] = (m[k] ?? 0) + 1;
+        return m;
+      }, {})).map(([width_mm, count]) => ({ width_mm, count })),
+    };
+    if (!opts.commit) {
+      return { ...base, committed: 0, note: "Preview: one door per drawn swing (leaf width to the nearest 100 mm in by_width). A cased opening or a sliding door with no swing is not counted — place those. Commit with a condition to file them." };
+    }
+    if (!opts.condition) throw new UserError("commit needs a condition to file the doors under.");
+    const cond = this.conditions.find((c) => c.finish_tag === opts.condition);
+    const marked = cond ? this.shapes.filter((x) => x.condition_id === cond.id && x.measure_role === "count" && x.sheet_id === s.key)
+      .map((x) => [x.verts_norm[0][0] * s.widthPx, x.verts_norm[0][1] * s.heightPx] as Point) : [];
+    const fresh = found.doors.filter((d) => !marked.some((m) => Math.hypot(m[0] - d.at[0], m[1] - d.at[1]) < d.width / 2));
+    if (!fresh.length) return { ...base, committed: 0, skipped_already_counted: found.doors.length, note: `Every door here is already counted under ${opts.condition}.` };
+    const r = this.placeCount(name, fresh.map((d) => d.at), {
+      condition: opts.condition, tool: "count",
+      origins: fresh.map(() => ({ method: "agent_v1" as const, actor: "agent" as const, reviewed: false })),
+    });
+    return { ...base, committed: r.committed, skipped_already_counted: found.doors.length - fresh.length, shape_ids: r.shape_ids, ea_total: r.ea_total, note: `Filed under ${r.condition}; one undo step.` };
   }
 
   /** The seed→target size ratio for a cross-sheet sweep (#186): seed-sheet

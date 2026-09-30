@@ -12,7 +12,7 @@ Default build: **17 tools**. Coordinates, where present, are full-sheet image pi
 |---|---|---|---|
 | `annotate` | `add`, `edit`, `link`, `list` | Default | `action` |
 | `conditions` | `edit`, `duplicate`, `split`, `materials`, `scope_duplicates`, `scope_merge` | Default | `action` |
-| `count` | `symbol`, `sweep`, `place`, `marks` | Default | `action` |
+| `count` | `doors`, `symbol`, `sweep`, `place`, `marks` | Default | `action` |
 | `derive` | `deduct`, `base`, `transitions` | Default | `action` |
 | `edit_takeoff` | `list`, `edit`, `delete`, `undo` | Default | `action` |
 | `export` | `marked_pdf`, `report`, `takeoff`, `dxf`, `import` | Default | `action` |

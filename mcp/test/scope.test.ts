@@ -167,7 +167,7 @@ test("scope_duplicates with min_fraction zero ignores numerical edge residue and
 test("cut_out refuses a derived base with unlocated numeric openings", async () => {
   const s = await scaled();
   const floor = s.measurePolygon(KEY, SQ(0, 0), { condition: "F-1", role: "floor_area" }).shape_id!;
-  const base = s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: floor, lf: 3 }] });
+  const base = await s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: floor, lf: 3 }] });
   const before = structuredClone(s.exportPayload());
   assert.throws(() => s.cutOut({ parent_shape_id: base.rooms[0].base_shape_id, verts: SQ(100, -10, 108, 20) }), /numeric openings.*measure \{kind: "length"\}/);
   assert.deepEqual(s.exportPayload(), before);

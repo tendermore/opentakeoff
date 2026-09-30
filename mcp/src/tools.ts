@@ -225,6 +225,10 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       return { action: "place", ...(await session.placeCount(a.sheet, a.points, { condition: a.condition })) };
     }
     if (a.action === "marks") return { action: "marks", ...(await session.countMarks({ marks: a.marks, commit: a.commit })) };
+    if (a.action === "doors") {
+      need("count", "doors", a, "sheet");
+      return { action: "doors", ...(await session.countDoors(a.sheet, { condition: a.condition, commit: a.commit })) };
+    }
     need("count", "sweep", a, "sheet", "seed_rect");
     return {
       action: "sweep",
@@ -237,10 +241,10 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   };
 
   server.registerTool("count", {
-    description: "Count EA items. symbol: a point on one example → every copy found from the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, try another level if the example is wrong, then commit — marks already counted under the condition never count twice. sweep: the same search from a tight seed_rect, set-wide, with counter-examples. place: markers at points you already located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.",
+    description: "Count EA items. doors: every hinged door on a sheet, read off its swing (double leaves = one), with widths; non-door curves rejected. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.",
     inputSchema: {
-      action: z.enum(["symbol", "sweep", "place", "marks"]),
-      sheet: z.string().optional().describe("symbol, sweep, place: the sheet"),
+      action: z.enum(["doors", "symbol", "sweep", "place", "marks"]),
+      sheet: z.string().optional().describe("doors, symbol, sweep, place: the sheet"),
       condition: z.string().optional().describe("Tag the count is filed under (minted on first use); needed to commit"),
       commit: z.boolean().default(false).describe("Save the counted marks as one undo step; default is a preview"),
       at: point().optional().describe("symbol: a point on or beside one example instance"),
@@ -304,7 +308,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   }));
 
   server.registerTool("derive", {
-    description: "Derive quantities from committed shapes instead of re-measuring. deduct: cut a real hole in a committed floor shape (a column, a casework island), or clip a stretch out of an open run; the ring must sit inside the parent. base: wall base from a condition's rooms, perimeter minus the door openings you state per room. transitions: where two finishes meet; butt joints commit as runs, runs across a wall come back withheld with a point to look at. Each call is one undo step.",
+    description: "Derive quantities from committed shapes instead of re-measuring. deduct: cut a real hole in a committed floor shape (a column, a casework island), or clip a stretch out of an open run; the ring must sit inside the parent. base: wall base from a condition's rooms, perimeter minus the doors drawn on each room's ring; openings you state for a room replace its detected ones. transitions: where two finishes meet; butt joints and door thresholds commit as runs, wall runs with no door come back withheld with a point to look at. Each call is one undo step.",
     inputSchema: {
       action: z.enum(["deduct", "base", "transitions"]),
       parent_shape_id: z.string().optional().describe("deduct: a committed floor_area shape, or an open run to clip"),
@@ -314,7 +318,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       openings: z.array(z.object({
         shape_id: z.string().describe("A room of source_condition"),
         lf: z.number().min(0).describe("Opening width to deduct, feet"),
-      })).optional().describe("base: stated openings per room; omit for gross perimeters"),
+      })).optional().describe("base: openings per room, replacing that room's detected doors (lf 0 = none)"),
       condition_a: z.string().optional().describe("transitions: first finish tag"),
       condition_b: z.string().optional().describe("transitions: second finish tag"),
       max_gap_in: z.number().positive().optional().describe("transitions: widest gap still adjacent, inches (default 12)"),
