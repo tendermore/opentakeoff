@@ -60,7 +60,7 @@ import { deriveTransitionRuns, type SheetFrame, type TransitionSourceShape } fro
 import { subtractCutout, recomposeCutouts, ringFullyInside, cutRun } from "../../web/src/lib/cutout.js";
 // Scope collision (#366) — the canvas's own module, so the badge on the
 // condition row and scope_duplicates over the wire measure the same shared floor.
-import { scopeCollisions, subtractWinner, SCOPE_NEAR_TOTAL } from "../../web/src/lib/scopeCollision.js";
+import { scopeCollisions, subtractWinner, overlapsOf, SCOPE_NEAR_TOTAL } from "../../web/src/lib/scopeCollision.js";
 // Correction rules (#88 / #207) — the canvas's own pure module, imported as-is
 // (the approvals/totals precedent): apply_rules re-runs an imported rule with
 // the exact predicate engine the canvas's Preview→Apply runs, so a headless
@@ -374,7 +374,22 @@ export interface Shape {
    * the hole), and delete restores the parent it cut. */
   cuts_shape_id?: string;
   origin?: ShapeOrigin;
+  /** floor_area only: what, if anything, checked this outline (see FloorCheck). */
+  check?: FloorCheck;
 }
+
+/** What checked a floor outline, said on the shape and never implied: a room
+ * area printed inside it that the outline agrees with, or nothing — no printed
+ * areas on the sheet, none inside this outline, or no scale to compare with.
+ * The engine's trace confidence is not a check: it grades a flood, not the
+ * number. */
+export type FloorCheck =
+  | { status: "verified"; by: "printed_area"; printed_m2: number }
+  | { status: "unverified"; reason: "no_printed_areas_on_sheet" | "no_printed_area_inside" | "no_scale" };
+
+/** The one-line form tool replies carry: "printed_area" or "unverified: <reason>". */
+export const checkText = (check: FloorCheck | undefined): string | undefined =>
+  !check ? undefined : check.status === "verified" ? "printed_area" : `unverified: ${check.reason}`;
 
 /** The frozen pre-cut snapshot of a cutout parent (canvas resolveCutout's
  * parent_prev) — durable on the deduct's origin, read back by delete. */
@@ -1533,16 +1548,17 @@ export class Session {
    * check every floor commit passes — detected, clicked, hand-traced, drawn,
    * reshaped — so an agent cannot route around a refusal by switching tools.
    * On a sheet that tags rooms with printed areas, an outline holding printed
-   * areas must match one of them (its own room; a neighbour's label near the
-   * edge is tolerated) or their sum (a whole unit or zone); matching none, it
-   * is refused with the numbers. Stamps prefixed as totals ("BRA 59,7 m²")
-   * are left out. */
-  private refuseAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): void {
-    if (areaSf == null || s.upp == null || vertsPx.length < 3) return;
+   * areas must match one of them: its own room (a neighbour's label near the
+   * edge is tolerated). Matching only their sum is refused too — that is two
+   * rooms measured as one, which the room table would then count beside the
+   * rooms themselves. Stamps prefixed as totals ("BRA 59,7 m²") are left out.
+   * Returns what checked the outline, or why nothing could. */
+  private checkAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): FloorCheck {
+    if (areaSf == null || s.upp == null || vertsPx.length < 3) return { status: "unverified", reason: "no_scale" };
     if (!s.spans) s.spans = textSpans(s.page);
     // only on a sheet that tags rooms with printed areas (the same >= 3 test
     // detect_rooms uses) — a lone metric note elsewhere is not a room's area
-    if (s.spans.filter((sp) => printedAreaM2((sp.str || "").trim()) != null).length < 3) return;
+    if (s.spans.filter((sp) => printedAreaM2((sp.str || "").trim()) != null).length < 3) return { status: "unverified", reason: "no_printed_areas_on_sheet" };
     const stamps: { label: string; m2: number; x: number; y: number }[] = [];
     for (const sp of s.spans) {
       const label = (sp.str || "").trim();
@@ -1552,17 +1568,37 @@ export class Session {
       if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
       stamps.push({ label, m2, x, y });
     }
-    if (!stamps.length) return;
+    if (!stamps.length) return { status: "unverified", reason: "no_printed_area_inside" };
     const traced = areaSf * M2_PER_SF;
-    const agrees = (m2: number, n = 1) => Math.abs(traced - m2) <= 0.03 * m2 + 0.05 * n;
-    const sum = stamps.reduce((a, t) => a + t.m2, 0);
-    if (stamps.some((t) => agrees(t.m2)) || (stamps.length > 1 && agrees(sum, stamps.length))) return;
+    const match = stamps.find((t) => Math.abs(traced - t.m2) <= 0.03 * t.m2 + 0.05);
+    if (match) return { status: "verified", by: "printed_area", printed_m2: match.m2 };
     const printed = stamps.map((t) => t.label).join(", ");
-    throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area${stamps.length > 1 ? "s" : ""} printed inside it say${stamps.length > 1 ? "" : "s"} ${printed}${stamps.length > 1 ? ` (together ${round2(sum)} m²)` : ""}. Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
+    if (stamps.length > 1) {
+      throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² and holds ${stamps.length} rooms' printed areas (${printed}), matching none of them. Not committed. An outline around several rooms is refused even when it equals their sum: measure each room on its own, or report them as not measured.`);
+    }
+    throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area printed inside it says ${printed}. Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
+  }
+
+  /** One floor, counted once: a floor outline may not claim the floor another
+   * outline of the same condition already claims (beyond the hairline share
+   * two rooms traced to a shared wall can have — scopeCollision.ts's
+   * SCOPE_MIN_FRACTION). A merged outline beside its rooms, or one room traced
+   * twice, would be counted twice in every total. */
+  private refuseOverlap(s: SheetState, tag: string | undefined, vertsPx: Point[], exceptId?: string): void {
+    const c = tag !== undefined ? this.conditions.find((x) => x.finish_tag === tag) : undefined;
+    if (!c) return;
+    const others = this.shapes.filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.condition_id === c.id && sh.id !== exceptId);
+    if (!others.length) return;
+    const candidate = { id: "", sheet_id: s.key, condition_id: c.id, measure_role: "floor_area", verts_norm: vertsPx.map(([x, y]) => [x / s.widthPx, y / s.heightPx]) };
+    const hits = overlapsOf(candidate, others, { w: s.widthPx, h: s.heightPx }) as { shape_id: string; fraction_of_smaller: number }[];
+    if (!hits.length) return;
+    const named = hits.map((h) => { const o = this.shapes.find((x) => x.id === h.shape_id); return `${h.shape_id}${o?.label ? ` (${o.label})` : ""}, ${Math.round(h.fraction_of_smaller * 100)}% of the smaller`; }).join("; ");
+    throw new UserError(`OVERLAPS_MEASURED: this outline shares floor with ${hits.length} ${c.finish_tag} outline${hits.length > 1 ? "s" : ""} already measured (${named}). Not committed — the same floor would count twice. Measure only what is not measured yet, or change the measured outline with edit_takeoff.`);
   }
 
   private commit(s: SheetState, tag: string, role: MeasureRole, vertsPx: Point[], computed: Shape["computed"], origin?: Shape["origin"], flood?: FloodEvidence): Shape {
-    if (role === "floor_area") this.refuseAgainstPrintedArea(s, vertsPx, computed.area_sf);
+    const check = role === "floor_area" ? this.checkAgainstPrintedArea(s, vertsPx, computed.area_sf) : undefined;
+    if (role === "floor_area") this.refuseOverlap(s, tag, vertsPx);
     // Flood provenance + confidence (RFC #60) stamp HERE, exactly where the
     // assignment provenance already stamps: a commit path that hands over its
     // flood evidence gets the full engine account — confidence, sealed
@@ -1587,6 +1623,7 @@ export class Session {
       verts_norm: vertsPx.map(([x, y]) => [x / s.widthPx, y / s.heightPx]),
       computed,
       ...(origin ? { origin } : {}),
+      ...(check ? { check } : {}),
     };
     this.shapes.push(shape);
     this.pendingCommits.push(shape.id);
@@ -1699,7 +1736,8 @@ export class Session {
     }
     this.flushCommits("one_click");
     const mixed = this.scaleWarningFor(s, ring);
-    return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
+    const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
+    return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id } : {}), ...(check ? { check } : {}), ...(mixed ? { warning: mixed } : {}) };
   }
 
   /** Batch room detection: read every room-number label off the sheet's text
@@ -1787,7 +1825,7 @@ export class Session {
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0, already_measured: 0, not_tried: 0 };
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0 };
     // Time limits (host-set, off by default): a per-room budget turns a trace
     // that runs away into "no outline here"; a per-call budget stops the sweep
     // and reports the labels not reached, which a repeat call picks up — labels
@@ -1988,9 +2026,12 @@ export class Session {
             ...(assignment ? { assignment } : {}),
           }, c.ev ?? undefined);
           } catch (error) {
-            // one room refused against its printed area is withheld, not a failed sweep
-            if (!(error instanceof UserError) || !error.message.startsWith("PRINTED_AREA_DISAGREES")) throw error;
-            withheld.area_disagrees++;
+            // one room refused against its printed area, or over a room already
+            // measured, is withheld, not a failed sweep
+            if (!(error instanceof UserError)) throw error;
+            if (error.message.startsWith("PRINTED_AREA_DISAGREES")) withheld.area_disagrees++;
+            else if (error.message.startsWith("OVERLAPS_MEASURED")) withheld.overlaps_measured++;
+            else throw error;
             return null;
           }
           // The room number this ring was traced FROM becomes the shape's
@@ -2001,7 +2042,8 @@ export class Session {
           shape.label = c.label;
           shape_id = shape.id;
         }
-        return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id, condition: tag } : {}) };
+        const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
+        return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id, condition: tag } : {}), ...(check ? { check } : {}) };
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
@@ -2031,7 +2073,7 @@ export class Session {
       ...(disagreements.length ? { area_disagrees: disagreements } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -2076,7 +2118,8 @@ export class Session {
     if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, ring, { area_sf, perimeter_lf }, { method: "manual", actor: "agent", ...(arcs ? { curved: true as const } : {}) }).id;
     this.flushCommits("measure_polygon");
     const mixed = this.scaleWarningFor(s, ring);
-    return { area_sf, perimeter_lf, nverts: ring.length, ...(arcs ? { arcs } : {}), ...(shape_id ? { shape_id } : {}), ...(mixed ? { warning: mixed } : {}) };
+    const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
+    return { area_sf, perimeter_lf, nverts: ring.length, ...(arcs ? { arcs } : {}), ...(shape_id ? { shape_id } : {}), ...(check ? { check } : {}), ...(mixed ? { warning: mixed } : {}) };
   }
 
   measureLine(name: string, pts: Point[], opts: { condition?: string; arc_through?: number[]; rise_ft?: number; drop_ft?: number }) {
@@ -4141,6 +4184,7 @@ export class Session {
         ...(x.label ? { label: x.label } : {}),
         nverts: x.verts_norm.length,
         reviewed: x.origin?.reviewed === true,
+        ...(x.check ? { check: checkText(x.check) } : {}),
         ...(x.origin?.assignment ? { assignment: x.origin.assignment.source } : {}),
         ...(x.origin?.agent_edits ? { agent_edits: x.origin.agent_edits } : {}),
         ...(x.origin?.proposal_id ? { proposal_id: x.origin.proposal_id } : {}),
@@ -4329,9 +4373,9 @@ export class Session {
     // a reshaped (or re-roled) floor outline passes the same printed-area check
     // as a new one — otherwise a refused room could be committed small and
     // reshaped into the wrong outline
-    if (role === "floor_area" && (patch.verts !== undefined || patch.role !== undefined)) {
-      this.refuseAgainstPrintedArea(s, vertsPx, "area_sf" in computed ? computed.area_sf : undefined);
-    }
+    const recheck = role === "floor_area" && (patch.verts !== undefined || patch.role !== undefined || patch.condition !== undefined);
+    const check = recheck ? this.checkAgainstPrintedArea(s, vertsPx, "area_sf" in computed ? computed.area_sf : undefined) : role === "floor_area" ? cur.check : undefined;
+    if (recheck) this.refuseOverlap(s, condTagAfter, vertsPx, cur.id);
 
     const before: Shape = structuredClone(cur);
     const condition_id = patch.condition !== undefined ? this.conditionFor(patch.condition).id : cur.condition_id;
@@ -4360,6 +4404,8 @@ export class Session {
     // the spread above carried the old label through — clearing means the key
     // GOES, so an export never ships label: "" for "no room"
     if (!nextLabel) delete this.shapes[i].label;
+    if (check) this.shapes[i].check = check;
+    else delete this.shapes[i].check;
     // a cleared leg, or a role flip away from linear, drops the key outright
     if (legs.rise_ft === undefined) delete this.shapes[i].rise_ft;
     if (legs.drop_ft === undefined) delete this.shapes[i].drop_ft;
