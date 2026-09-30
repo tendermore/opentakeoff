@@ -47,14 +47,16 @@ export const isRatioScale = (label: string): boolean => /^1:\d+$/.test(label);
 
 /** The unit system the marked set, the report and the export print in (a display
  * conversion — stored quantities stay in feet, exactly as the canvas's metric
- * toggle). OPENTAKEOFF_UNITS: "metric", "imperial" (default), or "auto" = metric
- * when every scaled sheet was set from a metric ratio scale ("1:100"), imperial
- * otherwise (an architectural/engineering label, or a calibrated sheet with no label). */
-export function displayUnits(scaleLabels: (string | undefined)[] = []): "imperial" | "metric" {
+ * toggle). OPENTAKEOFF_UNITS: "metric", "imperial", or "auto" (the default) = what
+ * the scaled sheets say of themselves (Session.unitsOf: their scale labels, printed
+ * areas and dimension strings): metric when every sheet with evidence is metric,
+ * imperial when any is imperial, and imperial where no sheet has any evidence. */
+export type UnitSystem = "metric" | "imperial" | "unknown";
+export function displayUnits(sheetUnits: UnitSystem[] = []): "imperial" | "metric" {
   const pref = process.env.OPENTAKEOFF_UNITS;
-  if (pref === "metric") return "metric";
-  if (pref === "auto") return scaleLabels.length > 0 && scaleLabels.every((l) => isRatioScale(l ?? "")) ? "metric" : "imperial";
-  return "imperial";
+  if (pref === "metric" || pref === "imperial") return pref;
+  const known = sheetUnits.filter((u) => u !== "unknown");
+  return known.length && known.every((u) => u === "metric") ? "metric" : "imperial";
 }
 
 /** The marked set's language (OPENTAKEOFF_LOCALE, e.g. "nb"); English by default. */

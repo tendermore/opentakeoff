@@ -54,6 +54,27 @@ test("unitsOf: metric signals make a metric sheet, any imperial signal overrides
   assert.equal(bare.unitsOf(KEY).system === "metric", false);
 });
 
+test("displayUnits: by default the set prints in the units its scaled sheets say they are drawn in; the env var overrides", async () => {
+  const saved = process.env.OPENTAKEOFF_UNITS;
+  delete process.env.OPENTAKEOFF_UNITS;
+  try {
+    const metric = await sheetWith(PLAN, KEY, "1:100", []);
+    assert.equal(metric.displayUnits(), "metric", "a metric scale note, no imperial signal");
+    const stamped = await sheetWith(PLAN, KEY, null, [span("9,3 m²", 100, 100), span("12,0 m²", 500, 100), span("5,0 m²", 900, 100)]);
+    assert.equal(stamped.displayUnits(), "metric", "printed m² areas alone say metric");
+    const imperial = await sheetWith(PLAN, KEY, "1:100", [span("12'-6\"", 100, 400), span("8'-0\"", 500, 400), span("3'-4\"", 900, 400)]);
+    assert.equal(imperial.displayUnits(), "imperial", "any imperial signal wins");
+    const bare = await sheetWith(PLAN, KEY, null, []);
+    assert.equal(bare.displayUnits(), "imperial", "no evidence at all keeps the imperial fallback");
+    process.env.OPENTAKEOFF_UNITS = "imperial";
+    assert.equal(metric.displayUnits(), "imperial");
+    process.env.OPENTAKEOFF_UNITS = "metric";
+    assert.equal(bare.displayUnits(), "metric");
+  } finally {
+    if (saved === undefined) delete process.env.OPENTAKEOFF_UNITS; else process.env.OPENTAKEOFF_UNITS = saved;
+  }
+});
+
 test("imperial and undecided sheets commit an outline with no printed area unverified, saying why; a metric sheet refuses one off the drawn walls", async () => {
   for (const [what, note] of [["imperial", '1/4" = 1\'-0"'], ["unknown", null]] as const) {
     const s = await sheetWith(FINISH, FKEY, note, "own");

@@ -1619,9 +1619,9 @@ export class Session {
     return origin;
   }
 
-  /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS). */
+  /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS; by default what the scaled sheets say of themselves). */
   displayUnits(): "imperial" | "metric" {
-    return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => s.scaleLabel));
+    return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => this.unitsOf(s.key).system));
   }
 
   /** A room outline must agree with the room area printed inside it. The one

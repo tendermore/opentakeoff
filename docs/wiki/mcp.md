@@ -36,7 +36,12 @@ does not add a measurement tool.
 - Persisted `verts_norm` use the sheet's normalized frame. Tool calls accept
   pixels, so convert normalized coordinates with the original sheet dimensions.
 - Scale is feet per image pixel; areas square that factor. Metric display is a
-  conversion of stored quantities, not a change to geometry.
+  conversion of stored quantities, not a change to geometry. The marked set,
+  report and export print in the units the scaled sheets say they are drawn in
+  (their scale labels, printed areas and dimension strings — `OPENTAKEOFF_UNITS`
+  defaults to `auto`): metric when every sheet with evidence is metric, imperial
+  when any is imperial or none has evidence. `OPENTAKEOFF_UNITS=metric` or
+  `imperial` overrides that.
 
 The [tool reference](tools.md), the [full MCP guide](../MCP.md) and the
 [README tool table](../../mcp/README.md) contain optional arguments and examples. Runtime descriptions remain the
