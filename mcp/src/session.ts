@@ -3043,88 +3043,109 @@ export class Session {
     };
     const target = this.conditions.find((x) => x.finish_tag === opts.condition);
     const filed = target ? this.shapes.filter((x) => x.condition_id === target.id && x.measure_role === "linear") : [];
-    const lfOf = (m: number) => round2(m / 0.3048);
+    const FT = 0.3048;
     const px2 = (p: Point) => [round1(p[0]), round1(p[1])];
     type Room = {
       source_shape_id: string; sheet: string; status: "measured" | "stated" | "already_derived" | "flagged";
       base_shape_ids: string[]; gross_lf: number; openings_lf: number; net_lf: number; net_m: number;
-      deductions?: { kind: string; length_lf: number; from: number[]; to: number[]; width_lf?: number; leaves?: number; at?: number[] }[];
-      kept?: { kind: string; at: number[]; length_lf: number }[];
+      unmeasured_gross_lf?: number;
+      deductions?: { kind: string; length_lf: number; length_m: number; from: number[]; to: number[]; width_lf?: number; width_m?: number; leaves?: number; at?: number[] }[];
+      kept?: { kind: string; at: number[]; length_lf: number; length_m: number }[];
       flags?: { reason: string; at: number[]; length_lf: number }[];
       note?: string;
     };
-    const plan: { room: Room; commit?: { f: Shape; runs: Point[][]; derived: Record<string, unknown> } }[] = [];
+    // quantities are carried in feet unrounded and rounded once, at the reply
+    const row = (f: Shape, status: Room["status"], grossLf: number, openLf: number, extra: Partial<Room> = {}): Room => ({
+      source_shape_id: f.id, sheet: f.sheet_id, status, base_shape_ids: [], gross_lf: round2(grossLf),
+      openings_lf: round2(openLf), net_lf: round2(grossLf - openLf), net_m: round2((grossLf - openLf) * FT), ...extra,
+    });
+    // a flagged room is not measured: net 0, and what was not measured said apart
+    const flaggedRow = (f: Shape, grossLf: number, extra: Partial<Room>): Room =>
+      ({ ...row(f, "flagged", grossLf, grossLf), openings_lf: 0, unmeasured_gross_lf: round2(grossLf), ...extra });
+    const plan: { room: Room; commit?: { f: Shape; runs: Point[][]; quantityLf?: number; derived: Record<string, unknown> } }[] = [];
     for (const f of floors) {
-      const gross = f.computed.perimeter_lf ?? 0;
-      const row = (status: Room["status"], openLf: number, extra: Partial<Room> = {}): Room => ({
-        source_shape_id: f.id, sheet: f.sheet_id, status, base_shape_ids: [], gross_lf: round2(gross),
-        openings_lf: round2(openLf), net_lf: round2(gross - openLf), net_m: round2((gross - openLf) * 0.3048), ...extra,
-      });
+      const perimLf = f.computed.perimeter_lf ?? 0;
       const prior = filed.filter((x) => x.origin?.derived && "from_shape_id" in x.origin.derived && x.origin.derived.from_shape_id === f.id);
       if (prior.length) {
-        const d = prior[0].origin!.derived as { gross_lf: number; openings_lf: number };
-        const net = round2(prior.reduce((n, x) => n + (x.computed.perimeter_lf ?? 0), 0));
-        const stale = Math.abs(d.gross_lf - round2(gross)) > 0.01;
-        plan.push({ room: { ...row(stale ? "flagged" : "already_derived", gross - net), net_lf: net, net_m: round2(net * 0.3048), base_shape_ids: prior.map((x) => x.id),
-          ...(stale ? { flags: [{ reason: "stale_base", at: [], length_lf: 0 }], note: `The room's perimeter changed since its base was derived (${d.gross_lf} → ${round2(gross)} LF): delete the old base (${prior.map((x) => x.id).join(", ")}) and derive again.` } : {}) } });
+        const d = prior[0].origin!.derived as { gross_lf: number; source_perimeter_lf?: number };
+        const net = prior.reduce((n, x) => n + (x.computed.perimeter_lf ?? 0), 0);
+        const was = d.source_perimeter_lf ?? d.gross_lf;
+        const ids = prior.map((x) => x.id);
+        if (Math.abs(was - round2(perimLf)) > 0.01) {
+          plan.push({ room: flaggedRow(f, perimLf, { base_shape_ids: ids, flags: [{ reason: "stale_base", at: [], length_lf: 0 }],
+            note: `The room's perimeter changed since its base was derived (${was} → ${round2(perimLf)} LF): delete the old base (${ids.join(", ")}) and derive again.` }) });
+          continue;
+        }
+        const ignored = stated.has(f.id);
+        plan.push({ room: { ...row(f, "already_derived", d.gross_lf, d.gross_lf - net), base_shape_ids: ids,
+          ...(ignored ? { flags: [{ reason: "openings_ignored", at: [], length_lf: 0 }],
+            note: `This room already has base under ${opts.condition} (${ids.join(", ")}); the openings you stated for it were NOT applied. Delete that base and derive again to apply them.` } : {}) } });
         continue;
       }
       if (stated.has(f.id)) {
         const open = stated.get(f.id)!;
-        if (open >= gross) throw new UserError(`Shape ${f.id}: stated openings (${round2(open)} LF) meet or exceed its perimeter (${round2(gross)} LF) — nothing would remain.`);
+        if (open >= perimLf) throw new UserError(`Shape ${f.id}: stated openings (${round2(open)} LF) meet or exceed its perimeter (${round2(perimLf)} LF) — nothing would remain.`);
         const ring = ringOf(f);
-        plan.push({ room: row("stated", open), commit: { f, runs: [[...ring, ring[0]]], derived: { from_shape_id: f.id, gross_lf: round2(gross), openings_lf: round2(open) } } });
+        plan.push({ room: row(f, "stated", perimLf, open), commit: { f, runs: [[...ring, ring[0]]], quantityLf: perimLf - open,
+          derived: { from_shape_id: f.id, gross_lf: round2(perimLf), openings_lf: round2(open) } } });
         continue;
       }
       if ((f.computed.area_sf ?? 0) * M2_PER_SF < MIN_ROOM_M2) {
-        plan.push({ room: { ...row("flagged", 0), flags: [{ reason: "not_a_room", at: [], length_lf: 0 }], note: `The outline encloses under ${MIN_ROOM_M2} m² — a tag box or a symbol, not a room: no base is derived from it.` } });
+        plan.push({ room: flaggedRow(f, perimLf, { flags: [{ reason: "not_a_room", at: [], length_lf: 0 }], note: `The outline encloses under ${MIN_ROOM_M2} m² — a tag box or a symbol, not a room: no base is derived from it.` }) });
         continue;
       }
       const r = await this.skirtingOf(f);
       if (!r) {
-        plan.push({ room: { ...row("flagged", 0), flags: [{ reason: "unread", at: [], length_lf: 0 }], note: "The sheet's walls cannot be read here (a scan, no scale, or no wall linework): state this room's openings (openings: [{shape_id, lf}]) to commit its perimeter." } });
+        plan.push({ room: flaggedRow(f, perimLf, { flags: [{ reason: "unread", at: [], length_lf: 0 }], note: "The sheet's walls cannot be read here (a scan, no scale, or no wall linework): state this room's openings (openings: [{shape_id, lf}]) to commit its perimeter." }) });
         continue;
       }
-      const openLf = lfOf(r.gross_m - r.net_m);
-      const deductions = r.deductions.map((d) => ({
-        kind: d.kind as string, length_lf: lfOf(d.length_m), from: px2(d.from), to: px2(d.to),
-        ...(d.door ? { width_lf: lfOf(d.door.width_m), leaves: d.door.leaves, at: px2(d.door.at) } : {}),
+      // gross from the rings actually read (the outline and any holes), not the stored perimeter
+      const grossLf = r.gross_m / FT;
+      const deductions: NonNullable<Room["deductions"]> = r.deductions.map((d) => ({
+        kind: d.kind as string, length_lf: round2(d.length_m / FT), length_m: round2(d.length_m), from: px2(d.from), to: px2(d.to),
+        ...(d.door ? { width_lf: round2(d.door.width_m / FT), width_m: round2(d.door.width_m), leaves: d.door.leaves, at: px2(d.door.at) } : {}),
       }));
       // the trace's out-and-back spikes (a flood into a door swing) are not boundary: dropped before the reading
-      if (r.spikes_m >= 0.01) deductions.push({ kind: "ring_spike", length_lf: lfOf(r.spikes_m), from: [], to: [] });
-      const kept = r.kept.map((k) => ({ kind: k.kind, at: px2(k.at), length_lf: lfOf(k.length_m) }));
+      if (r.spikes_m >= 0.01) deductions.push({ kind: "ring_spike", length_lf: round2(r.spikes_m / FT), length_m: round2(r.spikes_m), from: [], to: [] });
+      const kept = r.kept.map((k) => ({ kind: k.kind, at: px2(k.at), length_lf: round2(k.length_m / FT), length_m: round2(k.length_m) }));
       if (r.flags.length) {
-        plan.push({ room: { ...row("flagged", openLf), deductions, kept, flags: r.flags.map((g) => ({ reason: g.reason, at: px2(g.at), length_lf: lfOf(g.length_m) })),
-          note: "The ring leaves the drawn walls at the flagged points (off_walls: a wall face runs alongside but off it; unread_edge: it follows a line that is not a wall) — fix the room outline, or state this room's openings." } });
+        plan.push({ room: flaggedRow(f, grossLf, { deductions, kept, flags: r.flags.map((g) => ({ reason: g.reason, at: px2(g.at), length_lf: round2(g.length_m / FT) })),
+          note: "Not measured: at the flagged points the ring leaves the drawn walls or crosses something that is not a wall (off_walls: a wall face alongside but off it, or a corner cut across; unread_edge: ink along a break that is not a wall face; door_gap: the break at a door is wider than the door and its frame; door_unplaced: a door with no edge of the ring along it) — fix the room outline, or state this room's openings." }) });
         continue;
       }
-      plan.push({ room: { ...row("measured", openLf), deductions, kept },
-        commit: { f, runs: r.runs as Point[][], derived: { from_shape_id: f.id, gross_lf: round2(gross), openings_lf: openLf, located: true } } });
+      plan.push({ room: row(f, "measured", grossLf, grossLf - r.net_m / FT, { deductions, kept }),
+        commit: { f, runs: r.runs as Point[][], derived: { from_shape_id: f.id, gross_lf: round2(grossLf), openings_lf: round2(grossLf - r.net_m / FT), located: true, source_perimeter_lf: round2(perimLf) } } });
     }
-    for (const p of plan) {
-      if (!p.commit) continue;
-      const s = this.sheet(p.commit.f.sheet_id);
-      for (const run of p.commit.runs) {
-        const lf = p.room.status === "stated" ? p.room.net_lf : openLen(run) * s.upp!;
-        const shape = this.commit(s, opts.condition, "linear", run, Session.linearQty(lf), {
-          method: "agent_v1", actor: "agent", reviewed: false, derived: p.commit.derived as NonNullable<Shape["origin"]>["derived"],
-        });
-        p.room.base_shape_ids.push(shape.id);
+    try {
+      for (const p of plan) {
+        if (!p.commit) continue;
+        const s = this.sheet(p.commit.f.sheet_id);
+        let netLf = 0;
+        for (const run of p.commit.runs) {
+          const lf = p.commit.quantityLf ?? openLen(run) * s.upp!;
+          netLf += lf;
+          const shape = this.commit(s, opts.condition, "linear", run, Session.linearQty(lf), {
+            method: "agent_v1", actor: "agent", reviewed: false, derived: p.commit.derived as NonNullable<Shape["origin"]>["derived"],
+          });
+          p.room.base_shape_ids.push(shape.id);
+        }
+        if (p.room.status === "measured") {
+          const grossLf = p.commit.derived.gross_lf as number;
+          p.room.net_lf = round2(netLf); p.room.net_m = round2(netLf * FT); p.room.openings_lf = round2(grossLf - netLf);
+        }
       }
-      if (p.room.status === "measured") {
-        const net = round2(p.room.base_shape_ids.reduce((n, id) => n + (this.shapes.find((x) => x.id === id)!.computed.perimeter_lf ?? 0), 0));
-        p.room.net_lf = net; p.room.net_m = round2(net * 0.3048); p.room.openings_lf = round2(p.room.gross_lf - net);
-      }
+    } finally {
+      this.flushCommits("derive_base");   // what committed before a failure is still one undo step
     }
-    this.flushCommits("derive_base");
     const rooms = plan.map((p) => p.room);
     const counted = rooms.filter((r) => r.status !== "flagged");
+    const sumLf = (rs: Room[]) => rs.reduce((n, r) => n + r.net_lf, 0);
     const sheets = [...new Set(rooms.map((r) => r.sheet))].map((sheet) => {
-      const on = counted.filter((r) => r.sheet === sheet);
-      const lf = round2(on.reduce((n, r) => n + r.net_lf, 0));
-      return { sheet, rooms: on.length, flagged: rooms.filter((r) => r.sheet === sheet && r.status === "flagged").length, net_lf: lf, net_m: round2(lf * 0.3048) };
+      const on = counted.filter((r) => r.sheet === sheet), off = rooms.filter((r) => r.sheet === sheet && r.status === "flagged");
+      const lf = sumLf(on);
+      return { sheet, rooms: on.length, flagged: off.length, net_lf: round2(lf), net_m: round2(lf * FT), unmeasured_gross_lf: round2(off.reduce((n, r) => n + (r.unmeasured_gross_lf ?? 0), 0)) };
     });
-    const total = round2(counted.reduce((n, r) => n + r.net_lf, 0));
+    const total = sumLf(counted);
     const flagged = rooms.length - counted.length;
     return {
       condition: opts.condition,
@@ -3134,26 +3155,40 @@ export class Session {
       committed: rooms.reduce((n, r) => n + (r.status === "measured" || r.status === "stated" ? r.base_shape_ids.length : 0), 0),
       already_derived: rooms.filter((r) => r.status === "already_derived").length,
       flagged,
-      total_lf: total,
-      total_m: round2(total * 0.3048),
-      note: "Base runs where each room's ring follows a drawn wall; it stops at doors (the leaf width), openings with no door and open sides, and runs on under windows and through junction breaks. Totals leave out flagged rooms. Lengths are the drawing's at its scale (about ±2 cm per corner at 1:100); LF and m are the same quantity, rounded to 0.01. Casework, fitted kitchens and stairs are not deducted: state openings or cut the runs where the drawing shows them. Verify with view_sheet overlay:true."
+      total_lf: round2(total),
+      total_m: round2(total * FT),
+      note: "Base runs where each room's ring (and the rings of its holes: columns, islands) follows a drawn wall; it stops at doors (over the drawn break at the door), openings with no door and open sides, and runs on under windows and through junction breaks. Measured rooms commit as runs whose length is the quantity; a room with stated openings commits its whole ring with the stated LF taken off numerically. Totals leave out flagged rooms (their perimeter is unmeasured_gross_lf). Lengths are the drawing's at its scale (about ±2 cm per corner at 1:100); LF and m are the same quantity, each rounded to 0.01. Casework, fitted kitchens and stairs are not deducted: state openings or cut the runs where the drawing shows them. Verify with view_sheet overlay:true."
         + (flagged ? ` ${flagged} room(s) flagged and not measured — see each room's flags.` : ""),
     };
   }
 
-  /** The skirting reading of one committed room (skirting.ts), or null when the
-   * sheet's walls cannot be read: no scale, no vector linework, no wall faces. */
+  /** The skirting reading of one committed room (skirting.ts): its outline, and
+   * each hole in it (a column, an island — skirting runs round those too), or
+   * null when the sheet's walls cannot be read: no scale, no vector linework, no
+   * wall faces. */
   private async skirtingOf(f: Shape): Promise<SkirtingResult | null> {
     const s = this.sheet(f.sheet_id);
     if (s.upp == null) return null;
     await this.prepareFloorCheck(s.key);
     const walls = this.wallFacesOf(s);
     if (!walls || !s.geo || !hasWallFaces(walls.faces)) return null;
-    const faces = walls.faces;
-    const ring: Point[] = f.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx]);
+    const px = (r: [number, number][]) => r.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as [number, number]);
+    const ring = px(f.verts_norm as [number, number][]);
     const wallPx = OPENING_WALL_M / 0.3048 / s.upp;
-    return skirtingOfRing(ring as [number, number][], s.geo.segs, s.geo.meta, faces, 1 / (s.upp * 0.3048),
-      (s.doors?.doors ?? []) as SkirtingDoor[], (d) => doorOnRing(d as Door, ring, wallPx));
+    const pxPerM = 1 / (s.upp * 0.3048);
+    const doors = (s.doors?.doors ?? []) as SkirtingDoor[];
+    const outer = skirtingOfRing(ring, s.geo.segs, s.geo.meta, walls.faces, pxPerM, doors, (d) => doorOnRing(d as Door, ring as Point[], wallPx));
+    const holes = ((f as { verts_norm_holes?: [number, number][][] }).verts_norm_holes ?? [])
+      .map((h) => skirtingOfRing(px(h), s.geo!.segs, s.geo!.meta, walls.faces, pxPerM, [], () => false, { hole: true }));
+    if (!holes.length) return outer;
+    const all = [outer, ...holes];
+    const sum = (k: "gross_m" | "spikes_m" | "net_m") => all.reduce((n, r) => n + r[k], 0);
+    const gross = sum("gross_m");
+    return {
+      gross_m: gross, spikes_m: sum("spikes_m"), net_m: sum("net_m"),
+      on_walls: all.reduce((n, r) => n + r.on_walls * r.gross_m, 0) / (gross || 1),
+      deductions: all.flatMap((r) => r.deductions), kept: all.flatMap((r) => r.kept), flags: all.flatMap((r) => r.flags), runs: all.flatMap((r) => r.runs),
+    };
   }
 
   /** apply_rules (#207): re-run the correction rules an estimator taught the

@@ -8,24 +8,32 @@
 //
 // So the ring is walked in small steps and every step is judged by what lies
 // along it: a wall face (wallpairs.ts faces, the drawn-walls check's own), a
-// door's opening (doors.ts, the closed-leaf chord), or nothing. A stretch with no
-// face is then judged as a whole: a junction break (too short to be an opening),
-// a window (glazing lines along it inside the wall), an opening (bounded by wall
-// on both sides, nothing or one line across), an open side (nothing drawn at
-// all), or — when a wall face runs alongside but off the ring, or the ring
-// follows a drawn line that is not a wall — a ring that does not follow the walls
-// here, which is flagged and never measured.
+// door's opening (doors.ts, the closed-leaf chord), or nothing. A door comes off
+// over the drawn break in the wall at it (the leaf plus its frame; a wider break
+// is flagged). A stretch with no face is then judged as a whole: a junction
+// break (too short to be an opening) or a window (two or more glazing lines
+// inside the wall) keeps the base; an opening (0.6–2 m, straight along the wall
+// line, the wall on both sides in line with it, and nothing drawn across or
+// along it) or an open side (straight, nothing drawn along it) is deducted.
+// Anything else — a wall face alongside but off the ring, a ring cutting a
+// corner, ink along a break that is not a wall face (one glazing line, a sliding
+// leaf, a threshold, a curved or single-line wall, casework) — is flagged and
+// never measured.
 //
 // Nothing here reads text, layers or project conventions. Pure module: image px
 // in, image px and metres out; the caller converts units.
 import { SEG_CURVE, SEG_CLIP } from "./oneclick.ts";
+import { RENDER_SCALE } from "./takeoffConstants.ts";
 
 type Pt = [number, number];
 /** What skirting needs of a door (doors.ts Door). */
 export interface SkirtingDoor { opening: [Pt, Pt]; width: number; leaves: 1 | 2; at: Pt }
 
-/** A step along the ring (px). */
-const STEP_PX = 2;
+/** A step along the ring (m). */
+const STEP_M = 0.02;
+/** A pen's width on paper (mm): the least any tolerance can be, however small the
+ *  scale, since two lines closer than a pen are drawn as one. */
+const PEN_MM = 0.35;
 /** A step lies along a wall face within this (m): a line's width and the slack
  *  a traced or snapped ring keeps from the face it follows. */
 export const ON_FACE_M = 0.03;
@@ -43,19 +51,28 @@ export const MIN_OPENING_M = 0.4;
 export const MIN_PASSAGE_M = 0.6;
 /** A door's opening runs along the ring within this (doors.ts OPENING_PARALLEL_DEG). */
 const DOOR_PARALLEL_DEG = 15;
+/** The drawn break at a door is the leaf plus its frame and a reveal on each
+ *  side, at most this much (m); a wider break is more than the door. */
+export const DOOR_FRAME_M = 0.3;
 /** An opening between wall on both sides is at most this wide; wider with
  *  nothing drawn is an open side (wallcheck.ts OPENING_MAX_M). */
 export const OPENING_MAX_M = 2.0;
+/** A cut runs straight along one wall line or across open floor: a ring that
+ *  turns by more than this inside a break is cutting a corner, not crossing an
+ *  opening. */
+const STRAIGHT_TURN_DEG = 10;
 /** Glazing sits inside the wall band: lines along the break, offset from the
- *  ring towards the wall's far face by more than a line and at most a wall. */
+ *  ring towards the wall's far face, covering this share of it. */
 const GLAZING_COVER = 0.6;
-/** An open side has nothing drawn alongside it. Ink running along the ring
- *  within a wall's reach (OFF_FACE_M) where there is no wall face — a wall
- *  drawn in a style the face reader does not pair (thin lines at a small
- *  scale, one line, a curve), a glass wall, casework — means the ring is on
- *  something, so the stretch is flagged, not deducted, once it covers this
- *  share of it. */
-const LINE_SHARE = 0.5;
+/** Ink alongside a break (within a wall's reach, OFF_FACE_M) where there is no
+ *  wall face — a wall the face reader does not pair (thin lines at a small
+ *  scale, one line, a curve), a glass wall, a sliding leaf, a threshold,
+ *  casework — means something is drawn there. Only a break with ink along less
+ *  than this share of it is empty enough to deduct. */
+const INK_SHARE = 0.2;
+/** A wall face alongside (off the ring) along at least this share of a break
+ *  means the ring is off the wall there. */
+const OFF_SHARE = 0.5;
 
 export type SkirtingGapKind = "door" | "opening" | "open_side";
 export interface SkirtingDeduction {
@@ -64,11 +81,17 @@ export interface SkirtingDeduction {
   from: Pt;
   to: Pt;
   length_m: number;
-  /** door: the leaf width (a pair's two leaves), leaves and where the door is. */
+  /** door: the leaf width (a pair's two leaves), leaves and where the door is;
+   *  the deduction is the drawn break when the wall is broken there. */
   door?: { at: Pt; width_m: number; leaves: 1 | 2 };
 }
 export interface SkirtingFlag {
-  reason: "off_walls" | "unread_edge";
+  /** off_walls: a wall face alongside but off the ring, or the ring cutting a
+   *  corner across a break; unread_edge: something is drawn along a break that
+   *  is not a wall face; door_gap: the break at a door is wider than the door
+   *  and its frame; door_unplaced: a door opens on the ring but no edge of the
+   *  ring runs along it. */
+  reason: "off_walls" | "unread_edge" | "door_gap" | "door_unplaced";
   at: Pt;
   length_m: number;
 }
@@ -124,15 +147,19 @@ function ptSegDist(x: number, y: number, x0: number, y0: number, x1: number, y1:
   return Math.hypot(x - x0 - t * dx, y - y0 - t * dy);
 }
 
+/** Paper px (RENDER_SCALE px per pt) of a length on paper in mm. */
+const paperPx = (mm: number) => (mm / 25.4) * 72 * RENDER_SCALE;
+
 /** Skirting along `ring` (image px). `faces`: per segment, 1 = a wall face (the
  *  drawn-walls check's faces); `doors`: the sheet's doors; `onRing(door)`: does
- *  the door open on this ring (doors.ts doorOnRing). */
+ *  the door open on this ring (doors.ts doorOnRing). `hole`: the ring is a hole
+ *  in a floor (a column, an island), so its wall lies inside it. */
 export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: ArrayLike<number>, faces: ArrayLike<number>,
-  pxPerM: number, doors: SkirtingDoor[], onRing: (d: SkirtingDoor) => boolean): SkirtingResult {
+  pxPerM: number, doors: SkirtingDoor[], onRing: (d: SkirtingDoor) => boolean, opts: { hole?: boolean } = {}): SkirtingResult {
   const ring = cleanRing(ringIn);
   const n = ring.length;
-  const perim = (r: Pt[]) => r.reduce((acc, p, i) => { const q = r[(i + 1) % r.length]; return acc + Math.hypot(q[0] - p[0], q[1] - p[1]); }, 0);
-  const traced = perim(ringIn);
+  const open = ringIn.length > 1 && ringIn[0][0] === ringIn[ringIn.length - 1][0] && ringIn[0][1] === ringIn[ringIn.length - 1][1] ? ringIn.slice(0, -1) : ringIn;
+  const traced = open.reduce((acc, p, i) => { const q = open[(i + 1) % open.length]; return acc + Math.hypot(q[0] - p[0], q[1] - p[1]); }, 0);
   const edges: Edge[] = [];
   let P = 0;
   for (let i = 0; i < n; i++) {
@@ -142,11 +169,14 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
   }
   const m = (px: number) => px / pxPerM;
   const spikes = Math.max(0, traced - P);
-  const empty: SkirtingResult = { gross_m: m(traced), spikes_m: m(spikes), net_m: m(P), on_walls: 0, deductions: [], kept: [], flags: [], runs: [[...ring, ring[0]]] };
-  if (n < 3 || !P) return empty;
-  // the ring's outward normal: the wall is on this side of a ring on its inside face
+  const kept: SkirtingKept[] = [], flags: SkirtingFlag[] = [];
+  if (n < 3 || !P) {
+    flags.push({ reason: "off_walls", at: ring[0] ?? [0, 0], length_m: m(traced) });
+    return { gross_m: m(traced), spikes_m: m(spikes), net_m: 0, on_walls: 0, deductions: [], kept, flags, runs: [] };
+  }
+  // the ring's outward normal: the wall is on this side of a ring on its inside face (inside a hole's ring)
   const area2 = ring.reduce((acc, p, i) => { const q = ring[(i + 1) % n]; return acc + p[0] * q[1] - q[0] * p[1]; }, 0);
-  const outSign = area2 > 0 ? -1 : 1;   // image y down: a positive shoelace sum runs clockwise on screen
+  const outSign = (area2 > 0 ? -1 : 1) * (opts.hole ? -1 : 1);   // image y down: a positive shoelace sum runs clockwise on screen
   const at = (s: number): Pt => {
     const u = ((s % P) + P) % P;
     let e = edges.length - 1;
@@ -155,8 +185,10 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
     return [E.a[0] + (E.b[0] - E.a[0]) * t, E.a[1] + (E.b[1] - E.a[1]) * t];
   };
 
-  // straight ink near the ring, once
-  const reach = OFF_FACE_M * pxPerM + 2;
+  const pen = paperPx(PEN_MM);
+  const stepPx = Math.max(0.5, STEP_M * pxPerM);
+  const onTol = Math.max(pen, ON_FACE_M * pxPerM), offTol = OFF_FACE_M * pxPerM, reach = offTol + pen;
+  // ink near the ring, once
   const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
   const bx0 = Math.min(...xs) - reach, bx1 = Math.max(...xs) + reach, by0 = Math.min(...ys) - reach, by1 = Math.max(...ys) + reach;
   const near: number[] = [];
@@ -167,18 +199,17 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
     near.push(i);
   }
   const sinTol = Math.sin((PARALLEL_DEG * Math.PI) / 180);
-  const onTol = Math.max(2, ON_FACE_M * pxPerM), offTol = OFF_FACE_M * pxPerM;
 
   // judge every step
   const samples: Sample[] = [];
   const along: number[][] = [];
   for (const [e, E] of edges.entries()) {
-    // parallel straight ink alongside this edge, within a wall's reach of it
+    // parallel straight ink alongside this edge, within a wall's reach of it; curve ink anywhere within reach
     const par: { i: number; face: boolean; x0: number; y0: number; x1: number; y1: number }[] = [];
     const curves: [number, number, number, number][] = [];
     for (const i of near) {
       const x0 = segs[4 * i]!, y0 = segs[4 * i + 1]!, x1 = segs[4 * i + 2]!, y1 = segs[4 * i + 3]!, L = Math.hypot(x1 - x0, y1 - y0);
-      // curve ink (a curved wall, tessellated) is never a face but is drawn: it only says "something is here"
+      // curve ink (a curved wall, a swing) is never a face but is drawn: it only says "something is here"
       if (meta[i]! & SEG_CURVE) { if (L && ptSegDist((x0 + x1) / 2, (y0 + y1) / 2, E.a[0], E.a[1], E.b[0], E.b[1]) <= reach) curves.push([x0, y0, x1, y1]); continue; }
       if (!L || Math.abs(E.ux * (y1 - y0) - E.uy * (x1 - x0)) / L > sinTol) continue;
       const d0 = (x0 - E.a[0]) * -E.uy + (y0 - E.a[1]) * E.ux, d1 = (x1 - E.a[0]) * -E.uy + (y1 - E.a[1]) * E.ux;
@@ -188,7 +219,7 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
       par.push({ i, face: !!faces[i], x0, y0, x1, y1 });
     }
     along.push(par.map((p) => p.i));
-    const k = Math.max(1, Math.ceil(E.L / STEP_PX));
+    const k = Math.max(1, Math.ceil(E.L / stepPx));
     for (let j = 0; j < k; j++) {
       const t = (j + 0.5) / k, x = E.a[0] + (E.b[0] - E.a[0]) * t, y = E.a[1] + (E.b[1] - E.a[1]) * t;
       let on = false, nearFace = false, line = false;
@@ -206,13 +237,21 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
       samples.push({ s: E.s0 + t * E.L, e, t, w: E.L / k, on, near: nearFace, line });
     }
   }
+  const N = samples.length;
+  const idxAt = (s: number): number => {
+    const u = ((s % P) + P) % P;
+    let lo = 0, hi = N - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (samples[mid].s < u) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const share = (run: Sample[], key: "near" | "line", len: number) => run.filter((q) => q[key]).reduce((acc, q) => acc + q.w, 0) / len;
 
-  // doors on this ring: the leaf width, centred where the opening meets the ring
+  // doors on this ring: the leaf width, centred where the opening meets the ring, onto the nearest edge the
+  // opening runs along (doorOnRing's parallel test), not a chamfer beside it
   const cuts: { s0: number; s1: number; d: SkirtingDeduction }[] = [];
-  // onto the nearest edge the opening runs along (doorOnRing's parallel test), not a chamfer beside it
   const cosDoor = Math.cos((DOOR_PARALLEL_DEG * Math.PI) / 180);
-  const project = (p: Pt, dir: Pt): number => {
-    let best = Infinity, sBest = 0;
+  const project = (p: Pt, dir: Pt): number | null => {
+    let best = Infinity, sBest: number | null = null;
     for (const E of edges) {
       if (!E.L || Math.abs(E.ux * dir[0] + E.uy * dir[1]) < cosDoor) continue;
       const t = Math.max(0, Math.min(1, ((p[0] - E.a[0]) * E.ux + (p[1] - E.a[1]) * E.uy) / E.L));
@@ -221,22 +260,61 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
     }
     return sBest;
   };
+  const overlap = (a0: number, a1: number, b0: number, b1: number) => {
+    let best = 0;
+    for (const sh of [-P, 0, P]) best = Math.max(best, Math.min(a1, b1 + sh) - Math.max(a0, b0 + sh));
+    return best;
+  };
   for (const d of doors) {
     if (!onRing(d)) continue;
     const [p, q] = d.opening, L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
     const c = project([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], [(q[0] - p[0]) / L, (q[1] - p[1]) / L]);
-    const s0 = c - d.width / 2, s1 = c + d.width / 2;
-    cuts.push({ s0, s1, d: { kind: "door", from: at(s0), to: at(s1), length_m: m(d.width), door: { at: d.at, width_m: m(d.width), leaves: d.leaves } } });
+    if (c === null) { flags.push({ reason: "door_unplaced", at: d.at, length_m: m(d.width) }); continue; }
+    let s0 = c - d.width / 2, s1 = c + d.width / 2;
+    // one door read twice (or a pair's leaf read alone) is one deduction
+    if (cuts.some((x) => x.d.kind === "door" && overlap(s0, s1, x.s0, x.s1) > 0.5 * Math.min(s1 - s0, x.s1 - x.s0))) continue;
+    // snap to the drawn break: the wall-less steps running on from the leaf's ends are the frame and reveal
+    let left = 0, right = 0;
+    for (let i = idxAt(s0), k = 0; k < N && !samples[(i - 1 - k + N) % N].on; k++) left += samples[(i - 1 - k + N) % N].w;
+    for (let i = idxAt(s1), k = 0; k < N && !samples[(i + k) % N].on; k++) right += samples[(i + k) % N].w;
+    if (left + right > 2 * DOOR_FRAME_M * pxPerM) {
+      flags.push({ reason: "door_gap", at: d.at, length_m: m(d.width + left + right) });
+    }
+    s0 -= left; s1 += right;
+    cuts.push({ s0, s1, d: { kind: "door", from: at(s0), to: at(s1), length_m: m(s1 - s0), door: { at: d.at, width_m: m(d.width), leaves: d.leaves } } });
   }
   const inCut = (s: number) => cuts.some((c) => {
     const u = ((s - c.s0) % P + P) % P;
     return u <= c.s1 - c.s0;
   });
 
+  // turns of the ring inside (s0, s1): a straight cut has none
+  const cosStraight = Math.cos((STRAIGHT_TURN_DEG * Math.PI) / 180);
+  const bends = (s0: number, s1: number): boolean => {
+    for (let k = 0; k < n; k++) {
+      const E = edges[k], Pv = edges[(k - 1 + n) % n];
+      let v = E.s0;
+      while (v < s0 + stepPx) v += P;
+      if (v >= s1 - stepPx) continue;
+      if (E.ux * Pv.ux + E.uy * Pv.uy < cosStraight) return true;
+    }
+    return false;
+  };
+  // an opening crosses the wall line: the wall on both sides is parallel to the break and on its line
+  const onWallLine = (A: Pt, B: Pt, ends: Sample[]): boolean => {
+    const L = Math.hypot(B[0] - A[0], B[1] - A[1]);
+    if (!L) return false;
+    const ux = (B[0] - A[0]) / L, uy = (B[1] - A[1]) / L;
+    return ends.every((q) => {
+      const E = edges[q.e];
+      if (Math.abs(E.ux * ux + E.uy * uy) < cosStraight) return false;
+      const x = E.a[0] + (E.b[0] - E.a[0]) * q.t, y = E.a[1] + (E.b[1] - E.a[1]) * q.t;
+      return Math.abs((x - A[0]) * -uy + (y - A[1]) * ux) <= onTol;
+    });
+  };
+
   // stretches with no wall face, outside the doors (cyclic)
-  const N = samples.length;
   const bad = samples.map((q) => !q.on && !inCut(q.s));
-  const kept: SkirtingKept[] = [], flags: SkirtingFlag[] = [];
   if (bad.every(Boolean) && !cuts.length) {
     // nothing along the ring is a wall: no measurement to make
     flags.push({ reason: samples.some((q) => q.near) ? "off_walls" : "unread_edge", at: ring[0], length_m: m(P) });
@@ -244,34 +322,35 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
     let start = bad.findIndex((b, i) => b && !bad[(i - 1 + N) % N]);
     if (start < 0) start = 0;
     for (let off = 0; off < N;) {
-      const i = (start + off) % N;
-      if (!bad[i]) { off++; continue; }
+      const i0 = (start + off) % N;
+      if (!bad[i0]) { off++; continue; }
       const run: Sample[] = [];
       while (off < N && bad[(start + off) % N]) { run.push(samples[(start + off) % N]); off++; }
       const len = run.reduce((acc, q) => acc + q.w, 0);
       const s0 = run[0].s - run[0].w / 2, s1 = s0 + len;
       const mid = at(s0 + len / 2);
       if (len < MIN_OPENING_M * pxPerM) { kept.push({ kind: "junction", at: mid, length_m: m(len) }); continue; }
-      const nearShare = run.filter((q) => q.near).reduce((acc, q) => acc + q.w, 0) / len;
-      const lineShare = run.filter((q) => q.line).reduce((acc, q) => acc + q.w, 0) / len;
-      const prev = samples[(samples.indexOf(run[0]) - 1 + N) % N], next = samples[(samples.indexOf(run[run.length - 1]) + 1) % N];
-      const bounded = (prev.on || inCut(prev.s)) && (next.on || inCut(next.s));
-      if (bounded && len <= OPENING_MAX_M * pxPerM) {
-        const g = glazing(run, edges, along, segs, outSign, pxPerM);
+      const iFirst = samples.indexOf(run[0]), iLast = samples.indexOf(run[run.length - 1]);
+      const prev = samples[(iFirst - 1 + N) % N], next = samples[(iLast + 1) % N];
+      const offWall = share(run, "near", len) >= OFF_SHARE;
+      if (len <= OPENING_MAX_M * pxPerM) {
+        // a window's frame and glazing are often drawn as line pairs too: judged before the faces alongside
+        const g = glazing(run, edges, along, segs, outSign, pen);
         if (g >= 2) { kept.push({ kind: "window", at: mid, length_m: m(len) }); continue; }
         if (len < MIN_PASSAGE_M * pxPerM) { kept.push({ kind: "junction", at: mid, length_m: m(len) }); continue; }
-        if (nearShare >= LINE_SHARE) { flags.push({ reason: "off_walls", at: mid, length_m: m(len) }); continue; }
+        if (offWall || bends(s0, s1) || !onWallLine(at(s0), at(s1), [prev, next])) { flags.push({ reason: "off_walls", at: mid, length_m: m(len) }); continue; }
+        if (g === 1 || share(run, "line", len) >= INK_SHARE) { flags.push({ reason: "unread_edge", at: mid, length_m: m(len) }); continue; }
         cuts.push({ s0, s1, d: { kind: "opening", from: at(s0), to: at(s1), length_m: m(len) } });
         continue;
       }
-      if (nearShare >= LINE_SHARE) { flags.push({ reason: "off_walls", at: mid, length_m: m(len) }); continue; }
-      if (lineShare >= LINE_SHARE) { flags.push({ reason: "unread_edge", at: mid, length_m: m(len) }); continue; }
+      if (offWall || bends(s0, s1)) { flags.push({ reason: "off_walls", at: mid, length_m: m(len) }); continue; }
+      if (share(run, "line", len) >= INK_SHARE) { flags.push({ reason: "unread_edge", at: mid, length_m: m(len) }); continue; }
       cuts.push({ s0, s1, d: { kind: "open_side", from: at(s0), to: at(s1), length_m: m(len) } });
     }
   }
   const onLen = samples.filter((q) => q.on).reduce((acc, q) => acc + q.w, 0);
 
-  // the runs: the ring minus the union of the cuts
+  // the runs: the ring minus the union of the cuts; cuts closer than a step are one (no sliver runs)
   const iv: [number, number][] = [];
   for (const c of cuts) {
     const a = ((c.s0 % P) + P) % P, len = Math.min(P, c.s1 - c.s0);
@@ -279,16 +358,18 @@ export function skirtingOfRing(ringIn: Pt[], segs: ArrayLike<number>, meta: Arra
   }
   iv.sort((p, q) => p[0] - q[0]);
   const merged: [number, number][] = [];
-  for (const v of iv) { const last = merged[merged.length - 1]; if (last && v[0] <= last[1]) last[1] = Math.max(last[1], v[1]); else merged.push([...v]); }
-  const cutLen = merged.reduce((acc, [a, b]) => acc + b - a, 0);
-  let runs: Pt[][];
-  if (!merged.length) runs = [[...ring, ring[0]]];
+  for (const v of iv) { const last = merged[merged.length - 1]; if (last && v[0] <= last[1] + stepPx) last[1] = Math.max(last[1], v[1]); else merged.push([...v]); }
+  if (merged.length > 1 && merged[0][0] + P - merged[merged.length - 1][1] <= stepPx) {
+    const last = merged.pop()!;
+    merged[0] = [last[0] - P, merged[0][1]];
+  }
+  const cutLen = Math.min(P, merged.reduce((acc, [a, b]) => acc + b - a, 0));
+  const runs: Pt[][] = [];
+  if (!merged.length) runs.push([...ring, ring[0]]);
   else {
-    runs = [];
     for (let k = 0; k < merged.length; k++) {
       const a = merged[k][1], b = k + 1 < merged.length ? merged[k + 1][0] : merged[0][0] + P;
-      if (b - a < 1e-6) continue;
-      runs.push(polyline(a, b, edges, P, at));
+      if (b - a > 1e-6) runs.push(polyline(a, b, edges, P, at));
     }
   }
   return {
@@ -314,7 +395,7 @@ function polyline(a: number, b: number, edges: Edge[], P: number, at: (s: number
  *  wall's side of it (a line's width to a wall's thickness out), covering most
  *  of the break. A window's frame and glass draw two or more; a threshold or a
  *  sliding leaf one. */
-function glazing(run: Sample[], edges: Edge[], along: number[][], segs: ArrayLike<number>, outSign: number, pxPerM: number): number {
+function glazing(run: Sample[], edges: Edge[], along: number[][], segs: ArrayLike<number>, outSign: number, pen: number): number {
   const e = run[Math.floor(run.length / 2)].e, E = edges[e];
   const nx = -E.uy * outSign, ny = E.ux * outSign;
   const onE = run.filter((q) => q.e === e);
@@ -325,11 +406,11 @@ function glazing(run: Sample[], edges: Edge[], along: number[][], segs: ArrayLik
   for (const i of along[e]) {
     const x0 = segs[4 * i]!, y0 = segs[4 * i + 1]!, x1 = segs[4 * i + 2]!, y1 = segs[4 * i + 3]!;
     const off = (((x0 + x1) / 2 - E.a[0]) * nx + ((y0 + y1) / 2 - E.a[1]) * ny);
-    if (off < 2 || off > OFF_FACE_M * pxPerM) continue;
+    if (off < pen) continue;
     const u0 = (x0 - E.a[0]) * E.ux + (y0 - E.a[1]) * E.uy, u1 = (x1 - E.a[0]) * E.ux + (y1 - E.a[1]) * E.uy;
     const lo = Math.max(t0, Math.min(u0, u1)), hi = Math.min(t1, Math.max(u0, u1));
     if (hi <= lo) continue;
-    const line = lines.find((l) => Math.abs(l.off - off) < 1.5);
+    const line = lines.find((l) => Math.abs(l.off - off) < pen / 2);
     if (line) line.iv.push([lo, hi]); else lines.push({ off, iv: [[lo, hi]] });
   }
   let n = 0;

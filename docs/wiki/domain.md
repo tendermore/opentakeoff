@@ -20,9 +20,10 @@ only affected heights are clipped. Existing records have no elevation-plane
 coordinate or vertical band offset. Preserve that limitation rather than
 inventing a new meaning for `deduct`.
 
-`derive {action: "base"}` walks each room's ring along the drawn walls and commits the installed runs:
-a door comes off at its leaf width, a doorless opening (0.6–2 m) and an open side at their length, while
-windows and breaks under 0.4 m keep the base. A ring off the walls is flagged, not measured. With openings
+`derive {action: "base"}` walks each room's ring (and its holes' rings) along the drawn walls and commits the
+installed runs: a door comes off over the drawn break at it (leaf plus frame), a straight doorless opening
+(0.6–2 m, nothing drawn across it) and a straight open side at their length, while windows and breaks under
+0.4 m keep the base. A ring off the walls, a corner cut or ink across a break is flagged, not measured. With openings
 stated for a room it keeps the whole perimeter and subtracts the stated LF numerically.
 Explicit `measure {kind: "length"}` runs and located cuts show installation gaps. Inspect
 open finish splits, jamb returns and columns; apparent openings need source
