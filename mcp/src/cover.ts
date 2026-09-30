@@ -39,7 +39,6 @@ const MAX_PIECES = 30;
 const CLOUD_FILL = 0.5;
 /** Unlabelled pieces smaller than this (m²) are listed, not clouded. */
 const CLOUD_MIN_M2 = 1;
-/** Stamps prefixed as totals ("BRA 59,7 m²") are not one room's area (checkAgainstPrintedArea's rule). */
 
 /** Per segment, 1 = a wall face (wallFaceSegs) among the ink `mask` stops a flood at — cached per mask. */
 const wallSegCache = new WeakMap<MaskObj, Uint8Array>();
@@ -265,7 +264,8 @@ export function coverPartition(sh: Omit<CoverSheet, "commit" | "nearestSnap" | "
     cuts = zoneCuts(segs, meta, wallSeg, walls, pxPerM, gone);
     for (let i = 0; i < cuts.length; i++) if (M.mask[i] & 1 && !(walls.mask[i] & 1)) cuts[i] = 1;
   }
-  const res = coverZones({ walls, cuts, measured: sh.measured.map((m) => m.ring), labels, pxPerM, leakM2, doors: sh.doors ?? null });
+  const texts = sh.spans.filter((sp) => (sp.str || "").trim()).map((sp) => [(sp.x0 + sp.x1) / 2, (sp.y0 + sp.y1) / 2] as Point);
+  const res = coverZones({ walls, cuts, measured: sh.measured.map((m) => m.ring), labels, pxPerM, leakM2, doors: sh.doors ?? null, texts });
   return { mode, labels, stamped, walls, cuts, res: { ...res, totals } };
 }
 
@@ -361,10 +361,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`, "too_small", out); continue; }
       if (z.wallShare < WALLED_SHARE) { flag(k, z, `zone ${round2(traced)} m² is bounded by walls along only ${Math.round(z.wallShare * 100)}% of its edge — no printed area to check it against`, "not_walled", out); continue; }
     }
-    if (!opts.commit) {
-      rooms.push({ label: l.text, ...named(k), ...printedOf(k), status: "flagged", zone_m2: round2(traced), reason: stamped ? "zone agrees with the printed area — pass condition to commit it" : "zone passes the walls check — pass condition to commit it", code: "ready_to_commit", ...roundNums(out), at: pt([l.x, l.y]) });
-      continue;
-    }
+    if (!opts.commit) { flag(k, z, stamped ? "zone agrees with the printed area — pass condition to commit it" : "zone passes the walls check — pass condition to commit it", "ready_to_commit", out); continue; }
     const areaSf = round2(ringArea(ring) * sh.upp * sh.upp);
     const perimLf = round2(closedMetrics(ring).perim * sh.upp);
     try {
@@ -424,7 +421,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       no_access: noAccess.slice(0, MAX_PIECES).map((z) => ({ ...piece(z), code: "no_access" as const })),
       ...(noAccess.length > MAX_PIECES ? { no_access_not_listed: noAccess.length - MAX_PIECES } : {}),
     },
-    note: `${counts.measured} room label(s) already measured, ${counts.committed} committed now, ${counts.combined} committed inside combined zones, ${counts.flagged} flagged with a reason. ${stamped ? "A zone commits only when it holds exactly one printed area and agrees with it, or — when nothing is drawn between several rooms — as ONE combined row whose area agrees with the sum of their printed areas (check printed_sum; the split between them is not measured)." : `No printed room areas on this sheet: a zone commits only with one named room number inside it and ${sh.drawnWalls ? "the drawn-walls check passing (check drawn_walls)" : "walls bounding nearly all of it; the drawn-walls check does not apply to a sheet that is not metric (check unverified: units_not_metric)"}.`} Unmeasured floor: ${round2(Math.max(0, flaggedM2))} m² in flagged zones, ${round2(unlabeledM2)} m² enclosed with no room label${sh.doors?.length ? " that a door or an opening reaches" : ""} (unlabelled rooms, stair voids and shafts among them — look before measuring).${noAccess.length ? ` Not floor anyone left out: ${round2(noAccessM2)} m² in ${noAccess.length} enclosed piece(s) with no room label and no door or opening into them from measured floor (a roof, a shaft, a void) — say so in the reply; they are never clouded.` : ""}`,
+    note: `${counts.measured} room label(s) already measured, ${counts.committed} committed now, ${counts.combined} committed inside combined zones, ${counts.flagged} flagged with a reason. ${stamped ? "A zone commits only when it holds exactly one printed area and agrees with it, or — when nothing is drawn between several rooms — as ONE combined row whose area agrees with the sum of their printed areas (check printed_sum; the split between them is not measured)." : `No printed room areas on this sheet: a zone commits only with one named room number inside it and ${sh.drawnWalls ? "the drawn-walls check passing (check drawn_walls)" : "walls bounding nearly all of it; the drawn-walls check does not apply to a sheet that is not metric (check unverified: units_not_metric)"}.`} Unmeasured floor: ${round2(Math.max(0, flaggedM2))} m² in flagged zones, ${round2(unlabeledM2)} m² enclosed with no room label (unlabelled rooms, stair voids and shafts among them; access says how each is reached — look before measuring).${noAccess.length ? ` ${round2(noAccessM2)} m² in ${noAccess.length} small enclosed piece(s) with no room label, no door or opening touching them and no text (no_access) could not be reached from measured floor — likely shafts or voids; check with view_sheet before dismissing. They are not clouded.` : ""}`,
   };
 }
 

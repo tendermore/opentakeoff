@@ -50,7 +50,7 @@ import { NOTE_PT, layoutNote, noteBox, lineBaseline } from "./markupText.js";
 import { dimLabel } from "./units";
 import { sourcePageMode, sourceStampNote, noCanvasForRasterMessage } from "./markedsetSource.js";
 import { markedSetText, formatNumber } from "./markedsetLocale.js";
-import { liveCoverItems, coverCloudText, placeCloudNotes } from "./coverClouds.js";
+import { floorCoverage, liveCoverItems, coverNoteLines, placeCloudNotes } from "./coverClouds.js";
 
 const COBALT = "#1f3fc7";
 const DEDUCT_RED = "#b03a26";
@@ -706,15 +706,17 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
     // highlights draw FIRST (behind) so their translucent fill never dims the
     // linework of clouds/callouts/text above — same z-order as the canvas.
     const marksHere = [...(marksBy.get(sh.key) || [])].sort((a, b) => (a.type === "highlight" ? 0 : 1) - (b.type === "highlight" ? 0 : 1));
-    // cover clouds (coverClouds.js): what is still unmeasured NOW — a label a floor shape covers drops out,
-    // a cloud with none left is not drawn — each note placed clear of the others and of the quantity chips
+    // cover clouds (coverClouds.js): what is still unmeasured NOW — a label a floor shape covers drops out, a
+    // cloud with none left is not drawn (unless an RFI or a condition is linked to it: then it prints as a plain
+    // cloud) — each note placed clear of the others, the quantity chips and the printed labels where it can be.
+    // A malformed cover cloud prints as a plain cloud; it never stops the export.
     const coverNotes = new Map();
-    {
+    try {
       const here = shapesBy.get(sh.key) || [];
-      const floors = here.filter((s) => s.measure_role === "floor_area" && (s.verts_norm || []).length >= 3).map((s) => s.verts_norm);
+      const coverage = floorCoverage(here, sh.key);
       const cover = marksHere.filter((m) => m.source === "cover" && m.cover && m.type === "cloud" && m.rect);
       if (cover.length) {
-        const size = 8, pad = 3 / ptScale, lh = (size + 4) / ptScale;
+        const size = 8, pad = 3 / ptScale, lh = (size + 4) / ptScale, maxW = 220;
         const obstacles = [];
         for (const s of here) {
           const pts = (s.verts_norm || []).map(([nx, ny]) => [nx * W, ny * H]);
@@ -725,20 +727,22 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
         }
         const notes = [];
         for (const m of cover) {
-          const live = liveCoverItems(m, floors);
-          if (!live.length) { coverNotes.set(m.id, null); continue; }
-          const text = winAnsiSafe(coverCloudText(m.cover.kind, live, T));
+          const live = liveCoverItems(m, coverage);
+          const kind = m.cover.kind === "no_label" ? "no_label" : "not_measured";
+          if (!live.length) { if (!m.rfi_id && !m.condition_id && Array.isArray(m.cover.items) && m.cover.items.some((it) => Array.isArray(it?.at))) coverNotes.set(m.id, null); continue; }
+          const lines = coverNoteLines(kind, live, M, T, (t) => bold.widthOfTextAtSize(winAnsiSafe(t), size), maxW).map(winAnsiSafe);
           const [[nx0, ny0], [nx1, ny1]] = m.rect;
           const rect = [Math.min(nx0, nx1) * W, Math.min(ny0, ny1) * H, Math.max(nx0, nx1) * W, Math.max(ny0, ny1) * H];
           const anchor = [live[0].at[0] * W, live[0].at[1] * H];
-          // the printed label itself stays readable: a note never covers it
+          // the printed label itself stays readable where it can: a note avoids covering it
           for (const it of live) obstacles.push([it.at[0] * W - 1.5 * lh, it.at[1] * H - lh / 2, it.at[0] * W + 1.5 * lh, it.at[1] * H + lh / 2]);
-          notes.push({ id: m.id, text, w: bold.widthOfTextAtSize(text, size) / ptScale + 2 * pad, h: lh, rect, anchor });
+          const w = Math.max(...lines.map((t) => bold.widthOfTextAtSize(t, size))) / ptScale + 2 * pad;
+          notes.push({ id: m.id, lines, w, h: lines.length * lh, rect, anchor });
         }
         const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale);
-        notes.forEach((n, k) => coverNotes.set(n.id, { text: n.text, size, pad, ...placed[k] }));
+        notes.forEach((n, k) => coverNotes.set(n.id, { lines: n.lines, size, pad, lh, ...placed[k] }));
       }
-    }
+    } catch { coverNotes.clear(); }
     const coverInk = [];
     for (const m of marksHere) {
       if (coverNotes.get(m.id) === null) continue;   // a cover cloud over floor measured since: nothing left to flag
@@ -962,7 +966,7 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
       const [bx0, by0, bx1, by1] = note.box;
       const dp = imageDrawParams(toPage, bx0, by0, bx1 - bx0, by1 - by0);
       pg.drawRectangle({ x: dp.x, y: dp.y, width: dp.width, height: dp.height, rotate: degrees(dp.rotateDeg), color: dark ? rgb(0.08, 0.1, 0.12) : rgb(1, 1, 1), opacity: 0.9, borderColor: col, borderWidth: 0.6 });
-      text(note.text, bx0 + note.pad, by1 - note.pad - 1 / ptScale, note.size, col, bold);
+      note.lines.forEach((ln, k) => text(ln, bx0 + note.pad, by0 + (k + 1) * note.lh - note.pad - 1 / ptScale, note.size, col, bold));
     }
     // approval seals burn in ABOVE the markups, exactly as the canvas layers
     // them: the estimator's APPROVED ring, the agent's AGENT diamond. Radius

@@ -39,7 +39,7 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 // seed measured DIFFERENT square footage under the same origin.method.
 import { sweepCommitRefusal } from "./sweepGuard.ts";
 import { coverSheet, coverLabels, snapToWalls, MIN_ROOM_M2, type CoverCloud } from "./cover.ts";
-import { liveCoverItems, coverCloudText, formatCoverArea, cloudInside } from "../../web/src/lib/coverClouds.js";
+import { coverCloudText, cloudInside } from "../../web/src/lib/coverClouds.js";
 import { markedSetText } from "../../web/src/lib/markedsetLocale.js";
 import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, isTotalStamp, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
 import { measureWalls, countWindows, type WallHost, type WallsOpts } from "./walls.ts";
@@ -425,8 +425,9 @@ export interface CutoutParentPrev {
   computed?: Shape["computed"];
 }
 
-/** One thing a cover cloud is about: where the drawing prints it (normalized) and how its note names it. */
-export interface CoverItem { at: [number, number]; text: string }
+/** One thing a cover cloud is about: where the drawing prints it (normalized like rect), and the raw facts the
+ * marked set words at export — a room's label, name and printed m², or an unlabelled piece's m². */
+export interface CoverItem { at: [number, number]; label?: string; name?: string; m2?: number }
 
 /** An annotation — a note ABOUT the work, never a measurement of it.
  *
@@ -460,8 +461,7 @@ export interface Markup {
    * drops its own, and only its own. */
   source?: "cover";
   /** cover: what the cloud is about — the flagged room labels of one zone ("not_measured") or one unlabelled
-   * piece ("no_label"), each with where the drawing prints it (normalized like rect) and its words for the note.
-   * The marked set drops an item a floor shape covers (coverClouds.js). */
+   * piece ("no_label"). The marked set words the items and drops any a floor shape covers (coverClouds.js). */
   cover?: { kind: "not_measured" | "no_label"; items: CoverItem[] };
   /** dimension: the measured length in real feet, snapshotted at annotate
    * time from the sheet scale — the renderers (canvas, marked set) draw the
@@ -1679,7 +1679,7 @@ export class Session {
   private printedMatch(s: SheetState, vertsPx: Point[], check: FloorCheck | undefined): { label: string; m2: number; at: [number, number] } | undefined {
     if (check?.status !== "verified" || check.by !== "printed_area") return undefined;
     const t = this.printedInside(s, vertsPx).stamps.find((x) => x.m2 === check.printed_m2);
-    return t ? { label: t.label, m2: t.m2, at: [round1(t.x), round1(t.y)] } : undefined;
+    return t ? { label: t.label, m2: round2(t.m2), at: [round1(t.x), round1(t.y)] } : undefined;
   }
 
   /** The wall faces of a sheet for the drawn-walls check, from its vector
@@ -2498,30 +2498,22 @@ export class Session {
       this.flushCommits("cover");   // what committed before a failure is still one undo step
     }
     // Cover's clouds carry source "cover" and never touch anyone else's markups. Like every annotation they are
-    // not journaled. One cloud per flagged zone (its labels share it) and per unlabelled piece a door or an
-    // opening reaches; an enclosed piece nothing reaches (a roof, a shaft) is reported, never clouded. Each
-    // cloud lists what it is about (`cover.items`, where the drawing prints it): the marked set leaves out an
-    // item a floor shape covers at export, whatever committed it, and mark replaces this sheet's clouds; any
-    // call drops the items over floor measured now, and a cloud with none left.
+    // not journaled. One cloud per flagged zone (or per part of one round its labels) and per unlabelled piece
+    // cover reports; a no_access piece is not clouded. Each cloud lists what it is about as data (`cover.items`:
+    // where each label is printed, its name, label and printed m²); the marked set words it at export and leaves
+    // out any item a floor shape covers by then — so nothing here prunes clouds, and undoing a commit brings
+    // its cloud back. mark replaces this sheet's cover clouds, except one someone linked to an RFI or a condition.
     const T = markedSetText(displayLocale()), metric = this.displayUnits() === "metric";
     const norm = ([x, y]: [number, number]): [number, number] => [x / s.widthPx, y / s.heightPx];
-    const ours = (m: Markup) => m.sheet_id === s.key && m.source === "cover";
-    const floors = this.shapes.filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3).map((sh) => sh.verts_norm);
+    const replaceable = (m: Markup) => m.sheet_id === s.key && m.source === "cover" && !m.rfi_id && !m.condition_id;
     const before = this.markups.length;
-    this.markups = this.markups.filter((m) => {
-      if (!ours(m)) return true;
-      if (opts.mark) return false;
-      const live = liveCoverItems(m, floors) as CoverItem[];
-      if (!live.length) return false;
-      if (m.cover && live.length < m.cover.items.length) { m.cover = { ...m.cover, items: live }; m.text = coverCloudText(m.cover.kind, live, T); }
-      return true;
-    });
+    if (opts.mark) this.markups = this.markups.filter((m) => !replaceable(m));
     const removed = before - this.markups.length;
     let marked = 0;
     if (opts.mark) {
       const cloud = (b: [number, number, number, number], kind: "not_measured" | "no_label", items: CoverItem[]) => {
         const [x0, y0, x1, y1] = cloudInside(b);
-        const id = this.annotate({ sheet: s.key, type: "cloud", text: coverCloudText(kind, items, T), rect: [[x0, y0], [x1, y1]] }).id;
+        const id = this.annotate({ sheet: s.key, type: "cloud", text: coverCloudText(kind, items, metric, T), rect: [[x0, y0], [x1, y1]] }).id;
         const m = this.markups.find((x) => x.id === id)!;
         m.source = "cover";
         m.cover = { kind, items };
@@ -2529,8 +2521,8 @@ export class Session {
       };
       for (const c of clouds) {
         cloud(c.rect, c.kind, c.rooms
-          ? c.rooms.map((r) => ({ at: norm(r.at), text: [r.name, r.printed_m2 != null ? formatCoverArea(r.printed_m2, metric, T) : r.label].filter(Boolean).join(" ") }))
-          : [{ at: norm(c.piece!.at), text: formatCoverArea(c.piece!.m2, metric, T) }]);
+          ? c.rooms.map((r) => ({ at: norm(r.at), label: r.label, ...(r.name ? { name: r.name } : {}), ...(r.printed_m2 != null ? { m2: r.printed_m2 } : {}) }))
+          : [{ at: norm(c.piece!.at), m2: c.piece!.m2 }]);
       }
     }
     return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
@@ -2594,7 +2586,19 @@ export class Session {
     let floorCheck = this.shapes.find((x) => x.id === shape_id)?.check;
     let check = checkText(floorCheck);
     if (!shape_id && opts.role === "floor_area") {
-      try { floorCheck = this.checkFloor(s, ring, area_sf); check = checkText(floorCheck); } catch (error) {
+      try {
+        floorCheck = this.checkFloor(s, ring, area_sf);
+        check = checkText(floorCheck);
+        // the double-count refusal is per condition: a preview names the first one it would refuse under
+        const tags = new Set(this.shapes.filter((x) => x.sheet_id === s.key && x.measure_role === "floor_area").map((x) => this.conditions.find((c) => c.id === x.condition_id)?.finish_tag).filter((t): t is string => !!t));
+        for (const tag of tags) {
+          try { this.refuseOverlap(s, tag, ring); } catch (error) {
+            if (!(error instanceof UserError)) throw error;
+            check = `would be refused under ${tag}: ${error.message.split(" Not committed")[0]}`;
+            break;
+          }
+        }
+      } catch (error) {
         if (!(error instanceof UserError)) throw error;
         check = `would be refused: ${error.message.split(" Not committed.")[0]}`;
       }

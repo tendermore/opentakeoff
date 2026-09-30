@@ -209,19 +209,19 @@ export const coverFloorOutput = {
   counts: z.object({ labels: z.number().int(), measured: z.number().int(), committed: z.number().int(), combined: z.number().int(), flagged: z.number().int() }),
   unmeasured_floor: z.object({
     in_flagged_zones_m2: z.number().describe("Floor inside the building round flagged room labels"),
-    unlabeled_m2: z.number().describe("Enclosed floor inside the building with no room label that a door or an opening reaches from measured floor (every such piece where the sheet's doors could not be read): unlabelled rooms and stair voids among them"),
+    unlabeled_m2: z.number().describe("Enclosed floor inside the building with no room label, every piece but the no_access ones (see access for how each is reached): unlabelled rooms and stair voids among them"),
     unlabeled: z.array(z.object({
       m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]),
       code: z.literal("no_room_label"),
-      access: z.enum(["open", "door", "opening"]).optional().describe("How measured floor reaches it: across a drawn line only (split off a labelled zone), through a door, or an opening onto measured floor; absent where the doors could not be read"),
+      access: z.enum(["open", "door", "opening", "exterior", "unreached", "none"]).optional().describe("How measured floor reaches it: across a drawn line only (split off a labelled zone), through a door, or an opening onto measured floor. When it does not: exterior = a door through the outer wall, unreached = a door from floor nothing measured reaches, none = no door or opening but text inside it or bigger than a shaft or stair well. Absent where the doors could not be read"),
     })).describe("Largest first, image px"),
     unlabeled_not_listed: z.number().int().optional(),
-    no_access_m2: z.number().describe("Enclosed pieces with no room label and no door or opening into them from measured floor — a roof, a shaft, a void: not missing floor, never clouded; say so in the reply"),
+    no_access_m2: z.number().describe("Enclosed pieces with no room label, no door or opening touching them, no printed text and no bigger than a shaft or stair well (20 m²): could not be reached from measured floor — likely shafts or voids; check with view_sheet before dismissing. Not clouded"),
     no_access: z.array(z.object({ m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]), code: z.literal("no_access") })).describe("Largest first, image px"),
     no_access_not_listed: z.number().int().optional(),
   }).describe("The floor no committed outline covers — what reads as whitespace on the marked plan"),
-  clouds: z.number().int().optional().describe("mark: clouds added round what is not measured, one per flagged zone and per reachable unlabelled piece (annotate list shows them); the marked set leaves out any label a floor shape committed later covers"),
-  clouds_removed: z.number().int().optional().describe("Cover clouds removed: mark replaces this sheet's cover clouds; any call drops those whose labels are all over floor now measured"),
+  clouds: z.number().int().optional().describe("mark: clouds added round what is not measured, one per flagged zone (or part of one) and per unlabelled floor piece of 1 m² or more that is not no_access (annotate list shows them); the marked set leaves out any label a floor shape committed later covers"),
+  clouds_removed: z.number().int().optional().describe("mark: this sheet's earlier cover clouds it replaced (one linked to an RFI or a condition is kept)"),
   note: z.string(),
 };
 

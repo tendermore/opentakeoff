@@ -51,6 +51,24 @@ test("a preview states the check the commit would record, and both name the prin
   assert.equal(refused.printed_match, undefined);
   const committed = s.measurePolygon(KEY, SQ(360, 0), { condition: "GULV", role: "floor_area" });
   assert.deepEqual(committed.printed_match, { label: "9,3 m²", m2: 9.3, at: [540, 180] });
+  // the preview names the double-count refusal the commit would give
+  assert.match(s.measurePolygon(KEY, SQ(360, 0), { role: "floor_area" }).check!, /^would be refused under GULV: OVERLAPS_MEASURED/);
+});
+
+test("an area printed with grouped thousands reads whole, and counts as a metric area stamp", async () => {
+  const { printedAreaM2 } = await import("../../web/src/lib/detectRooms.ts");
+  assert.equal(printedAreaM2("1 188,6 m²"), 1188.6);
+  assert.equal(printedAreaM2("1\u202f188,6 m2"), 1188.6);
+  assert.equal(printedAreaM2("12 345 m²"), 12345);
+  assert.equal(printedAreaM2("BRA 1 188,6 m²"), 1188.6);
+  assert.equal(printedAreaM2("188,6 m²"), 188.6);
+  assert.equal(printedAreaM2("1 88,6 m²"), null, "a group is three digits");
+  const s = new Session();
+  await s.loadPlan(PLAN);
+  s.setScale(KEY, { upp: 1 / 36 });
+  (s as any).sheets.get(KEY).spans = [span("1 188,6 m²", 180, 180), span("2 004,0 m²", 540, 180), span("1 050 m²", 900, 180)];
+  s.unitsOf(KEY);
+  assert.equal((s as any).sheets.get(KEY).textUnits.m2, 3);
 });
 
 test("two rooms measured as one outline are refused even when the outline equals their printed sum", async () => {

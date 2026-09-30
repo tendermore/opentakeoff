@@ -106,6 +106,8 @@ test("without condition nothing commits: a passing zone is listed with what woul
   const out = coverSheet(sh, { commit: false });
   assert.equal(commits.length, 0);
   assert.ok(reasons(out).some((r) => /agrees with the printed area — pass condition to commit it/.test(r)));
+  const ready = out.rooms.find((r) => r.code === "ready_to_commit")!;
+  assert.ok(out.clouds.some((c) => c.rooms?.includes(ready)), "a zone ready to commit is clouded like any flagged zone");
 });
 
 const ROOMS = [{ tag: "101", name: "OFFICE", bbox: [95, 95, 105, 105] as [number, number, number, number] }];
@@ -190,8 +192,19 @@ test("mark replaces cover's own clouds and never a user's, whatever the user's t
   assert.equal(s.markups.length, count, "a repeat mark does not stack a second set");
   assert.equal(second.clouds_removed, first.clouds);
   assert.ok(s.markups.some((m) => m.text === "Not measured: check with the architect" && m.source === undefined), "the user's cloud survives");
-  for (const m of s.markups.filter((x) => x.source === "cover")) {
+  const ours = s.markups.filter((x) => x.source === "cover");
+  for (const m of ours) {
     assert.ok(m.cover && m.cover.items.length > 0, "a cover cloud says what it is about");
     assert.match(m.text, /^(Not measured|No room label): /);
   }
+  assert.ok(ours.length >= 2, "the demo plan leaves floor to cloud");
+  // a cloud someone linked to an RFI or a condition is theirs now: mark never replaces it
+  s.createRfi({ title: "Floor", question: "What is this floor?", sheet: "sample-plan.pdf", markup_ids: [ours[0].id] });
+  s.linkAnnotation(ours[1].id, "GULV");
+  await s.coverFloor("sample-plan.pdf", { mark: true });
+  assert.ok(s.markups.some((m) => m.id === ours[0].id) && s.markups.some((m) => m.id === ours[1].id));
+  // nothing but mark removes a cover cloud: the marked set filters what is measured at export, undo-safe
+  const n = s.markups.length;
+  await s.coverFloor("sample-plan.pdf", {});
+  assert.equal(s.markups.length, n);
 });

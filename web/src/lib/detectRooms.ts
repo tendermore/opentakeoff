@@ -48,7 +48,12 @@ export const ROOM_LABEL_RE = /^\d{2,3}[A-Z]?$/;
 // A bare "m" counts only after a decimal ("12,6 m": the superscript came as its
 // own text run); a whole number needs m²/m2, so "5m" or "12 M" in a note is not a room.
 // The prefix is a short area code ("A: 12,0 m²", "BRA 59,7 m²") or a word and a colon ("Netto: 83,3 m²").
-export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*(?::\s*)?|[A-ZÆØÅ][a-zæøå]{1,11}\s*:\s*)?(?:\d{1,4}(?:[.,]\d{1,2})?\s*m[²2]|\d{1,4}[.,]\d{1,2}\s*m)$/i;
+// Thousands may be grouped with a space-type separator ("1 188,6 m²": space, no-break, thin or narrow
+// no-break space), each group exactly three digits, so the pattern stays linear.
+const AREA_INT = "(?:\\d{1,3}(?:[ \\u00a0\\u2009\\u202f]\\d{3}){1,3}|\\d{1,4})";
+export const AREA_STAMP_RE = new RegExp(`^(?:[A-ZÆØÅ]{1,4}\\s*(?::\\s*)?|[A-ZÆØÅ][a-zæøå]{1,11}\\s*:\\s*)?(?:${AREA_INT}(?:[.,]\\d{1,2})?\\s*m[²2]|${AREA_INT}[.,]\\d{1,2}\\s*m)$`, "i");
+/** The number an area stamp prints, grouped thousands included — read after the stamp matched AREA_STAMP_RE. */
+const AREA_NUMBER_RE = new RegExp(`(${AREA_INT}(?:[.,]\\d{1,2})?)\\s*m`, "i");
 
 /** A US area in square feet: after the number ("705 SF", "705 S.F.",
  *  "1,250 NSF", "705 SQ FT") or before it ("NSF 705"). A US room still takes
@@ -75,8 +80,8 @@ export function printedAreaM2(label: string): number | null {
   if (sf && GROSS_SF_RE.test(sf[0])) return null;
   if (sf) return Number((sf[0].match(/\d[\d,]*(?:\.\d+)?/)![0]).replace(/,/g, "")) * M2_PER_SF;
   if (!AREA_STAMP_RE.test(label.trim())) return null;
-  const m = label.match(/(\d{1,4}(?:[.,]\d{1,2})?)\s*m/i);
-  return m ? Number(m[1].replace(",", ".")) : null;
+  const m = label.match(AREA_NUMBER_RE);
+  return m ? Number(m[1].replace(/[ \u00a0\u2009\u202f]/g, "").replace(",", ".")) : null;
 }
 
 /** One positioned text item, already resolved to the caller's seed-space px
