@@ -14,6 +14,8 @@ import { SEG_CURVE, SEG_CLIP } from "./oneclick.ts";
 type Pt = [number, number];
 /** What the check needs of a door (doors.ts Door): its closed-leaf chord. */
 export interface DoorReach { opening: [Pt, Pt] }
+/** ...and to find its leaf drawn open: hinges and width too. */
+export type DoorLeaves = { hinges: Pt[]; opening: [Pt, Pt]; width: number }[];
 
 // Datum's constants, in the same unit: image px at RENDER_SCALE 2 is 1/144 in,
 // Datum's sheet px.
@@ -186,6 +188,52 @@ export function closeOpenings(ring: Pt[], pxPerM: number): Pt[] {
         if (Math.sign(notch) !== orient) continue;   // reaches into the room: keep
         const keep = new Set(Array.from({ length: k - 1 }, (_, j) => (i + 1 + j) % n));
         r = r.filter((_, idx) => !keep.has(idx));
+        changed = true;
+      }
+    }
+  }
+  return r;
+}
+
+/** A door leaf drawn open is a thin rectangle (35–50 mm) standing out of the
+ * wall at its hinge, as long as the opening is wide. A flood runs round it and
+ * back: that excursion is the leaf, not the room's boundary. It is recognised
+ * as outline vertices lying within this of the leaf's line — a leaf's thickness
+ * and a line's width — and returning to within this of where they left. */
+const LEAF_BAND_M = 0.1;
+/** ...judged over at most this many outline vertices (a leaf traced round is 4–6). */
+const LEAF_MAX_VERTS = 8;
+
+/** The outline without the excursions it makes round the open leaves of
+ * `doors` (doors.ts): cut off where each leaves and returns, as the floor under
+ * an open leaf is the room's. A door's leaf is drawn open square to its closed
+ * position at a hinge, towards the side the door swings; both sides are
+ * looked at, as the chord does not say which. */
+export function dropOpenLeaves(ring: Pt[], doors: DoorLeaves, pxPerM: number): Pt[] {
+  const band = LEAF_BAND_M * pxPerM;
+  const leaves: [Pt, Pt][] = [];
+  for (const d of doors) {
+    const [a, b] = d.opening, L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!L) continue;
+    const r = d.width / d.hinges.length || L;
+    for (const h of d.hinges) for (const s of [1, -1]) leaves.push([h, [h[0] - (s * (b[1] - a[1]) / L) * r, h[1] + (s * (b[0] - a[0]) / L) * r]]);
+  }
+  if (!leaves.length) return ring;
+  const onLeaf = (p: Pt) => leaves.findIndex(([h, e]) => ptSegDist(p[0], p[1], h[0], h[1], e[0], e[1]) <= band);
+  let r = ring.slice();
+  for (let changed = true; changed && r.length > 4;) {
+    changed = false;
+    const n = r.length;
+    for (let i = 0; i < n && !changed; i++) {
+      for (let k = Math.min(LEAF_MAX_VERTS, n - 3); k >= 2 && !changed; k--) {
+        const a = r[i]!, b = r[(i + k) % n]!;
+        if (Math.hypot(b[0] - a[0], b[1] - a[1]) > band) continue;
+        const mid: Pt[] = [];
+        for (let j = 1; j < k; j++) mid.push(r[(i + j) % n]!);
+        const leaf = onLeaf(mid[0]!);
+        if (leaf < 0 || !mid.every((p) => ptSegDist(p[0], p[1], leaves[leaf]![0][0], leaves[leaf]![0][1], leaves[leaf]![1][0], leaves[leaf]![1][1]) <= band)) continue;
+        const drop = new Set(Array.from({ length: k - 1 }, (_, j) => (i + 1 + j) % n));
+        r = r.filter((_, idx) => !drop.has(idx));
         changed = true;
       }
     }

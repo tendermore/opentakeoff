@@ -45,7 +45,7 @@ import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } 
 import { wallSegIndices } from "../../web/src/lib/wallpairs.ts";
 import { snapEdges } from "../../web/src/lib/edgesnap.ts";
 import { NORDIC_TEXT_RE } from "../../web/src/lib/sheetvocab.ts";
-import { checkOnWalls, closeOpenings, toInsideFace, hasWallFaces, COVERED as WALL_COVERED, type WallCheck, type DoorReach } from "../../web/src/lib/wallcheck.ts";
+import { checkOnWalls, closeOpenings, dropOpenLeaves, toInsideFace, hasWallFaces, COVERED as WALL_COVERED, type WallCheck, type DoorReach, type DoorLeaves } from "../../web/src/lib/wallcheck.ts";
 import { buildNet, netRoomAt } from "../../web/src/lib/netroom.js";
 import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/drawnrooms.ts";
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
@@ -737,12 +737,15 @@ const sheetSummary = (s: SheetState): SheetSummary => ({
 const WHITE_FILL_LUM = 250;
 /** How far (working-raster cells) a walls-flood edge may move onto the wall face it parallels. */
 const WALL_SNAP_CELLS = 3;
-/** A room name as a sheet prints it: starts with a letter, one short line
- * ("Sov", "Bad/vask", "Stue/kjøkken", "Tekn.rom"); running notes are longer. */
 /** Stacked lines of one room label (name, number, finish) sit within about a
  * line pitch of each other; three text heights spans a three-line block. */
 const LABEL_BLOCK_HEIGHTS = 3;
+/** A room name as a sheet prints it: starts with a letter, one short line
+ * ("Sov", "Bad/vask", "Stue/kjøkken", "Tekn.rom"); running notes are longer. */
 const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
+/** An ø standing alone, not inside a word, is a diameter sign ("ø 5'-0\"", a
+ * turning circle on a US plan), not Nordic text. */
+const DIAMETER_SIGN_RE = /(?<!\p{L})[øØ](?!\p{L})/gu;
 /** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
  * floods in well under a second; one still running after this is flooding a
  * whole sheet through a leak, and is no room's outline. */
@@ -1689,7 +1692,8 @@ export class Session {
   private onWalls(s: SheetState, ring: Point[], tolPx: number): { ring: Point[]; w: WallCheck } {
     const walls = this.wallFacesOf(s)!, geo = s.geo!, pxPerM = 1 / (s.upp! * 0.3048);
     const onFace = tolPx > 0 ? snapEdges(ring as [number, number][], geo.segs, geo.meta, pxPerM, tolPx, { allowed: walls.faces }) : ring as [number, number][];
-    const refined = closeOpenings(toInsideFace(onFace, geo.segs, geo.meta, walls.faces, pxPerM, walls.ids), pxPerM) as Point[];
+    const clear = dropOpenLeaves(onFace, (s.doors?.doors ?? []) as DoorLeaves, pxPerM);
+    const refined = closeOpenings(toInsideFace(clear, geo.segs, geo.meta, walls.faces, pxPerM, walls.ids), pxPerM) as Point[];
     return { ring: refined, w: this.wallCheck(s, refined) };
   }
 
@@ -1976,7 +1980,7 @@ export class Session {
     // room. US sheets number their rooms; the numbers stay the seeds there.
     const stamped = labels.filter((l) => printedAreaM2(l.str) != null);
     if (stamped.length >= 3) labels.splice(0, labels.length, ...stamped);
-    else if (s.spans.some((sp) => NORDIC_TEXT_RE.test(sp.str || ""))) labels.splice(0, labels.length, ...stamped, ...names);
+    else if (s.spans.some((sp) => NORDIC_TEXT_RE.test((sp.str || "").replace(DIAMETER_SIGN_RE, "")))) labels.splice(0, labels.length, ...stamped, ...names);
 
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole

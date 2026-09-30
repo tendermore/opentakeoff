@@ -2,7 +2,7 @@
 // on synthetic geometry: walls drawn as line pairs, in image px at 100 px/m.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkOnWalls, closeOpenings, toInsideFace } from "../src/lib/wallcheck.ts";
+import { checkOnWalls, closeOpenings, dropOpenLeaves, toInsideFace } from "../src/lib/wallcheck.ts";
 
 const PX_PER_M = 100;
 type Pt = [number, number];
@@ -97,4 +97,14 @@ test("toInsideFace moves an edge in onto a lining drawn within 0.1 m of the wall
   far.line([0, 250], [400, 250]);               // 0.5 m in: a counter, not a lining
   const g = far.geo();
   assert.deepEqual(toInsideFace(RECT, g.segs, g.meta, g.faces, PX_PER_M), RECT);
+});
+
+test("dropOpenLeaves cuts off the trace round a door leaf drawn open, and nothing else", () => {
+  // a 0.9 m door in the west wall hinged at (0, 210), its leaf drawn open into the room along y = 210
+  const door = { hinges: [[0, 210]] as Pt[], opening: [[0, 210], [0, 300]] as [Pt, Pt], width: 90 };
+  const round: Pt[] = [[0, 0], [400, 0], [400, 300], [0, 300], [0, 212], [90, 212], [90, 208], [0, 208]];
+  assert.deepEqual(dropOpenLeaves(round, [door], PX_PER_M), [[0, 0], [400, 0], [400, 300], [0, 300], [0, 212], [0, 208]]);
+  assert.deepEqual(dropOpenLeaves(round, [], PX_PER_M), round, "no door: nothing is a leaf");
+  const notch: Pt[] = [[0, 0], [400, 0], [400, 300], [240, 300], [240, 280], [150, 280], [150, 300], [0, 300]];
+  assert.deepEqual(dropOpenLeaves(notch, [door], PX_PER_M), notch, "a column away from the door stays");
 });
