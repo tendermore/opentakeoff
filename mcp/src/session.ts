@@ -17,7 +17,7 @@ import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPat
 import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, type DetectedScale } from "../../web/src/lib/sheets.ts";
 import { buildSheetDxf, type DxfBuild } from "../../web/src/lib/dxf.ts";
 import {
-  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY,
+  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodDeadline, FloodDeadline,
   hatchFamilies, MASK_MAX_DIM, SENS_BALANCED, type FloodResult, type MaskObj, type VectorGeometry, type Point, type HatchFamily,
 } from "../../web/src/lib/oneclick.ts";
 // The trace-confidence module (RFC #60 item D) — the engine's own account of a
@@ -47,7 +47,7 @@ import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/d
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
 import { fingerprintSymbol, matchSymbol, buildNegative, SWEEP_TOL_PX, type SweepOptions, type SymbolFingerprint, type SymbolMatchResult, type SweepMatch, type SweepWithheld, type SweepRejected, type SymbolNegative } from "../../web/src/lib/symbolsweep.ts";
 import { labelPlacements, type PlacementLabel } from "../../web/src/lib/symbollabels.ts";
-import { buildSnapGrid, nearestSnap, closedMetrics, openLen } from "../../web/src/lib/geometry.js";
+import { buildSnapGrid, nearestSnap, closedMetrics, openLen, pointInPoly } from "../../web/src/lib/geometry.js";
 // The canvas's three-point arc (Curve mode): a curved wall is a circle, so an
 // agent states the bow point and the server lays the unique arc through it.
 import { flattenArcRing } from "../../web/src/lib/arc.js";
@@ -1500,45 +1500,41 @@ export class Session {
     return origin;
   }
 
-  /** A room outline must agree with the room area printed inside it. The one
-   * check every floor commit passes — detected, clicked, hand-traced, drawn —
-   * so an agent cannot route around a refusal by switching tools. Applies when
-   * the outline holds exactly one room-area stamp; stamps prefixed as totals
-   * ("BRA 59,7 m²", "BTA …") are apartment or building sums, not the room's. */
   /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS). */
   displayUnits(): "imperial" | "metric" {
     return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => s.scaleLabel));
   }
 
+  /** A room outline must agree with the room area printed inside it. The one
+   * check every floor commit passes — detected, clicked, hand-traced, drawn,
+   * reshaped — so an agent cannot route around a refusal by switching tools.
+   * On a sheet that tags rooms with printed areas, an outline holding printed
+   * areas must match one of them (its own room; a neighbour's label near the
+   * edge is tolerated) or their sum (a whole unit or zone); matching none, it
+   * is refused with the numbers. Stamps prefixed as totals ("BRA 59,7 m²")
+   * are left out. */
   private refuseAgainstPrintedArea(s: SheetState, vertsPx: Point[], areaSf: number | undefined): void {
     if (areaSf == null || s.upp == null || vertsPx.length < 3) return;
     if (!s.spans) s.spans = textSpans(s.page);
     // only on a sheet that tags rooms with printed areas (the same >= 3 test
     // detect_rooms uses) — a lone metric note elsewhere is not a room's area
     if (s.spans.filter((sp) => printedAreaM2((sp.str || "").trim()) != null).length < 3) return;
-    const inside = (x: number, y: number) => {
-      let hit = false;
-      for (let i = 0, j = vertsPx.length - 1; i < vertsPx.length; j = i++) {
-        const [xi, yi] = vertsPx[i]!, [xj, yj] = vertsPx[j]!;
-        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
-      }
-      return hit;
-    };
     const stamps: { label: string; m2: number; x: number; y: number }[] = [];
     for (const sp of s.spans) {
       const label = (sp.str || "").trim();
       const m2 = printedAreaM2(label);
       if (m2 == null || /^[A-ZÆØÅ]{2,4}\s*:?\s*\d/i.test(label)) continue;   // totals ("BRA 59,7 m²") are not a room's own area
       const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
-      if (!inside(x, y) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
+      if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
       stamps.push({ label, m2, x, y });
     }
-    if (stamps.length !== 1) return;
-    const { label, m2 } = stamps[0]!;
+    if (!stamps.length) return;
     const traced = areaSf * M2_PER_SF;
-    if (Math.abs(traced - m2) > 0.03 * m2 + 0.05) {
-      throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area printed inside it says ${label} (${m2} m²). Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
-    }
+    const agrees = (m2: number, n = 1) => Math.abs(traced - m2) <= 0.03 * m2 + 0.05 * n;
+    const sum = stamps.reduce((a, t) => a + t.m2, 0);
+    if (stamps.some((t) => agrees(t.m2)) || (stamps.length > 1 && agrees(sum, stamps.length))) return;
+    const printed = stamps.map((t) => t.label).join(", ");
+    throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area${stamps.length > 1 ? "s" : ""} printed inside it say${stamps.length > 1 ? "" : "s"} ${printed}${stamps.length > 1 ? ` (together ${round2(sum)} m²)` : ""}. Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
   }
 
   private commit(s: SheetState, tag: string, role: MeasureRole, vertsPx: Point[], computed: Shape["computed"], origin?: Shape["origin"], flood?: FloodEvidence): Shape {
@@ -1766,7 +1762,17 @@ export class Session {
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0 };
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0, already_measured: 0, not_tried: 0 };
+    // Time limits (host-set, off by default): a per-room budget turns a trace
+    // that runs away into "no outline here"; a per-call budget stops the sweep
+    // and reports the labels not reached, which a repeat call picks up — labels
+    // inside a room this sheet already measured are skipped, never re-measured.
+    const seedBudgetMs = Number(process.env.OPENTAKEOFF_SEED_BUDGET_MS) || 0;
+    const callBudgetMs = Number(process.env.OPENTAKEOFF_CALL_BUDGET_MS) || 0;
+    const callDeadline = callBudgetMs ? Date.now() + callBudgetMs : 0;
+    const measuredRings = this.shapes
+      .filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
+      .map((sh) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as [number, number]));
     const disagreements: { label: string; printed_m2: number; traced_m2: number; seed: [number, number] }[] = [];
     const unresolved: { label: string; reason: string; area_sf: number; perimeter_lf: number; seed: [number, number] }[] = [];
     type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence | null; method: "one_click_v1" | "net_v1" | "drawn_v1"; netFaces?: number; netStarved?: boolean; merged: string[] };
@@ -1779,6 +1785,9 @@ export class Session {
     // flattened sheets: a second, walls-only mask for rooms the ink flood cuts short at furniture
     const wallMask = !raster && !opts.layers && s.upp != null ? await this.ensureWallMask(name) : null;
     for (const lb of labels) {
+      if (callDeadline && Date.now() > callDeadline) { withheld.not_tried++; continue; }
+      const cx = (lb.bbox.x0 + lb.bbox.x1) / 2, cy = (lb.bbox.y0 + lb.bbox.y1) / 2;
+      if (measuredRings.some((r) => pointInPoly(cx, cy, r))) { withheld.already_measured++; continue; }
       const traceWith = (m: MaskObj, mppf: number) => {
       let ring: Point[] | null = null, ev: FloodEvidence | null = null, seed: [number, number] | null = null;
       let sawBubble = false, sawDegenerate = false, sawUnowned = false;
@@ -1787,7 +1796,16 @@ export class Session {
         // point every non-canvas surface floods through (web detectRooms.ts),
         // so a batch detection and a canvas click at the same seed can never
         // measure different square footage again
-        const f = floodAtSeed(m, probe[0], probe[1], opts.sensitivity ?? SENS_BALANCED, mppf);
+        let f: ReturnType<typeof floodAtSeed>;
+        setFloodDeadline(seedBudgetMs ? Date.now() + seedBudgetMs : 0);
+        try {
+          f = floodAtSeed(m, probe[0], probe[1], opts.sensitivity ?? SENS_BALANCED, mppf);
+        } catch (error) {
+          if (error instanceof FloodDeadline) break;   // this room's budget is spent: no outline from this mask
+          throw error;
+        } finally {
+          setFloodDeadline(0);
+        }
         if (f.status !== "ok") continue;
         // raster trace differences mirror oneClick (#154): looser eps, no snap
         const r = raster
@@ -1959,7 +1977,7 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved + withheld.area_disagrees;
+    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.not_tried;
     return {
       detected: rooms.length,
       rooms,
@@ -1975,7 +1993,7 @@ export class Session {
       ...(disagreements.length ? { area_disagrees: disagreements } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — one_click inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — one_click inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -4107,6 +4125,12 @@ export class Session {
           const met = closedMetrics(vertsPx);
           return { area_sf: round2(met.area * upp * upp), perimeter_lf: round2(met.perim * upp) };
         })();
+    // a reshaped (or re-roled) floor outline passes the same printed-area check
+    // as a new one — otherwise a refused room could be committed small and
+    // reshaped into the wrong outline
+    if (role === "floor_area" && (patch.verts !== undefined || patch.role !== undefined)) {
+      this.refuseAgainstPrintedArea(s, vertsPx, "area_sf" in computed ? computed.area_sf : undefined);
+    }
 
     const before: Shape = structuredClone(cur);
     const condition_id = patch.condition !== undefined ? this.conditionFor(patch.condition).id : cur.condition_id;

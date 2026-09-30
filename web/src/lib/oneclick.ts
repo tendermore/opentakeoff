@@ -2075,6 +2075,7 @@ function dropRegion(b: Uint8Array): void {
 // softHits count blocking encounters so the caller can tell a wall-bounded
 // region from a hatch-bounded one.
 function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): FloodResult {
+  checkFloodDeadline();
   const { mask, mw, mh, ws } = maskObj;
   // virtual dilation (see DilatedMask): identical bits, no 9 MB buffer
   const dilDT = (maskObj as DilatedMask).dilDT;
@@ -2233,7 +2234,16 @@ export function dilateHard(maskObj: MaskObj, r: number): MaskObj {
 // The wrapper MaskObj is rebuilt from the caller's `mo` each time so the
 // riding fields (ws, softCount, mppf) always match the caller's view.
 const bridgeCache = new WeakMap<Uint8Array, (Uint8Array | undefined)[]>();
+/** Host-set wall-clock deadline for the flood ladders (0 = none). Some seeds on
+ *  large flattened sheets spend minutes in the seal/bridge/wedge retries; a batch
+ *  caller sets a per-seed budget and treats the thrown FloodDeadline as "no
+ *  outline here". Ported from Datum's patch 0003. */
+let floodDeadline = 0;
+export class FloodDeadline extends Error {}
+export function setFloodDeadline(at: number): void { floodDeadline = at; }
+function checkFloodDeadline(): void { if (floodDeadline && Date.now() > floodDeadline) throw new FloodDeadline("flood deadline"); }
 function bridgedMask(mo: MaskObj, r: number): MaskObj {
+  checkFloodDeadline();
   let per = bridgeCache.get(mo.mask);
   if (!per) { per = []; bridgeCache.set(mo.mask, per); }
   let m = per[r];
@@ -2285,6 +2295,7 @@ export function floodRegion(maskObj: MaskObj, ix: number, iy: number, sensitivit
 // wrong geometry at the wrong cost. Bridging joins the sealed ladder exactly
 // once, as its last rung (see floodRegionSealedInner).
 function floodRegionLadder(maskObj: MaskObj, ix: number, iy: number, sensitivity: number): FloodResult {
+  checkFloodDeadline();
   const r1 = floodPass(maskObj, ix, iy, 3);
   if (!maskObj.softCount) return r1;
   if (r1.status === "leak") return r1;
@@ -3138,6 +3149,7 @@ function ascendSeed(dt: Uint8Array, mw: number, mh: number, ws: number, ix: numb
 // refused: `base` is bounded only when the min-passage flood produced no
 // bounded region at all, and then there is nothing to report.
 function sealAttempt(mo: MaskObj, ix: number, iy: number, sensitivity: number, radii: number[], minPassPx = 0, given?: SealScratch): FloodResult {
+  checkFloodDeadline();
   // `given` is the caller's own scratch — the per-arc-cluster retries run
   // against a REUSED mask buffer, which the sealCache (keyed on mask identity)
   // must never see: it would hand back the previous cluster's distance field.
