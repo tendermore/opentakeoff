@@ -415,3 +415,18 @@ test("detectRooms: the wall-clock safety cap names the rooms it left and flags t
     if (saved === undefined) delete process.env.OPENTAKEOFF_CALL_BUDGET_MS; else process.env.OPENTAKEOFF_CALL_BUDGET_MS = saved;
   }
 });
+
+test("detectRooms: withheld.total counts every reason, already_measured and overlaps_measured included", async () => {
+  const s = new Session();
+  await s.loadPlan(PLAN);
+  s.setScale(KEY, { use_detected: true });
+  const first = await s.detectRooms(KEY, { condition: "CPT-1", role: "floor_area", returnVerts: false });
+  assert.equal(first.detected, 4);
+  // a second sweep finds every label inside a room it already measured
+  const again = await s.detectRooms(KEY, { condition: "CPT-1", role: "floor_area", returnVerts: false });
+  assert.equal(again.detected, 0);
+  assert.equal(again.withheld.already_measured, 4, JSON.stringify(again.withheld));
+  assert.equal(again.withheld.total, 4, "the total is the sum of every withheld count");
+  const { total, min_area_sf: _m, ...counts } = again.withheld;
+  assert.equal(total, Object.values(counts).reduce((a, n) => a + n, 0));
+});

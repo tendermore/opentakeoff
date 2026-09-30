@@ -2440,7 +2440,8 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.no_ring + withheld.over_budget + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.off_walls + withheld.not_tried + withheld.budget_wallclock;
+    // every count, so the total is what was withheld (overlaps_measured and already_measured were left out once)
+    const withheldTotal = Object.values(withheld).reduce((a, n) => a + n, 0);
     return {
       detected: rooms.length,
       rooms,
