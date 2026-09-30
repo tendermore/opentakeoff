@@ -185,11 +185,40 @@ export const detectRoomsOutput = {
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable and what to do"),
 };
 
+export const coverFloorOutput = {
+  sheet: z.string(),
+  labels_by: z.enum(["printed_areas", "room_numbers"]).describe("What the rooms were read by: the printed area stamps, or room numbers on a sheet that prints none"),
+  rooms: z.array(z.object({
+    label: z.string().describe("The room label as drawn"),
+    name: z.string().optional().describe("The room name printed with it, when one is"),
+    printed_m2: z.number().optional(),
+    status: z.enum(["measured", "committed", "combined", "flagged"]).describe("measured: already inside a committed outline; committed: this call measured it; combined: measured in ONE row with the other rooms of its open zone (combined_with), checked against their printed sum; flagged: not measured, see reason"),
+    combined_with: z.array(z.string()).optional().describe("combined: the other room labels sharing its row"),
+    shape_id: z.string().optional(),
+    check: z.string().optional().describe("What checked a committed zone: printed_area, printed_sum (a + b …) for a combined row, or unverified: <reason>"),
+    zone_m2: z.number().optional().describe("The floor zone round the label, m²"),
+    walls_pct: z.number().optional().describe("Share of the zone's edge that is wall or a measured room, %"),
+    reason: z.string().optional().describe("Why a flagged room was not measured, with the numbers"),
+    at: z.tuple([z.number(), z.number()]).describe("The label, image px"),
+    bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional().describe("A flagged zone's extent, image px"),
+  })),
+  counts: z.object({ labels: z.number().int(), measured: z.number().int(), committed: z.number().int(), combined: z.number().int(), flagged: z.number().int() }),
+  unmeasured_floor: z.object({
+    in_flagged_zones_m2: z.number().describe("Floor inside the building round flagged room labels"),
+    unlabeled_m2: z.number().describe("Enclosed floor inside the building with no room label: shafts, stair voids and unlabelled rooms among them"),
+    unlabeled: z.array(z.object({ m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]) })).describe("Largest first, image px"),
+    unlabeled_not_listed: z.number().int().optional(),
+  }).describe("The floor no committed outline covers — what reads as whitespace on the marked plan"),
+  clouds: z.number().int().optional().describe("mark: clouds added round what is not measured (annotate list shows them)"),
+  note: z.string(),
+};
+
 export const measurePolygonOutput = {
   area_sf: z.number(),
   perimeter_lf: z.number(),
   nverts: z.number().int(),
   arcs: z.number().int().optional().describe("How many arc_through bows were laid — present only when the trace was bent; the vertices reported are the baked arc, not the three points you gave"),
+  snapped_edges: z.number().int().optional().describe("snap_to_walls: how many edges moved onto a wall face"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
   check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
   warning: z.string().optional().describe("Mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region — verify before trusting these numbers"),

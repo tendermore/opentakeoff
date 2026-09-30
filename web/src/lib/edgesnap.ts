@@ -6,9 +6,11 @@ import { SEG_CURVE, SEG_CLIP } from "./oneclick.ts";
 type Pt = [number, number];
 
 /** `tolPx`: how far (sheet px) an edge may move; `allowed`: per-segment flag of the lines it may snap to
- *  (null = every straight stroke). An edge with no parallel line covering `minCover` of it stays put. */
+ *  (null = every straight stroke). An edge with no parallel line covering `minCover` of it stays put.
+ *  `prefer`: "nearest" line (default), or the one furthest "inward" — the room-side face of a wall, for an
+ *  outline drawn on or across the wall rather than beside its inner face. */
 export function snapEdges(ring: Pt[], segs: ArrayLike<number>, meta: ArrayLike<number>, pxPerM: number, tolPx: number,
-  { allowed = null as ArrayLike<number> | null, minCover = 0.35, angleDeg = 3 } = {}): Pt[] {
+  { allowed = null as ArrayLike<number> | null, minCover = 0.35, angleDeg = 3, prefer = "nearest" as "nearest" | "inward" } = {}): Pt[] {
   const n = ring.length;
   if (n < 3 || !(tolPx > 0)) return ring;
   const minSeg = 0.2 * pxPerM, minEdge = 0.3 * pxPerM, sinTol = Math.sin((angleDeg * Math.PI) / 180);
@@ -59,7 +61,7 @@ export function snapEdges(ring: Pt[], segs: ArrayLike<number>, meta: ArrayLike<n
     }
     const ok = merged.filter((m) => m.cov >= minCover * L);
     if (!ok.length) { lines.push(keep); continue; }
-    ok.sort((p, q) => Math.abs(p.k) - Math.abs(q.k));
+    ok.sort(prefer === "inward" ? (p, q) => q.k - p.k : (p, q) => Math.abs(p.k) - Math.abs(q.k));
     const i = ok[0]!.best;
     const x0 = segs[4 * i]!, y0 = segs[4 * i + 1]!, x1 = segs[4 * i + 2]!, y1 = segs[4 * i + 3]!;
     const sl = Math.hypot(x1 - x0, y1 - y0);
