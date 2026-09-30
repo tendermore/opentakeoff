@@ -21,6 +21,7 @@
 // serves (sheet_context.text.spans).
 
 import { ROOM_LABEL_RE } from "./detectRooms";
+import { EUROPEAN_ROLE_TERMS, NORDIC_TEXT_RE, NOT_A_ROLE_TITLE, REFERENCE_RE, TITLE_FIELD_LABEL_RE, DOOR_WORD_RE, WINDOW_WORD_RE, SCHEDULE_WORD_RE, CARD_KEY_LABEL_RE, openingField } from "./sheetvocab";
 
 /** rot: text rotation in degrees, clockwise in device space (y down). Absent
  * or 0 = horizontal; 90/270 = a quarter-turn — the rotated-header case. When
@@ -31,7 +32,10 @@ export interface GraphSpan { str: string; x: number; y: number; w: number; h: nu
 /** segs (optional): the sheet's vector linework as flat [x1,y1,x2,y2, ...] in
  * the same px space as the spans (VectorGeometry.segs) — feeds the drawn
  * delta-triangle hunt. Text-only callers omit it and lose only that lane. */
-export interface SheetSpans { key: string; sheet_number?: string | null; spans: GraphSpan[]; segs?: ArrayLike<number> }
+export interface SheetSpans { key: string; sheet_number?: string | null; spans: GraphSpan[]; segs?: ArrayLike<number>;
+  /** The sheet's extent in the spans' px space — locates the title block.
+   * Omitted, the spans' own extent stands in. */
+  width?: number; height?: number }
 
 export type SheetRole = "plan" | "schedule" | "legend" | "detail" | "elevation" | "demolition" | "unknown";
 export type Bbox = [number, number, number, number];
@@ -67,39 +71,170 @@ const ROLE_SIGNALS: Array<{ re: RegExp; role: SheetRole; conf: number }> = [
   { re: /DEMOLITION\s+PLAN|DEMO\s+PLAN/, role: "demolition", conf: 0.9 },
   // every discipline draws plans, not just finishes — an M-sheet's "SECOND
   // FLOOR DUCTWORK PLAN" is as much a plan title as an A-sheet's finish plan
-  { re: /(?:FINISH|FLOOR|FURNITURE|CEILING|DUCTWORK|PIPING|MECHANICAL|ELECTRICAL|LIGHTING|POWER|PLUMBING|SPRINKLER|HVAC|FRAMING|FOUNDATION|ROOF|SITE|EQUIPMENT)\s+PLAN\b/, role: "plan", conf: 0.85 },
+  // (plural too: a title block's "FLOOR PLANS & FINISH PLANS")
+  { re: /(?:FINISH|FLOOR|FURNITURE|CEILING|DUCTWORK|PIPING|MECHANICAL|ELECTRICAL|LIGHTING|POWER|PLUMBING|SPRINKLER|HVAC|FRAMING|FOUNDATION|ROOF|SITE|EQUIPMENT)\s+PLANS?\b/, role: "plan", conf: 0.85 },
   { re: SCHEDULE_TITLE_RE, role: "schedule", conf: 0.85 },
   { re: /SCHEDULE/, role: "schedule", conf: 0.5 },
   { re: /LEGEND/, role: "legend", conf: 0.5 },
   { re: /ELEVATIONS?\b/, role: "elevation", conf: 0.7 },
   { re: /DETAILS?\b|SECTIONS?\b/, role: "detail", conf: 0.6 },
 ];
-// Running-text references are not titles: "SEE FINISH PLAN FOR ADDITIONAL
-// INFORMATION" in a remark cell must never make a schedule sheet a plan.
-const REFERENCE_RE = /^(SEE|REFER|PER|NOTED|AS SHOWN)\b|REFER TO/;
+// Title terms, in match order: the European vocabulary's specific compounds
+// (schedule, demolition) first, then the English signals above unchanged,
+// then the European plan/elevation/section/level words. The tables live in
+// sheetvocab.ts — one place for every language.
+const ALL_ROLE_TERMS: Array<{ re: RegExp; role: SheetRole; conf: number; nordic?: boolean }> = [
+  ...EUROPEAN_ROLE_TERMS.filter((t) => t.role === "legend" || t.role === "schedule" || t.role === "demolition"),
+  ...ROLE_SIGNALS,
+  ...EUROPEAN_ROLE_TERMS.filter((t) => t.role !== "legend" && t.role !== "schedule" && t.role !== "demolition"),
+];
 
-export function classifySheetRole(sheet: SheetSpans): { role: SheetRole; confidence: number; evidence: Evidence | null } {
-  const hits: Array<{ role: SheetRole; conf: number; span: GraphSpan }> = [];
-  for (const sp of sheet.spans) {
-    const u = norm(sp.str);
-    if (u.length < 4 || u.length > 60 || REFERENCE_RE.test(u)) continue;
-    for (const sig of ROLE_SIGNALS) if (sig.re.test(u)) { hits.push({ role: sig.role, conf: sig.conf, span: sp }); break; }
+const MAX_TITLE_WORDS = 7;
+/** The role a single span NAMES, or null. Running-text references ("SEE
+ * FINISH PLAN FOR …", "- Se plantegning for plassering") and look-alike
+ * titles (a drawing list, a schematic, the KEY PLAN inset) name none. */
+function roleTermOf(str: string, nordic: boolean): { role: SheetRole; conf: number } | null {
+  const u = norm(str).replace(/^[-–—•*·]+\s*/, "");
+  // A title is a short line — on dev sets title-block titles run ≤ 6 words;
+  // the note text that used to outvote them is sentences.
+  if (u.length < 4 || u.length > 80 || u.split(/\s+/).filter((w) => /[\p{L}\d]/u.test(w)).length > MAX_TITLE_WORDS || REFERENCE_RE.test(u) || TITLE_FIELD_LABEL_RE.test(u)) return null;
+  const roles = new Set<SheetRole>();
+  let first: { role: SheetRole; conf: number } | null = null;
+  const masked = u.replace(NOT_A_ROLE_TITLE, " ");
+  for (const sig of ALL_ROLE_TERMS) {
+    if (sig.nordic && !nordic) continue;
+    if (!sig.re.test(masked)) continue;
+    if (!first) first = { role: sig.role, conf: sig.conf };
+    roles.add(sig.role);
   }
-  if (!hits.length) {
-    // sheet-number fallback: <discipline>-1xx is conventionally a plan — weak, stated as weak
-    const n = norm(sheet.sheet_number || "");
-    if (/^(A|M|E|P|S|FP)-?1\d\d/.test(n)) return { role: "plan", confidence: 0.4, evidence: null };
-    return { role: "unknown", confidence: 0, evidence: null };
+  if (!first) return null;
+  // A title that names a level AND a drawing type ("DØRSKJEMA 2. ETASJE",
+  // "FASADE MOT NORD 1. ETG") is that drawing type scoped to the level — the
+  // bare-level term is the weakest plan signal and never contests it.
+  // Two drawing types in one title ("PLAN OG SNITT") are two readings.
+  if (first.role !== "plan") roles.delete("plan");
+  roles.delete(first.role);
+  return roles.size ? { role: first.role, conf: first.conf / 2 } : first;
+}
+
+export interface RoleCandidate { role: SheetRole; text: string }
+export interface RoleResult { role: SheetRole; confidence: number; evidence: Evidence | null; candidates?: RoleCandidate[] }
+
+// Where the title lives. A sheet's title is printed in its TITLE BLOCK —
+// the lower-right corner by drafting convention (the same corner the sheet-
+// number reader, lib/sheets.ts, reads: x ≥ 0.6·W, y ≥ 0.55·H) — larger than
+// the sheet's running text. Running notes, view labels and schedule cells are
+// everywhere else. So the title block speaks first; the body is heard only
+// when the title block names no drawing type, and then only its LARGE text
+// (view titles: "PLAN 1. ETASJE 1:100", "SOUTH ELEVATION"), never the small
+// running text that used to outvote the title ("REINFORCEMENT SHOWN ON WALL
+// ELEVATION(S)" making a detail sheet an elevation).
+const TITLE_ZONE = { x: 0.6, y: 0.55 };
+/** A body span is a view title when it is this much larger than the sheet's
+ * median text — measured on dev sets, view titles run 1.5–4× the running
+ * text while notes and schedule cells sit at 1×. */
+const VIEW_TITLE_SCALE = 1.4;
+
+export function classifySheetRole(sheet: SheetSpans): RoleResult {
+  const spans = sheet.spans.filter((s) => (s.str || "").trim());
+  const W = sheet.width ?? Math.max(1, ...spans.map((s) => s.x + (s.w || 0)));
+  const H = sheet.height ?? Math.max(1, ...spans.map((s) => s.y + (s.h || 0)));
+  // text size: a quarter-turned line's size is its narrow side
+  const hs = spans.map((s) => (isVertical(s) ? s.w || 0 : s.h || 0)).filter((h) => h > 0).sort((a, b) => a - b);
+  const medH = hs.length ? hs[hs.length >> 1] : 0;
+  type Hit = { role: SheetRole; conf: number; span: GraphSpan; size: number };
+  const title: Hit[] = [], view: Hit[] = [], body: Hit[] = [];
+  const nordic = spans.some((sp) => NORDIC_TEXT_RE.test(sp.str));
+  for (const sp of spans) {
+    // Body text reads horizontally: rotated text there is dimensions, labels
+    // and leaders drawn along the geometry. A title block printed along the
+    // sheet's right edge sets its title VERTICALLY (a common US layout), so a
+    // quarter-turn line counts in the title zone — sized by its narrow side.
+    const vertical = isVertical(sp);
+    const turned = sp.rot != null && sp.rot % 360 !== 0;
+    const cx = sp.x + (sp.w || 0) / 2, cy = sp.y + (sp.h || 0) / 2;
+    const inZone = cx >= W * TITLE_ZONE.x && cy >= H * TITLE_ZONE.y;
+    if (turned && !(inZone && vertical)) continue;
+    const t = roleTermOf(sp.str, nordic);
+    if (!t) continue;
+    const size = vertical ? sp.w || 0 : sp.h || 0;
+    const hit = { ...t, span: sp, size };
+    // a title is never smaller than the running text — field labels are
+    if (inZone) { if (size >= medH) title.push(hit); }
+    else if (size >= medH * VIEW_TITLE_SCALE && !vertical) view.push(hit);
+    else if (!vertical) body.push(hit);
   }
-  // strongest signal wins; disagreement between DISTINCT roles halves confidence
-  hits.sort((a, b) => b.conf - a.conf);
-  const best = hits[0];
-  const dissent = hits.some((h) => h.role !== best.role && h.conf >= best.conf - 0.1);
-  return {
-    role: best.role,
-    confidence: dissent ? best.conf / 2 : best.conf,
-    evidence: { sheet: sheet.key, text: best.span.str.trim(), bbox: bboxOf(best.span) },
-  };
+  const evidenceOf = (h: Hit): Evidence => ({ sheet: sheet.key, text: h.span.str.trim(), bbox: bboxOf(h.span) });
+  // The title block: its LARGEST role-naming line is the title. Another
+  // role named at (nearly) the same size is a second reading — the answer
+  // keeps the larger one's role at half confidence and lists both.
+  // A legend box (TEGNFORKLARING, LEGEND) sits beside the title block on
+  // most sheets; it names the sheet only when NOTHING on the sheet names a
+  // drawing type — the last answer below, not a title-block one.
+  const typed = title.filter((h) => h.role !== "legend");
+  if (typed.length) {
+    const pool = typed;
+    // Largest first; lines of (nearly) the same size — within 15%, the
+    // rounding between two lines set in one text style — are ordered by
+    // distance to the sheet's bottom-right corner: the title block proper
+    // sits there, while a drawing label that strays into the zone (a plan's
+    // "SNITT C" cut marker) sits further out.
+    const maxH = Math.max(...pool.map((h) => h.size));
+    const corner = (h: Hit) => Math.hypot(W - (h.span.x + (h.span.w || 0) / 2), H - (h.span.y + h.size / 2));
+    const top = (h: Hit) => (h.size >= maxH * 0.85 ? 1 : 0);
+    pool.sort((a, b) => top(b) - top(a) || (top(a) ? corner(a) - corner(b) : b.size - a.size) || b.conf - a.conf);
+    const best = pool[0];
+    // "nearly the same size": within 15% — two title lines set in the same
+    // style differ by rounding only; a subtitle is set visibly smaller
+    const rivals = pool.filter((h) => h.role !== best.role && h.size >= best.size * 0.85);
+    const cands = rivals.length ? [best, ...rivals].map((h) => ({ role: h.role, text: h.span.str.trim() })) : undefined;
+    // A terse title-block word ("SCHEDULE") that the sheet's own headings
+    // name more fully ("ROOM FINISH SCHEDULE") is corroborated: the answer
+    // takes the stronger of the agreeing signals. Agreement only raises it.
+    const agree = [...view, ...body].filter((h) => h.role === best.role).reduce((m, h) => Math.max(m, h.conf), 0);
+    const conf = Math.max(best.conf, agree);
+    return { role: best.role, confidence: rivals.length ? conf / 2 : conf, evidence: evidenceOf(best), ...(cands ? { candidates: cands } : {}) };
+  }
+  // No title-block title: large view titles on the sheet body. They must
+  // AGREE — a sheet carrying a plan and a section is either reading, so the
+  // answer says which views it saw rather than picking one.
+  const views = view.filter((h) => h.role !== "legend");
+  if (views.length) {
+    const byRole = new Map<SheetRole, Hit[]>();
+    for (const h of views) byRole.set(h.role, [...(byRole.get(h.role) ?? []), h]);
+    const ranked = [...byRole.entries()].sort((a, b) =>
+      Math.max(...b[1].map((h) => h.size)) - Math.max(...a[1].map((h) => h.size)));
+    const [role, hits] = ranked[0];
+    hits.sort((a, b) => b.size - a.size);
+    // a view title is one step weaker than the title block's own word
+    const conf = Math.max(...hits.map((h) => h.conf)) * 0.8;
+    if (ranked.length === 1) return { role, confidence: conf, evidence: evidenceOf(hits[0]) };
+    return {
+      role, confidence: conf / 2, evidence: evidenceOf(hits[0]),
+      candidates: ranked.map(([r, hs2]) => ({ role: r, text: hs2[0].span.str.trim() })),
+    };
+  }
+  // Last: a short role line at running-text size, heard only when the
+  // sheet has no title block to read and no view titles — and only when
+  // every such line names the SAME role. Lines that disagree are a sheet
+  // this pass cannot read: unknown, with the readings listed, never a pick.
+  const bodies = body.filter((h) => h.role !== "legend");
+  if (bodies.length) {
+    const rolesSeen = [...new Set(bodies.map((h) => h.role))];
+    bodies.sort((a, b) => b.conf - a.conf);
+    if (rolesSeen.length === 1) return { role: bodies[0].role, confidence: bodies[0].conf * 0.8, evidence: evidenceOf(bodies[0]) };
+    return {
+      role: "unknown", confidence: 0, evidence: null,
+      candidates: rolesSeen.map((r) => ({ role: r, text: bodies.find((h) => h.role === r)!.span.str.trim() })),
+    };
+  }
+  const legend = [...title, ...view, ...body].filter((h) => h.role === "legend").sort((a, b) => b.size - a.size)[0];
+  // a last resort, stated as weak: most sheets carry a legend box
+  if (legend) return { role: "legend", confidence: Math.min(legend.conf, 0.4), evidence: evidenceOf(legend) };
+  // sheet-number fallback: <discipline>-1xx is conventionally a plan — weak, stated as weak
+  const n = norm(sheet.sheet_number || "");
+  if (/^(A|M|E|P|S|FP)-?1\d\d/.test(n)) return { role: "plan", confidence: 0.4, evidence: null };
+  return { role: "unknown", confidence: 0, evidence: null };
 }
 
 // ── building context (#87 phase 2: the multi-building room key) ─────────────
@@ -276,15 +411,24 @@ const rowY = (r: GraphSpan[]) => r.reduce((s, t) => s + t.y, 0) / r.length;
 // cell keeps its evidence bbox. Two vocabularies ship: the room-finish
 // schedule (rooms → finishes — THE resolution target) and the finish/material
 // schedule (codes → products, scheduleParse's own gate re-stated).
-export type TableKind = "room-finish" | "finish" | "equipment" | "unknown";
+export type TableKind = "room-finish" | "finish" | "equipment" | OpeningKind | "unknown";
+/** A door or window schedule. "door-window" is a combined schedule whose
+ * title names both ("DØR- OG VINDUSSKJEMA"), or one whose kind the sheet does
+ * not state — its rows answer for either. */
+export type OpeningKind = "door" | "window" | "door-window";
+export const isOpeningKind = (k: TableKind): k is OpeningKind => k === "door" || k === "window" || k === "door-window";
 /** The kinds extractTable hunts for (everything but the "unknown" marker). */
-export type ExtractKind = Exclude<TableKind, "unknown">;
+export type ExtractKind = "room-finish" | "finish" | "equipment" | "opening";
+/** The extraction a table's kind came from — every opening kind reads as "opening". */
+const extractKindOf = (k: TableKind): ExtractKind | null => (k === "unknown" ? null : isOpeningKind(k) ? "opening" : k);
 export interface TableCell { text: string; bbox: Bbox }
 /** A schedule row. `sheet` is the sheet that CARRIES the row — under a
  * continuation it differs from the table's base sheet, and the row's evidence
  * must cite where the ink actually is. `building` is the row-level qualifier
  * (a qualified key's prefix, or the BLDG column) when one exists. */
-export interface TableRow { key: string; sheet: string; building?: string; cells: Record<string, TableCell>; revision?: RowRevision }
+export interface TableRow { key: string; sheet: string; building?: string; cells: Record<string, TableCell>; revision?: RowRevision;
+  /** A card schedule's type drawn as several columns (left/right hand) — counts summed, this many columns. */
+  columns?: number }
 export interface TablePart { sheet: string; title: string; rows: number; region: Bbox; rotated_headers?: boolean }
 export interface ScheduleTable {
   kind: TableKind;
@@ -303,6 +447,11 @@ export interface ScheduleTable {
   parts?: TablePart[];
   /** Header anchors (label + x), kept for continuation adoption. */
   anchors?: Anchor[];
+  /** "card": a transposed schedule — one COLUMN per type, field labels down
+   * the first column (the Nordic door/window layout). Absent: one row per item. */
+  layout?: "card";
+  /** A printed total beside the count row, checked against the read counts. */
+  total?: { printed: number; sum: number; agrees: boolean; source: Evidence };
 }
 
 /** Columns that ARE a surface in their own right — never renamed by a parent. */
@@ -362,6 +511,26 @@ const EQUIP_KEY_RE = /^[A-Z]{1,4}(?:-\d{1,3}|\d{1,2})[A-Z]?$/;
 /** A letter-typed row — "A", "B2", "F1a" — the light-fixture and plumbing-
  * fixture schedule convention, accepted only under a TYPE / FIXTURE key column. */
 const TYPE_KEY_RE = /^[A-Z]{1,2}\d{0,2}[A-Z]?$/;
+// Door / window ROW schedules — one opening (or one type) per row, the US
+// convention (MARK | WIDTH | HEIGHT | …) and the Nordic list form (NR |
+// BREDDE | HØYDE | ANTALL …). The header must name a key column AND a size
+// column: a MARK/TYPE header alone is the finish family's shape.
+const OPENING_HEADERS = [
+  "MARK", "NO", "NR", "NUMBER", "ID", "DOOR", "WINDOW", "TYPE", "OPENING", "WIDTH", "HEIGHT", "THICKNESS", "THK", "SIZE",
+  "MATERIAL", "FRAME", "FINISH", "HARDWARE", "FIRE", "RATING", "LABEL", "GLAZING", "GLASS", "REMARKS", "NOTES", "COMMENTS",
+  "QTY", "QUANTITY", "HEAD", "SILL", "JAMB", "OPERATION", "ROOM", "LOCATION", "LEAF", "PANEL", "STYLE",
+  "ANTALL", "BREDDE", "HØYDE", "STØRRELSE", "BRANNKRAV", "BRANNKLASSE", "BRANNMOTSTAND", "LYDKRAV", "LYDKLASSE", "ROM",
+  "MERKNAD", "MERKNADER", "ANMERKNING", "KARM", "DØRBLAD", "TERSKEL", "BESLAG", "FUNKSJON", "SLAGRETNING", "PLASSERING",
+];
+const OPENING_KEY_HEADERS = ["MARK", "NO", "NR", "NUMBER", "ID", "DOOR", "WINDOW", "TYPE", "OPENING"];
+// WIDTH or SIZE, not HEIGHT alone: a room-finish schedule carries a HEIGHT
+// (the ceiling's) and no width; every door or window schedule states a width
+const OPENING_SIZE_HEADERS = new Set(["WIDTH", "SIZE", "BREDDE", "STØRRELSE"]);
+/** An opening mark as drawn or scheduled: "101", "101A", "D101", "ID-01",
+ * "ID-S01", "YDP-01", "V01H", "ID1-T", "DI-101" — letters, an optional dash,
+ * digits, an optional short suffix. */
+const OPENING_KEY_RE = /^(?:[A-ZÆØÅ]{1,5}[-.]?){0,2}[A-ZÆØÅ]{0,3}\d{1,4}[A-ZÆØÅ]{0,2}(?:[-.][A-Z0-9ÆØÅ]{1,3})?$/;
+
 // A header CELL is often a multi-word span ("FLOOR FINISH", "CEILING FINISH")
 // — the vocabulary word inside it names the column.
 /** A column anchor. `x` is the header's center. A two-tier SUB-column also
@@ -379,7 +548,7 @@ const headerLabel = (s: string, vocab: string[]): string | null => headerLabels(
  * room name merges into the finish column beside it. */
 const headerLabels = (s: string, vocab: string[]): string[] => {
   const out: string[] = [];
-  for (const w of norm(s).split(/[^A-Z]+/)) if (w && vocab.includes(w) && !out.includes(w)) out.push(w);
+  for (const w of norm(s).split(/[^A-ZÆØÅÄÖÜ]+/)) if (w && vocab.includes(w) && !out.includes(w)) out.push(w);
   return out;
 };
 
@@ -707,7 +876,9 @@ export const isNonFinishSchedule = (title: string): boolean => {
 };
 
 function rowKeyOf(raw: string, kind: ExtractKind, buildings?: Set<string>, typeKeyed = false): { key: string; building?: string } | null {
-  const kept = norm(raw).replace(/[^A-Z0-9/-]/g, "");
+  // opening marks keep Nordic letters and an inner dot ("ID.01"); every
+  // other kind reads its keys exactly as before
+  const kept = kind === "opening" ? norm(raw).replace(/[^A-Z0-9ÆØÅ/.-]/g, "") : norm(raw).replace(/[^A-Z0-9/-]/g, "");
   const key = kept.replace(/\//g, "");
   if (kind === "equipment") {
     // "EF-1 / EF-2" keys one row for two marks the same way a finish row does
@@ -715,6 +886,11 @@ function rowKeyOf(raw: string, kind: ExtractKind, buildings?: Set<string>, typeK
     const ok = (p: string) => EQUIP_KEY_RE.test(p) || (typeKeyed && TYPE_KEY_RE.test(p));
     if (parts.length > 1 && parts.every(ok)) return { key: parts.join("/") };
     return ok(key) ? { key } : null;
+  }
+  if (kind === "opening") {
+    const parts = kept.split("/").filter(Boolean);
+    if (parts.length > 1 && parts.every((p) => OPENING_KEY_RE.test(p))) return { key: parts.join("/") };
+    return OPENING_KEY_RE.test(key) || (typeKeyed && TYPE_KEY_RE.test(key)) ? { key } : null;
   }
   if (kind === "finish") {
     // a compound cell keys one row for several marks — "R1 / E1" is the same
@@ -866,7 +1042,8 @@ function bandDataRows(
   const { x0, x1, medGap } = bandLimits(anchors);
   // a device schedule keyed by TYPE / FIXTURE uses letter types ("A", "B2") as
   // its marks — decided from the table's own header, never guessed per row
-  const typeKeyed = kind === "equipment" && (anchors[0]?.label === "TYPE" || anchors[0]?.label === "FIXTURE");
+  const typeKeyed = (kind === "equipment" && (anchors[0]?.label === "TYPE" || anchors[0]?.label === "FIXTURE"))
+    || (kind === "opening" && (anchors[0]?.label === "TYPE" || anchors[0]?.label === "MARK"));
   // Columns are defined by where the DATA starts, not by where the header
   // sits. Headers are centered over their column; cells are left-aligned in
   // it — so a short cell and a long cell in the same column share a left edge
@@ -944,6 +1121,13 @@ function bandDataRows(
       if (rows[i].some((t) => /SCHEDULE/.test(norm(t.str)) && !EQUIP_KEY_RE.test(norm(t.str).replace(/[^A-Z0-9-]/g, "")))) break;
       const hh = headerHits(rows[i], EQUIPMENT_HEADERS);
       if (hh.length >= 3 && hh.some((h) => EQUIPMENT_KEY_HEADERS.includes(h.label))) break;
+    }
+    // a door schedule stacked over a window schedule: the next title or
+    // header row ends this one, the same rule as stacked equipment tables
+    if (kind === "opening" && out.length) {
+      if (rows[i].some((t) => SCHEDULE_WORD_RE.test(norm(t.str)) && t.x >= x0 && t.x <= x1)) break;
+      const hh = headerHits(rows[i], OPENING_HEADERS);
+      if (hh.length >= 3 && hh.some((h) => OPENING_KEY_HEADERS.includes(h.label))) break;
     }
     const keyed = rowKeyOf(banded[0].str, kind, buildings, typeKeyed);
     if (!keyed) { orphans.push({ toks: banded, y: rowY(rows[i]) }); continue; }
@@ -1061,8 +1245,8 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
   const horiz = sheet.spans.filter((s) => !isVertical(s));
   const vert = sheet.spans.filter(isVertical);
   const rows = clusterRows(horiz);
-  const vocab = kind === "room-finish" ? ROOM_HEADERS : kind === "equipment" ? EQUIPMENT_HEADERS : FINISH_HEADERS;
-  const required = kind === "room-finish" ? ["FLOOR", "BASE"] : kind === "equipment" ? EQUIPMENT_KEY_HEADERS : ["CODE", "MARK", "SYMBOL", "TAG"];
+  const vocab = kind === "room-finish" ? ROOM_HEADERS : kind === "equipment" ? EQUIPMENT_HEADERS : kind === "opening" ? OPENING_HEADERS : FINISH_HEADERS;
+  const required = kind === "room-finish" ? ["FLOOR", "BASE"] : kind === "equipment" ? EQUIPMENT_KEY_HEADERS : kind === "opening" ? OPENING_KEY_HEADERS : ["CODE", "MARK", "SYMBOL", "TAG"];
   const minHits = kind === "room-finish" ? 4 : 3;
 
   let anchors: Anchor[];
@@ -1094,7 +1278,10 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
   // finish/material schedule wearing MARK and MANUFACTURER, not a device
   // schedule. Refuse it here — and hand back its header row's extent so the
   // multi-table hunt can mask it and keep looking lower on the sheet.
-  if (kind === "equipment" && !anchors.some((a) => EQUIPMENT_ONLY.has(a.label))) {
+  // The opening gate, same shape: a door/window schedule states a SIZE — a
+  // MARK/TYPE header with no WIDTH, HEIGHT or SIZE column is some other list.
+  if ((kind === "equipment" && !anchors.some((a) => EQUIPMENT_ONLY.has(a.label)))
+    || (kind === "opening" && !anchors.some((a) => OPENING_SIZE_HEADERS.has(a.label)))) {
     let hb: Bbox | null = null;
     for (const t of headerSpans) hb = hb ? merge(hb, bboxOf(t)) : bboxOf(t);
     return hb ? { skip: hb } : null;
@@ -1117,7 +1304,7 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
   if (!out.length) {
     // a header with no keyed rows under it: for the multi-table hunt that is
     // "mask this header and move on", not "the sheet is done"
-    if (kind === "equipment" && region) return { skip: region };
+    if ((kind === "equipment" || kind === "opening") && region) return { skip: region };
     return null;
   }
   const { x0, x1 } = bandLimits(anchors);
@@ -1129,9 +1316,238 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
     const hit = rows[i].find((t) => /SCHEDULE/.test(norm(t.str)) && t.x >= x0 && t.x <= x1);
     if (hit) title = { sheet: sheet.key, text: hit.str.trim(), bbox: bboxOf(hit) };
   }
-  const table: ScheduleTable = { kind, sheet: sheet.key, title, headers: anchors.map((a) => a.label), rows: out, region: region!, anchors };
+  // A door/window table's kind comes FROM its title, so the hunt is by
+  // distance, not row count: rows are clustered across the whole sheet and a
+  // busy plan beside the schedule puts many rows between header and title.
+  // Twelve header-text heights above the header covers a title set over a
+  // parent tier ("DOOR" over "NO. TYPE WIDTH …").
+  if (kind === "opening" && !title && titleFrom >= 0) {
+    const hy = rowY(rows[titleFrom + 1] ?? rows[titleFrom]);
+    const hh = Math.max(...headerSpans.map((t) => t.h || 8));
+    for (let i = titleFrom; i >= 0 && hy - rowY(rows[i]) <= 12 * hh && !title; i--) {
+      const hit = rows[i].find((t) => SCHEDULE_WORD_RE.test(norm(t.str)) && t.x >= x0 && t.x <= x1);
+      if (hit) title = { sheet: sheet.key, text: hit.str.trim(), bbox: bboxOf(hit) };
+    }
+  }
+  const tableKind: TableKind = kind === "opening" ? openingKindOf(title?.text ?? "") ?? "door-window" : kind;
+  const table: ScheduleTable = { kind: tableKind, sheet: sheet.key, title, headers: anchors.map((a) => a.label), rows: out, region: region!, anchors };
   if (rotated) table.rotated_headers = true;
   return { table };
+}
+
+// ── door & window schedules ─────────────────────────────────────────────────
+/** A schedule title's opening kind: door, window, both, or not stated. */
+export function openingKindOf(title: string): OpeningKind | null {
+  const u = norm(title);
+  const d = DOOR_WORD_RE.test(u), w = WINDOW_WORD_RE.test(u);
+  return d && w ? "door-window" : d ? "door" : w ? "window" : null;
+}
+
+// Transposed ("card") schedules — the common Nordic layout. Types run ACROSS
+// as columns; field labels run DOWN the first column:
+//
+//     ID        ID-01    ID-02    ID-03
+//     Antall    3        1        1
+//     B (mm)    1 090    990      890
+//     H (mm)    2 190    2 190    2 090
+//     Brannkrav EI30-Sa  -        -
+//
+// A card is found by its KEY ROW — a key label ("ID", "Nr", "Type", …) with
+// type ids to its right — and confirmed only when its label column names a
+// count or a size below it; a row of ids with no such label is some other
+// grid (a legend, a door-number list) and is never read as a schedule.
+// Each id is one row of the resulting table; each field label becomes a
+// column. Several cards stacked down one sheet are several tables.
+// letters-digits ("ID-01", "V01H", "ID1-T", "K-ID11" — a prefix group per
+// building or phase) or letters-dash-letters ("DI-F", "DI-S" — a type named
+// by its function rather than numbered)
+const CARD_ID_RE = /^(?:[A-ZÆØÅ]{1,5}[-.]){0,2}[A-ZÆØÅ]{0,3}\d{1,4}[A-ZÆØÅ]{0,2}(?:[-.][A-Z0-9ÆØÅ]{1,3})?$|^[A-ZÆØÅ]{1,4}-[A-ZÆØÅ]{1,3}$/;
+/** The type id a key-row cell carries: the whole cell, or its first word when
+ * the drafter set the id and a modular size in one run ("ID1-T 11x21M"). */
+const cardIdOf = (str: string): string | null => {
+  const u = norm(str);
+  if (CARD_ID_RE.test(u)) return u;
+  const words = u.split(/\s+/);
+  return words.length <= 3 && CARD_ID_RE.test(words[0]) ? words[0] : null;
+};
+/** A card's field label is at most this many words — labels are names
+ * ("Brannkrav", "Farge List og karm ute"), not sentences. */
+const CARD_LABEL_MAX_WORDS = 6;
+
+function cardTables(sheet: SheetSpans): ScheduleTable[] {
+  const horiz = sheet.spans.filter((s) => !isVertical(s) && (s.rot == null || s.rot % 360 === 0) && s.str.trim());
+  const rows = clusterRows(horiz);
+  // A key row can carry SEVERAL key labels: single-type cards set side by
+  // side ("Type ID1-T | Type ID2-T | …"), each with its own label column.
+  // Every key label starts a card that runs to the next key label.
+  type KeyRow = { i: number; label: GraphSpan; ids: GraphSpan[]; ceil: number; groupX0: number };
+  const keyRows: KeyRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const found: KeyRow[] = [];
+    const labelXs = r.filter((t) => CARD_KEY_LABEL_RE.test(norm(t.str))).map((t) => t.x);
+    for (let j = 0; j < r.length - 1; j++) {
+      if (!CARD_KEY_LABEL_RE.test(norm(r[j].str))) continue;
+      const ids: GraphSpan[] = [];
+      let k = j + 1;
+      for (; k < r.length; k++) {
+        const id = cardIdOf(r[k].str);
+        if (!id) break;
+        ids.push({ ...r[k], str: id });
+      }
+      if (ids.length) found.push({ i, label: r[j], ids, ceil: Infinity, groupX0: labelXs[0] });
+      j = k - 1;
+    }
+    // each card ends at the next key label on the row; the last one of a
+    // side-by-side group is as wide as its siblings (their label spacing)
+    const gaps = labelXs.slice(1).map((x, n) => x - labelXs[n]).sort((a, b) => a - b);
+    const spacing = gaps.length ? gaps[gaps.length >> 1] : Infinity;
+    for (const f of found) {
+      const nextLabel = labelXs.find((x) => x > f.label.x);
+      f.ceil = nextLabel ?? (labelXs.length > 1 ? f.label.x + spacing : Infinity);
+    }
+    keyRows.push(...found);
+  }
+  const out: ScheduleTable[] = [];
+  for (let n = 0; n < keyRows.length; n++) {
+    const { i, label, ids, ceil, groupX0 } = keyRows[n];
+    const h = Math.max(label.h || 8, 4);
+    const pitches = ids.slice(1).map((t, k) => t.x - ids[k].x).sort((a, b) => a - b);
+    const pitch = pitches.length ? pitches[pitches.length >> 1] : 0;
+    // cells are left-aligned under their id (measured on dev sets: within a
+    // few px); a column runs to the next id. The last column ends 0.9 of a
+    // pitch past its id, so a printed TOTAL beyond it is not read as a cell;
+    // a lone column has no pitch and runs 40 text heights.
+    const tol = Math.max(h, pitch * 0.1);
+    const edges = ids.map((t) => t.x - tol);
+    edges.push(Math.min(ceil - h * 0.5, pitch ? ids[ids.length - 1].x + pitch * 0.9 : ids[0].x + 40 * h));
+    const labelX0 = label.x - 2 * h, labelX1 = edges[0];
+    // the card's rows: from the key row down to the next key row in the same
+    // label column, a schedule title in the label column, or a gap in the
+    // label column deeper than a card's picture band (50 text heights —
+    // dev cards run up to ~30 between their last label above and first below
+    // the elevation drawings)
+    const next = keyRows.slice(n + 1).find((k) => k.i !== i && Math.abs(k.label.x - label.x) < 4 * h);
+    const stopY = next ? rowY(rows[next.i]) - h * 0.5 : Infinity;
+    const labels: GraphSpan[] = [];
+    let lastY = rowY(rows[i]);
+    for (let r = i + 1; r < rows.length; r++) {
+      const y = rowY(rows[r]);
+      if (y >= stopY) break;
+      const inCol = rows[r].filter((t) => t.x >= labelX0 && t.x < labelX1 && t.x + (t.w || 0) <= labelX1 + tol);
+      if (!inCol.length) continue;
+      if (y - lastY > 50 * h) break;
+      if (inCol.some((t) => SCHEDULE_WORD_RE.test(norm(t.str)))) break;
+      for (const t of inCol) if (norm(t.str).split(/\s+/).length <= CARD_LABEL_MAX_WORDS) labels.push(t);
+      lastY = y;
+    }
+    const fields = labels.map((l) => openingField(l.str));
+    if (!fields.some((f) => f === "QTY" || f === "WIDTH" || f === "HEIGHT" || f === "SIZE")) continue;
+    // every span in the card's columns, below the key row and above the stop
+    const bottom = labels.length ? Math.max(...labels.map((l) => l.y + (l.h || 0))) + 3 * h : rowY(rows[i]) + h;
+    const colOf = (t: GraphSpan): number => {
+      if (t.x < edges[0] || t.x >= edges[edges.length - 1]) return -1;
+      // a lone type column has no neighbour to bound it: its cells START
+      // under the id (left-aligned; a same-line fragment such as "EI₂ | 30-Sa"
+      // starts a text height or two later) — text starting further right is
+      // a note column beside the card, not a cell
+      if (ids.length === 1 && t.x > ids[0].x + 6 * h) return -1;
+      let c = 0;
+      while (c + 1 < ids.length && t.x >= edges[c + 1]) c++;
+      return c;
+    };
+    const cellSpans = horiz.filter((t) => t.y > rowY(rows[i]) + h * 0.5 && t.y < Math.min(stopY, bottom) && colOf(t) >= 0);
+    // a label with values on its own line is a field; one without is a
+    // PARENT naming the sub-labels beside it ("Størrelse" over "B=" / "H=")
+    const lineOf = (y: number, t: GraphSpan) => Math.abs(t.y - y) <= Math.max(3, h * 0.5);
+    const valued = labels.filter((l) => cellSpans.some((t) => lineOf(l.y, t)));
+    // A value line belongs to the nearest valued label within 2.5 text
+    // heights — a wrapped cell straddles its label's line; the elevation
+    // drawing's dimensions further away belong to no field.
+    const nearestLabel = (y: number): GraphSpan | null => {
+      let best: GraphSpan | null = null, bd = Infinity;
+      for (const l of valued) { const d = Math.abs(l.y - y); if (d < bd) { bd = d; best = l; } }
+      return best && bd <= 2.5 * h ? best : null;
+    };
+    const names = new Map<GraphSpan, string>();
+    const used = new Set<string>();
+    for (const l of valued) {
+      let f = openingField(l.str);
+      const raw = norm(l.str).replace(/[:=]+$/, "").trim();
+      if (!f || used.has(f)) {
+        // an unmapped or repeated field keeps its own words, qualified by the
+        // valueless parent label nearest it when there is one
+        const parent = labels.filter((p) => !valued.includes(p) && p.x < l.x - h * 0.5)
+          .sort((a, b) => Math.abs(a.y - l.y) - Math.abs(b.y - l.y))[0];
+        f = parent && Math.abs(parent.y - l.y) <= 2 * h ? `${norm(parent.str)} ${raw}` : raw;
+        if (!f || used.has(f)) continue;
+      }
+      used.add(f);
+      names.set(l, f);
+    }
+    const cols: TableRow[] = ids.map((t) => ({ key: norm(t.str), sheet: sheet.key, cells: {} }));
+    const byCell = new Map<string, GraphSpan[]>();
+    for (const t of cellSpans) {
+      const l = nearestLabel(t.y);
+      const name = l ? names.get(l) : undefined;
+      if (!name) continue;
+      const k = `${colOf(t)}|${name}`;
+      byCell.set(k, [...(byCell.get(k) ?? []), t]);
+    }
+    let region: Bbox = merge(bboxOf(label), bboxOf(ids[ids.length - 1]));
+    for (const l of labels) region = merge(region, bboxOf(l));
+    for (const [k, spans] of byCell) {
+      const [c, name] = [Number(k.split("|")[0]), k.slice(k.indexOf("|") + 1)];
+      spans.sort((a, b) => a.y - b.y || a.x - b.x);
+      let bb = bboxOf(spans[0]);
+      for (const t of spans) { bb = merge(bb, bboxOf(t)); region = merge(region, bboxOf(t)); }
+      cols[c].cells[name] = { text: spans.map((t) => t.str.trim()).join(" "), bbox: bb };
+    }
+    ids.forEach((t, c) => { cols[c].cells.ID = { text: t.str.trim(), bbox: bboxOf(t) }; });
+    // a type drawn as two columns (left- and right-hand leaves) is ONE type:
+    // its counts add. Only when every other size cell agrees — a type whose
+    // columns state different sizes stays as separate rows under one key,
+    // which resolve_tag and sweep_row then refuse as ambiguous.
+    const SIZE_FIELDS = ["WIDTH", "HEIGHT", "SIZE"];
+    const rowsOut: TableRow[] = [];
+    for (const r of cols) {
+      const twin = rowsOut.find((o) => o.key === r.key && SIZE_FIELDS.every((f) => (o.cells[f]?.text ?? "") === (r.cells[f]?.text ?? "")));
+      const q = (x: TableRow) => (x.cells.QTY && /^\d+$/.test(x.cells.QTY.text.trim()) ? Number(x.cells.QTY.text.trim()) : null);
+      if (twin && q(twin) != null && q(r) != null) {
+        twin.cells.QTY = { text: String(q(twin)! + q(r)!), bbox: merge(twin.cells.QTY!.bbox, r.cells.QTY!.bbox) };
+        twin.columns = (twin.columns ?? 1) + 1;
+        continue;
+      }
+      rowsOut.push(r);
+    }
+    // the title: the nearest schedule heading above the key row, over the
+    // card's own width (within 30 text heights — dev cards put the elevation
+    // drawings between title and key row)
+    let title: Evidence | null = null;
+    for (let r = i - 1; r >= 0 && rowY(rows[i]) - rowY(rows[r]) <= 30 * h && !title; r--) {
+      // side-by-side cards share their group's heading, over the group's width
+      const hit = rows[r].find((t) => (SCHEDULE_WORD_RE.test(norm(t.str)) || openingKindOf(t.str)) && t.x >= Math.min(labelX0, groupX0 - 2 * h) && t.x < edges[edges.length - 1]);
+      if (hit) title = { sheet: sheet.key, text: hit.str.trim(), bbox: bboxOf(hit) };
+    }
+    const table: ScheduleTable = {
+      kind: openingKindOf(title?.text ?? "") ?? "door-window", sheet: sheet.key, title,
+      headers: ["ID", ...[...used]], rows: rowsOut, region, layout: "card",
+    };
+    // a printed total right of the last column on the count line is the
+    // drafter's own checksum — the read counts must add up to it
+    const qtyLabel = valued.find((l) => names.get(l) === "QTY");
+    if (qtyLabel && ids.length > 1 && rowsOut.every((r) => r.cells.QTY && /^\d+$/.test(r.cells.QTY.text.trim()))) {
+      const sum = rowsOut.reduce((a, r) => a + Number(r.cells.QTY!.text.trim()), 0);
+      const lim = edges[edges.length - 1] + Math.max(pitch, 10 * h);
+      const printed = horiz.find((t) => lineOf(qtyLabel.y, t) && t.x >= edges[edges.length - 1] && t.x < lim && /^\d+$/.test(t.str.trim()));
+      // a total is never smaller than one of its addends — a smaller number
+      // there is some other cell, not the drafter's checksum
+      const biggest = Math.max(...rowsOut.map((r) => Number(r.cells.QTY!.text.trim())));
+      if (printed && Number(printed.str.trim()) >= biggest) table.total = { printed: Number(printed.str.trim()), sum, agrees: Number(printed.str.trim()) === sum, source: { sheet: sheet.key, text: printed.str.trim(), bbox: bboxOf(printed) } };
+    }
+    out.push(table);
+  }
+  return out;
 }
 
 // ── continuation sheets (#87 phase 2) ───────────────────────────────────────
@@ -1177,11 +1593,12 @@ function mergeContinuation(base: ScheduleTable, frag: ScheduleTable): void {
  * lines up; adopting misaligned columns would caption cells with the wrong
  * headers, which is worse than refusing. */
 function adoptContinuationRows(sheet: SheetSpans, titleSpan: GraphSpan, base: ScheduleTable, buildings: Set<string>, deltas?: DeltaIndex): ScheduleTable | null {
-  if (!base.anchors?.length || base.kind === "unknown") return null;
+  const ek = extractKindOf(base.kind);
+  if (!base.anchors?.length || !ek) return null;
   const rows = clusterRows(sheet.spans.filter((s) => !isVertical(s)));
   const { medGap } = bandLimits(base.anchors);
   const keyTol = Math.max(40, medGap / 2);
-  const banded = bandDataRows(rows, base.anchors, base.kind, sheet.key, buildings, {
+  const banded = bandDataRows(rows, base.anchors, ek, sheet.key, buildings, {
     fromIdx: 0, belowY: titleSpan.y, keyAlign: { x: base.anchors[0].x, tol: keyTol }, deltas,
   });
   if (!banded.out.length) return null;
@@ -1302,7 +1719,9 @@ export function detailCallouts(sheet: SheetSpans): DetailCallout[] {
 
 // ── the graph ───────────────────────────────────────────────────────────────
 export interface SheetGraphSchedule { kind: TableKind; title: string; rows: number; region: Bbox; continues?: string; rotated_headers?: boolean }
-export interface SheetGraphSheet { key: string; role: SheetRole; confidence: number; evidence: Evidence | null; building?: string; schedules: SheetGraphSchedule[] }
+export interface SheetGraphSheet { key: string; role: SheetRole; confidence: number; evidence: Evidence | null;
+  /** Present when the title names more than one drawing type — every reading, the chosen role first. */
+  candidates?: RoleCandidate[]; building?: string; schedules: SheetGraphSchedule[] }
 export interface SheetGraph {
   available: boolean;                 // false = no text layer anywhere (a scanned set) — nothing half-populates
   sheets: SheetGraphSheet[];
@@ -1369,8 +1788,46 @@ export function buildSheetGraph(sheets: SheetSpans[]): SheetGraph {
     }
     // equipment schedules stack several to a sheet — every one, top to bottom
     found.push(...extractTables(s, "equipment", { buildings, deltas: deltasBySheet.get(s.key), sheetNumbers: sheetNumberSet }));
+    // door / window schedules: transposed cards first (the Nordic layout),
+    // then row schedules; a row reading of ink a card already explains is
+    // the same table read sideways and is not indexed twice
+    const cards = cardTables(s);
+    // a room-finish reading of the same ink wins over a row reading: FLOOR
+    // and BASE columns are never a door schedule's
+    const roomFinish = found.filter((t) => t.kind === "room-finish");
+    const openingRows = extractTables(s, "opening", { buildings, deltas: deltasBySheet.get(s.key), sheetNumbers: sheetNumberSet })
+      .filter((t) => !cards.some((c) => overlapFrac(t.region, c.region) >= 0.5))
+      .filter((t) => !roomFinish.some((r) => overlapFrac(t.region, r.region) >= 0.5 || overlapFrac(r.region, t.region) >= 0.5));
+    // A table whose own heading names some OTHER schedule ("FLOOR/ROOF BEAM
+    // SCHEDULE", "Kjøkkenskjema") has a mark and a width but is not a door or
+    // window schedule — dropped, and the drop named.
+    const openings = [...cards, ...openingRows].filter((t) => {
+      const other = !!t.title && SCHEDULE_WORD_RE.test(norm(t.title.text)) && !openingKindOf(t.title.text);
+      if (other) notes.push(`${s.key}: "${t.title!.text}" has a mark and a size column but its title names no door or window — not indexed as a door/window schedule`);
+      return !other;
+    });
+    // a table with no heading of its own takes its kind from the SHEET's
+    // title when that names exactly one ("G60-01 Dørliste" in the title block)
+    const sheetTitle = roles.get(s.key)?.evidence?.text ?? "";
+    for (const t of openings) {
+      const own = t.title ? openingKindOf(t.title.text) : null;
+      const bySheet = openingKindOf(sheetTitle);
+      if (!own && bySheet && bySheet !== "door-window") t.kind = bySheet;
+      if (t.total && !t.total.agrees) notes.push(`${s.key}: "${t.title?.text || `${t.kind} schedule`}" — the counts read add to ${t.total.sum} but the sheet prints a total of ${t.total.printed}; a count cell was misread or the schedule is inconsistent — LOOK before using its quantities`);
+      if (t.kind === "door-window" && own !== "door-window") notes.push(`${s.key}: a door/window schedule whose title does not say which (${t.title ? `"${t.title.text}"` : "no title found"}) — indexed as door-window; its rows answer for either`);
+    }
+    // A door schedule carries MARK / TYPE / MATERIAL / FINISH columns, so the
+    // finish and room hunts can read the same ink; the opening reading wins
+    // (its size columns are the proof) and the finish reading is dropped.
+    const overlapsOpening = (t: ScheduleTable) => openings.some((o) => overlapFrac(t.region, o.region) >= 0.5 || overlapFrac(o.region, t.region) >= 0.5);
+    for (let k = found.length - 1; k >= 0; k--) {
+      if (!overlapsOpening(found[k])) continue;
+      notes.push(`${s.key}: "${found[k].title?.text || `untitled ${found[k].kind} table`}" is the same ink as a door/window schedule — indexed once, as the door/window schedule`);
+      found.splice(k, 1);
+    }
+    found.push(...openings);
     for (const t of found) {
-      const kind = t.kind as ExtractKind;
+      const kind = t.kind;
       // A DOOR / WINDOW / PARTITION schedule carries a MARK column, so the
       // finish-table hunt happily reads one as a finish/material schedule —
       // and then a finish code that collides with a door mark chains to a
@@ -1535,7 +1992,7 @@ export function buildSheetGraph(sheets: SheetSpans[]): SheetGraph {
         });
       }
     }
-    const entry: SheetGraphSheet = { key: s.key, role: role.role, confidence: role.confidence, evidence: role.evidence, schedules };
+    const entry: SheetGraphSheet = { key: s.key, role: role.role, confidence: role.confidence, evidence: role.evidence, ...(role.candidates ? { candidates: role.candidates } : {}), schedules };
     const b = ctxBySheet.get(s.key);
     if (b) entry.building = b;
     return entry;
@@ -1554,8 +2011,10 @@ export function buildSheetGraph(sheets: SheetSpans[]): SheetGraph {
 // building set.
 export interface ResolvedFinish { surface: string; code: string; source: Evidence; definition?: { cells: Record<string, string>; source: Evidence } }
 export interface ResolveCandidate { key: string; building?: string; sheet: string; table: string }
+/** A door/window mark's schedule row: every cell the row states, cited. */
+export interface ResolvedItem { kind: TableKind; table: string; key: string; cells: Record<string, string>; source: Evidence; columns?: number }
 export type ResolveResult =
-  | { status: "resolved"; tag: string; room: RoomTag | null; building?: string; finishes: ResolvedFinish[]; sources: Evidence[]; revisions?: RowRevision[] }
+  | { status: "resolved"; tag: string; room: RoomTag | null; building?: string; finishes: ResolvedFinish[]; sources: Evidence[]; revisions?: RowRevision[]; item?: ResolvedItem }
   | { status: "unresolved"; tag: string; room: RoomTag | null; reason: string; candidates?: ResolveCandidate[] };
 
 const SURFACE_HEADERS = ["FLOOR", "BASE", "WALL", "WALLS", "NORTH", "SOUTH", "EAST", "WEST", "CEILING", "WAINSCOT"];
@@ -1588,6 +2047,34 @@ export function resolveTag(graph: SheetGraph, tag: string): ResolveResult {
   };
 
   const roomTables = graph.tables.filter((x) => x.kind === "room-finish");
+
+  // A door or window mark ("ID-01", "V-03", "7") resolves to its door/window
+  // schedule row. The same text keying a room row AND an opening row, or two
+  // opening rows (a door "1" and a window "1"; one type listed twice with
+  // different sizes), is ambiguous — listed, never first-match.
+  const items = graph.tables.filter((x) => isOpeningKind(x.kind)).flatMap((tab) => tab.rows.filter((r) => rowKeyAnswersFor(r.key, t)).map((r) => ({ tab, r })));
+  if (items.length) {
+    const tableName = (tab: ScheduleTable) => tab.title?.text || `${tab.kind} schedule`;
+    const roomHits = roomTables.flatMap((tab) => tab.rows.filter((r) => numOf(norm(r.key)) === num).map((r) => ({ tab, r })));
+    if (items.length > 1 || roomHits.length) {
+      const all = [...items, ...roomHits];
+      return {
+        status: "unresolved", tag: t, room: roomHits.length ? pickRoom(wantB) : null,
+        reason: `ambiguous: ${all.length} schedule rows answer for "${t}" — ${all.map((c) => `${c.tab.kind} "${tableName(c.tab)}" (${c.r.sheet})`).join(", ")}; the tag alone cannot say which — look at the plan symbol it is drawn in`,
+        candidates: all.map((c) => ({ key: c.r.key, sheet: c.r.sheet, table: `${tableName(c.tab)} [${c.tab.kind}]` })),
+      };
+    }
+    const { tab, r } = items[0];
+    const cells: Record<string, string> = {};
+    for (const [k, v] of Object.entries(r.cells)) cells[k] = v.text;
+    const source: Evidence = { sheet: r.sheet, text: `${tableName(tab)} ${r.key}`, bbox: r.cells.ID?.bbox ?? r.cells[Object.keys(r.cells)[0]]?.bbox ?? tab.region };
+    return {
+      status: "resolved", tag: t, room: null, finishes: [], sources: [source],
+      item: { kind: tab.kind, table: tableName(tab), key: r.key, cells, source, ...(r.columns ? { columns: r.columns } : {}) },
+      ...(r.revision ? { revisions: [r.revision] } : {}),
+    };
+  }
+
   if (!roomTables.length) return { status: "unresolved", tag: t, room: pickRoom(wantB), reason: "no room-finish schedule found in the set" };
 
   interface Cand { tab: ScheduleTable; r: TableRow; building?: string }

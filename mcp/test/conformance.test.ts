@@ -972,3 +972,39 @@ test("create_rfi / list_rfis / resolve_rfi / delete_rfi: replies validate and ro
   const alive = await callOk(client, "rfi", { action: "list" });
   assert.deepEqual({ count: alive.count, withdrawn: alive.withdrawn }, { count: 0, withdrawn: ["RFI-001"] }, "the violations changed nothing");
 });
+
+// ── Nordic sets: sheet roles from the title block, door/window schedules ────
+// (generator: scripts/make-nordic-set-fixture.mjs). The plan's title sits in
+// the title block ("Plan 1. etasje"); a body note referencing another drawing
+// and a section-cut label must not outvote it. The door schedule is a
+// transposed card (types as columns); the window schedule a one-type card.
+const NORDIC_SET = fileURLToPath(new URL("./fixtures/nordic-set.pdf", import.meta.url));
+
+test("Nordic set: title-block roles, card door/window schedules, resolve_tag to the row, marks counted by label", async () => {
+  const client = await pair();
+  await callOk(client, "open_drawings", { action: "load", path: NORDIC_SET });
+  const g = await callOk(client, "sheet_context", { action: "graph" });
+  assert.deepEqual(g.sheets.map((s: any) => s.role), ["plan", "schedule", "schedule"]);
+  assert.equal(g.sheets[0].evidence.text, "Plan 1. etasje", "the title block speaks, not the note or the cut label");
+
+  const doors = await callOk(client, "schedule", { action: "find", schedule_kind: "dørskjema" });
+  assert.equal(doors.matches.length, 1);
+  assert.equal(doors.matches[0].kind, "door");
+  assert.equal(doors.matches[0].layout, "card");
+  assert.deepEqual(doors.matches[0].keys, ["ID-01", "ID-02"]);
+  assert.deepEqual({ printed: doors.matches[0].total.printed, agrees: doors.matches[0].total.agrees }, { printed: 3, agrees: true }, "the printed total checks the counts read");
+  const windows = await callOk(client, "schedule", { action: "find", schedule_kind: "window" });
+  assert.deepEqual(windows.matches.map((m: any) => [m.kind, m.rows]), [["window", 1]]);
+
+  const id2 = await callOk(client, "find_text", { action: "resolve_tag", tag: "ID-02" });
+  assert.equal(id2.status, "resolved");
+  assert.deepEqual({ qty: id2.item.cells.QTY, w: id2.item.cells.WIDTH, h: id2.item.cells.HEIGHT }, { qty: "1", w: "1 090", h: "2 190" });
+  assert.equal(id2.item.source.sheet, "nordic-set.pdf#2", "the row cites the schedule sheet");
+  const v1 = await callOk(client, "find_text", { action: "resolve_tag", tag: "V-01" });
+  assert.deepEqual({ kind: v1.item.kind, w: v1.item.cells.WIDTH, h: v1.item.cells.HEIGHT }, { kind: "window", w: "1 190", h: "1 390" });
+
+  const marks = await callOk(client, "count", { action: "marks" });
+  const by = Object.fromEntries(marks.marks.map((m: any) => [m.mark, m.count]));
+  assert.deepEqual(by, { "ID-01": 2, "ID-02": 1, "V-01": 1 }, "every tag drawn at an opening, counted by label; schedule cells never counted");
+  assert.deepEqual(marks.skipped.map((s: any) => s.role), ["schedule", "schedule"]);
+});

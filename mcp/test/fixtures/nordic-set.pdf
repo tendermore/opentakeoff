@@ -1,0 +1,114 @@
+%PDF-1.5
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Contents 6 0 R /Resources << /Font << /F1 9 0 R >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Contents 7 0 R /Resources << /Font << /F1 9 0 R >> >> >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Contents 8 0 R /Resources << /Font << /F1 9 0 R >> >> >>
+endobj
+6 0 obj
+<< /Length 883 >>
+stream
+1 w 20 20 802 555 re S
+0.5 w 620 30 m 822 30 l 822 110 l 620 110 l 620 30 l S
+BT /F1 6 Tf 628 96 Td (Tegning:) Tj ET
+BT /F1 14 Tf 628 78 Td (Plan 1. etasje) Tj ET
+BT /F1 6 Tf 628 50 Td (Tegningsnr.:) Tj ET
+BT /F1 10 Tf 628 38 Td (A20-1) Tj ET
+BT /F1 7 Tf 40 560 Td (- Se fasadetegning for plassering av vinduer) Tj ET
+BT /F1 7 Tf 300 420 Td (Snitt A) Tj ET
+1 w 60 200 m 560 200 l 560 520 l 60 520 l 60 200 l S
+1 w 90 294 m 170 294 l S
+0.5 w 110 294 m 110 324 l S
+0.5 w 140 294 m 140 304 l S
+BT /F1 7 Tf 114 302 Td (ID-01) Tj ET
+1 w 230 294 m 310 294 l S
+0.5 w 250 294 m 250 324 l S
+0.5 w 280 294 m 280 304 l S
+BT /F1 7 Tf 254 302 Td (ID-01) Tj ET
+1 w 370 294 m 450 294 l S
+0.5 w 390 294 m 390 324 l S
+0.5 w 420 294 m 420 304 l S
+BT /F1 7 Tf 394 302 Td (ID-02) Tj ET
+1 w 270 444 m 350 444 l S
+0.5 w 290 444 m 290 474 l S
+0.5 w 320 444 m 320 454 l S
+BT /F1 7 Tf 294 452 Td (V-01) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Length 869 >>
+stream
+1 w 20 20 802 555 re S
+0.5 w 620 30 m 822 30 l 822 110 l 620 110 l 620 30 l S
+BT /F1 6 Tf 628 96 Td (Tegning:) Tj ET
+BT /F1 14 Tf 628 78 Td (Dørskjema) Tj ET
+BT /F1 6 Tf 628 50 Td (Tegningsnr.:) Tj ET
+BT /F1 10 Tf 628 38 Td (A60-1) Tj ET
+BT /F1 9 Tf 60 540 Td (DØRSKJEMA - innerdører) Tj ET
+BT /F1 8 Tf 60 480 Td (ID) Tj ET
+BT /F1 8 Tf 160 480 Td (ID-01) Tj ET
+BT /F1 8 Tf 260 480 Td (ID-02) Tj ET
+BT /F1 8 Tf 60 466 Td (Antall) Tj ET
+BT /F1 8 Tf 160 466 Td (2) Tj ET
+BT /F1 8 Tf 260 466 Td (1) Tj ET
+BT /F1 8 Tf 380 466 Td (3) Tj ET
+BT /F1 8 Tf 90 452 Td (B \(mm\)) Tj ET
+BT /F1 8 Tf 160 452 Td (990) Tj ET
+BT /F1 8 Tf 260 452 Td (1 090) Tj ET
+BT /F1 8 Tf 90 438 Td (H \(mm\)) Tj ET
+BT /F1 8 Tf 160 438 Td (2 090) Tj ET
+BT /F1 8 Tf 260 438 Td (2 190) Tj ET
+BT /F1 8 Tf 60 424 Td (Brannkrav) Tj ET
+BT /F1 8 Tf 160 424 Td (EI30-Sa) Tj ET
+BT /F1 8 Tf 260 424 Td (-) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Length 589 >>
+stream
+1 w 20 20 802 555 re S
+0.5 w 620 30 m 822 30 l 822 110 l 620 110 l 620 30 l S
+BT /F1 6 Tf 628 96 Td (Tegning:) Tj ET
+BT /F1 14 Tf 628 78 Td (Vindusskjema) Tj ET
+BT /F1 6 Tf 628 50 Td (Tegningsnr.:) Tj ET
+BT /F1 10 Tf 628 38 Td (A61-1) Tj ET
+BT /F1 9 Tf 60 540 Td (Vindusskjema - utvendige vinduer) Tj ET
+BT /F1 8 Tf 60 480 Td (ID) Tj ET
+BT /F1 8 Tf 160 480 Td (V-01) Tj ET
+BT /F1 8 Tf 60 466 Td (Antall) Tj ET
+BT /F1 8 Tf 160 466 Td (1) Tj ET
+BT /F1 8 Tf 60 452 Td (Bredde) Tj ET
+BT /F1 8 Tf 160 452 Td (1 190) Tj ET
+BT /F1 8 Tf 60 438 Td (Høyde) Tj ET
+BT /F1 8 Tf 160 438 Td (1 390) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000000379 00000 n 
+0000000505 00000 n 
+0000001439 00000 n 
+0000002359 00000 n 
+0000002999 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+3096
+%%EOF

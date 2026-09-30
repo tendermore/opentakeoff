@@ -8,7 +8,7 @@ import path from "node:path";
 import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHandle, type PageHandle, type TextSpan, type OcgEntry } from "./pdf.ts";
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
-import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
+import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
 import { UserError, round1, round2, displayUnits } from "./format.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
@@ -2976,19 +2976,29 @@ export class Session {
     // a compound key ("R1 / E1") contributes each of its marks
     type RowCite = { sheet: string; key: string; table: string; kind: string };
     const rowCite = new Map<string, RowCite>();
+    // every table that keys a mark: a mark defined by two tables (a door "1"
+    // and a window "1") cannot be counted from its tag text — which schedule
+    // a drawn "1" belongs to is the symbol's call, not the text's
+    const keyedBy = new Map<string, Set<string>>();
     for (const tb of graph.tables) {
       const table = tb.title?.text || `${tb.kind} schedule`;
       for (const row of tb.rows) {
         for (const part of canon(row.key).split("/").filter(Boolean)) {
           if (!rowCite.has(part)) rowCite.set(part, { sheet: tb.sheet, key: row.key, table, kind: tb.kind });
+          if (!keyedBy.has(part)) keyedBy.set(part, new Set());
+          keyedBy.get(part)!.add(`${tb.kind} "${table}" (${tb.sheet})`);
         }
       }
     }
+    const isOpeningMark = (m: string) => { const k = rowCite.get(m)?.kind; return !!k && isOpeningKind(k as never); };
     let marks: string[];
     if (opts.marks?.length) {
       marks = [...new Set(opts.marks.map(canon).filter(Boolean))];
     } else {
-      marks = [...rowCite.keys()].filter((k) => MARK_RE.test(k)).sort();
+      // door/window marks are marks in any shape their schedule gives them
+      // ("ID-S01", "YD1-SG", "K-ID11") — except a bare number, which on a plan
+      // is as likely a dimension, a level or a room number (state it to census it)
+      marks = [...rowCite.keys()].filter((k) => MARK_RE.test(k) || (isOpeningMark(k) && !/^\d+$/.test(k))).sort();
       if (!marks.length) {
         throw new UserError('No mark-shaped schedule row keys in the set to census — state the marks yourself: count {action: "marks", marks: ["S1", "R1"]}.');
       }
@@ -3043,6 +3053,11 @@ export class Session {
           const cx = (sp.x0 + sp.x1) / 2, cy = (sp.y0 + sp.y1) / 2;
           const h = Math.max(sp.y1 - sp.y0, 6);
           if (regions.some((r) => cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3])) { excludedInTables++; continue; }
+          const tables = keyedBy.get(m);
+          if (tables && tables.size > 1) {
+            rec.withheld.push({ at: [round1(cx), round1(cy)], sheet: sh.key, reason: `ambiguous mark — ${tables.size} schedules define "${m}" (${[...tables].join("; ")}); the tag text cannot say which this is. Look at the symbol it is drawn in, or sweep one instance with count {action: "sweep"}` });
+            continue;
+          }
           const paired = values.find((v) =>
             Math.abs((v.x0 + v.x1) / 2 - cx) <= Math.max(sp.x1 - sp.x0, 1.5 * h) &&
             v.y0 >= sp.y1 - 0.4 * h && v.y0 <= sp.y1 + 2.4 * h);
@@ -3064,10 +3079,16 @@ export class Session {
             // amid linework IS an instance, counted BY LABEL and said so;
             // the bare-text case (a note mentioning it) still withholds.
             const equipmentRow = rowCite.get(m)?.kind === "equipment";
+            // A DOOR or WINDOW mark is drawn AT its opening — in or beside the
+            // wall, never with a value under it (the Nordic "ID-01" / "V-03"
+            // tag, the US door number in its bubble). A scheduled opening mark
+            // amid linework is an instance, counted by label; a bare-number
+            // mark is not (a lone digit amid linework is as likely a dimension)
+            const openingRow = isOpeningMark(m) && !/^\d+$/.test(m);
             // a device drawn to its own size (a heater bar, a fan) is long
             // linework that only CROSSES the pad box — count segments that
             // touch it, not only those that fit inside it
-            if (equipmentRow && Session.lineworkNear(segs, [sp.x0, sp.y0, sp.x1, sp.y1], pad) >= 3) {
+            if ((equipmentRow || openingRow) && Session.lineworkNear(segs, [sp.x0, sp.y0, sp.x1, sp.y1], pad) >= 3) {
               rec.counted.push({ at: [round1(cx), round1(cy)], sheet: sh.key, by: "label" });
               counts[m] = (counts[m] || 0) + 1;
               continue;
@@ -5418,7 +5439,7 @@ export class Session {
         const spans = s.spans.map((t) => ({ str: t.str, x: t.x0, y: t.y0, w: t.x1 - t.x0, h: t.y1 - t.y0, ...(t.rot ? { rot: t.rot } : {}) }));
         let segs: number[] | undefined;
         if (spans.some((t) => /^\d{1,2}$/.test(t.str.trim()))) {
-          const role = classifySheetRole({ key: s.key, sheet_number: s.sheetNumber, spans }).role;
+          const role = classifySheetRole({ key: s.key, sheet_number: s.sheetNumber, spans, width: s.widthPx, height: s.heightPx }).role;
           if (role === "plan" || role === "schedule" || role === "demolition" || role === "unknown") {
             if (vecBudget <= 0) skippedHeavy++;
             else if (s.geo) { segs = s.geo.segs; vecBudget -= segs.length / 4; }
@@ -5430,7 +5451,7 @@ export class Session {
             }
           }
         }
-        inputs.push({ key: s.key, sheet_number: s.sheetNumber, spans, ...(segs?.length ? { segs } : {}) });
+        inputs.push({ key: s.key, sheet_number: s.sheetNumber, spans, width: s.widthPx, height: s.heightPx, ...(segs?.length ? { segs } : {}) });
       }
       this.graph = buildSheetGraph(inputs);
       if (skippedHeavy) this.graph.notes.push(`drawn-delta hunt skipped on ${skippedHeavy} sheet(s) — the set's linework exceeded the vector budget; text revision markers (Δ2 / REV 2) were still read everywhere`);
@@ -5460,6 +5481,7 @@ export class Session {
       sheets: g.sheets.map((s) => ({
         sheet: s.key, role: s.role, confidence: s.confidence,
         ...(s.evidence ? { evidence: Session.wireEvidence(s.evidence) } : {}),
+        ...(s.candidates ? { candidates: s.candidates } : {}),
         ...(s.building ? { building: s.building } : {}),
         schedules: s.schedules.map((t) => ({
           kind: t.kind, title: t.title, rows: t.rows, region: Session.wireBox(t.region),
@@ -5507,7 +5529,7 @@ export class Session {
   }
 
   async resolveRoomTag(tag: string) {
-    if (!tag || !tag.trim()) throw new UserError("Pass a room tag, e.g. find_text {action: \"resolve_tag\", tag: \"134\"}.");
+    if (!tag || !tag.trim()) throw new UserError("Pass a room tag or a door/window mark, e.g. find_text {action: \"resolve_tag\", tag: \"134\"} or {tag: \"ID-01\"}.");
     const g = await this.ensureGraph();
     if (!g.available) throw new UserError("This set has no text layer (a scan) — the sheet graph is unavailable, not empty.");
     const res = resolveTag(g, tag);
@@ -5528,6 +5550,7 @@ export class Session {
         ...(f.definition ? { definition: { cells: f.definition.cells, source: Session.wireEvidence(f.definition.source) } } : {}),
       })),
       sources: res.sources.map(Session.wireEvidence),
+      ...(res.item ? { item: { kind: res.item.kind, table: res.item.table, key: res.item.key, cells: res.item.cells, source: Session.wireEvidence(res.item.source), ...(res.item.columns ? { columns: res.item.columns } : {}) } } : {}),
       ...(res.revisions?.length ? { revisions: res.revisions.map((v) => ({ rev: v.rev, source: Session.wireEvidence(v.source), ...(v.drawn ? { drawn: true } : {}) })) } : {}),
     };
   }
@@ -5536,10 +5559,16 @@ export class Session {
     const g = await this.ensureGraph();
     if (!g.available) throw new UserError("This set has no text layer (a scan) — the sheet graph is unavailable.");
     const k = (kind || "").toLowerCase();
-    const want = /room/.test(k) ? "room-finish"
-      : /equip|mechanical|mep|hvac|plumb|electr|fan|pump|heater|unit|valve|diffuser|grille|fixture|device/.test(k) ? "equipment"
-      : /finish|material|product|code|mark/.test(k) ? "finish" : k;
-    const hits = g.tables.filter((t) => t.kind === want);
+    // door and window schedules: a combined door/window schedule answers
+    // for either, and is listed under both
+    const door = /door|dør|dor|dörr|tür|port/.test(k), win = /window|vindu|fönster|fenster|glass/.test(k);
+    const wants: string[] = door && win || /opening|åpning/.test(k) ? ["door", "window", "door-window"]
+      : door ? ["door", "door-window"]
+      : win ? ["window", "door-window"]
+      : [/room/.test(k) ? "room-finish"
+        : /equip|mechanical|mep|hvac|plumb|electr|fan|pump|heater|unit|valve|diffuser|grille|fixture|device/.test(k) ? "equipment"
+        : /finish|material|product|code|mark/.test(k) ? "finish" : k];
+    const hits = g.tables.filter((t) => wants.includes(t.kind));
     if (!hits.length) {
       const found = g.tables.map((t) => `${t.kind} on ${t.sheet}`).join(" | ");
       throw new UserError(`No ${JSON.stringify(kind)} schedule found in the set. Found: ${found || "no schedules at all"}.`);
@@ -5552,6 +5581,9 @@ export class Session {
         ...(t.rotated_headers ? { rotated_headers: true } : {}),
         ...(t.rows.some((r) => r.revision) ? { revised_rows: t.rows.filter((r) => r.revision).length } : {}),
         ...(t.parts ? { parts: t.parts.map((p) => ({ sheet: p.sheet, title: p.title, rows: p.rows, region: Session.wireBox(p.region) })) } : {}),
+        ...(t.layout ? { layout: t.layout } : {}),
+        ...(isOpeningKind(t.kind) ? { keys: t.rows.map((r) => r.key) } : {}),
+        ...(t.total ? { total: { printed: t.total.printed, sum: t.total.sum, agrees: t.total.agrees, source: Session.wireEvidence(t.total.source) } } : {}),
       })),
     };
   }
