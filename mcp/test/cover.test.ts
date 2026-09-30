@@ -75,6 +75,32 @@ test("combined refusals: a sum that disagrees, a printed total inside, a printed
   assert.equal(outside.commits.length, 0);
 });
 
+test("every flagged room carries a stable code and the numbers its reason compares", () => {
+  const off = coverSheet(sheet(mask(), { spans: [span("400,0 m²", 100, 100), span("100,0 m²", 300, 100), span("900,0 m²", 700, 400)] }).sh, { commit: true });
+  const pair = off.rooms.filter((r) => r.label !== "900,0 m²");
+  assert.ok(pair.every((r) => r.code === "several_printed_sum_differs" && r.sum_m2 === 500 && r.outline_m2! > 780), JSON.stringify(pair));
+  assert.equal(off.rooms.find((r) => r.label === "900,0 m²")?.code, "open_to_outside");
+  const one = coverSheet(sheet(mask(), { spans: [span("100,0 m²", 100, 100), span("900,0 m²", 700, 450), FAR] }).sh, { commit: true });
+  const r = one.rooms.find((x) => x.label === "100,0 m²")!;
+  assert.equal(r.code, "area_differs");
+  assert.equal(r.printed_m2, 100);
+  assert.ok(r.outline_m2! > 780 && r.zone_m2! > 780);
+});
+
+test("clouds: one per flagged zone over its extent; a zone filling little of it clouded round each label", () => {
+  const whole = coverSheet(sheet(mask(), { spans: [span("400,0 m²", 100, 100), span("100,0 m²", 300, 100), span("900,0 m²", 700, 400)] }).sh, { commit: true });
+  const zoneClouds = whole.clouds.filter((c) => c.kind === "not_measured");
+  assert.equal(zoneClouds.length, 1, "two labels sharing a zone share its cloud");
+  assert.deepEqual(zoneClouds[0].rooms!.map((r) => r.label).sort(), ["100,0 m²", "400,0 m²"]);
+  // an L of floor round a walled block: its extent is mostly the block
+  const m = mask();
+  rect(m, 60, 60, 410, 210);
+  const ell = coverSheet(sheet(m, { spans: [span("80,0 m²", 300, 35), span("70,0 m²", 35, 180), span("900,0 m²", 700, 400)] }).sh, { commit: true });
+  const legs = ell.clouds.filter((c) => c.kind === "not_measured");
+  assert.equal(legs.length, 2, JSON.stringify(legs.map((c) => c.rect)));
+  for (const c of legs) assert.ok(Math.min(c.rect[2] - c.rect[0], c.rect[3] - c.rect[1]) < 60, `a leg, not the whole extent: ${c.rect}`);
+});
+
 test("without condition nothing commits: a passing zone is listed with what would commit it", () => {
   const { sh, commits } = sheet(mask(), { spans: [span("794,0 m²", 100, 100), FAR, FAR2] });
   const out = coverSheet(sh, { commit: false });
@@ -164,4 +190,8 @@ test("mark replaces cover's own clouds and never a user's, whatever the user's t
   assert.equal(s.markups.length, count, "a repeat mark does not stack a second set");
   assert.equal(second.clouds_removed, first.clouds);
   assert.ok(s.markups.some((m) => m.text === "Not measured: check with the architect" && m.source === undefined), "the user's cloud survives");
+  for (const m of s.markups.filter((x) => x.source === "cover")) {
+    assert.ok(m.cover && m.cover.items.length > 0, "a cover cloud says what it is about");
+    assert.match(m.text, /^(Not measured|No room label): /);
+  }
 });

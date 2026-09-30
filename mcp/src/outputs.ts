@@ -199,18 +199,29 @@ export const coverFloorOutput = {
     zone_m2: z.number().optional().describe("The floor zone round the label, m²"),
     walls_pct: z.number().optional().describe("Share of the zone's edge that is wall or a measured room, %"),
     reason: z.string().optional().describe("Why a flagged room was not measured, with the numbers"),
+    code: z.enum(["open_to_outside", "unplaced_label", "untraceable", "surrounds_void", "label_outside_outline", "area_differs", "several_printed_sum_differs", "several_labels_no_printed_area", "total_stamp_inside", "too_small", "off_drawn_walls", "not_walled", "overlaps_measured", "refused", "ready_to_commit"]).optional()
+      .describe("flagged: the reason as a stable code, for a caller that words it itself (numbers in zone_m2, outline_m2, printed_m2, sum_m2)"),
+    outline_m2: z.number().optional().describe("The outline traced from the zone, m², where the reason compares it"),
+    sum_m2: z.number().optional().describe("Several printed areas in one zone: their sum, m²"),
     at: z.tuple([z.number(), z.number()]).describe("The label, image px"),
     bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional().describe("A flagged zone's extent, image px"),
   })),
   counts: z.object({ labels: z.number().int(), measured: z.number().int(), committed: z.number().int(), combined: z.number().int(), flagged: z.number().int() }),
   unmeasured_floor: z.object({
     in_flagged_zones_m2: z.number().describe("Floor inside the building round flagged room labels"),
-    unlabeled_m2: z.number().describe("Enclosed floor inside the building with no room label: shafts, stair voids and unlabelled rooms among them"),
-    unlabeled: z.array(z.object({ m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]) })).describe("Largest first, image px"),
+    unlabeled_m2: z.number().describe("Enclosed floor inside the building with no room label that a door or an opening reaches from measured floor (every such piece where the sheet's doors could not be read): unlabelled rooms and stair voids among them"),
+    unlabeled: z.array(z.object({
+      m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+      code: z.literal("no_room_label"),
+      access: z.enum(["open", "door", "opening"]).optional().describe("How measured floor reaches it: across a drawn line only (split off a labelled zone), through a door, or an opening onto measured floor; absent where the doors could not be read"),
+    })).describe("Largest first, image px"),
     unlabeled_not_listed: z.number().int().optional(),
+    no_access_m2: z.number().describe("Enclosed pieces with no room label and no door or opening into them from measured floor — a roof, a shaft, a void: not missing floor, never clouded; say so in the reply"),
+    no_access: z.array(z.object({ m2: z.number(), at: z.tuple([z.number(), z.number()]), bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]), code: z.literal("no_access") })).describe("Largest first, image px"),
+    no_access_not_listed: z.number().int().optional(),
   }).describe("The floor no committed outline covers — what reads as whitespace on the marked plan"),
-  clouds: z.number().int().optional().describe("mark: clouds added round what is not measured (annotate list shows them)"),
-  clouds_removed: z.number().int().optional().describe("Cover clouds removed: mark replaces this sheet's cover clouds; any call drops those over floor now measured"),
+  clouds: z.number().int().optional().describe("mark: clouds added round what is not measured, one per flagged zone and per reachable unlabelled piece (annotate list shows them); the marked set leaves out any label a floor shape committed later covers"),
+  clouds_removed: z.number().int().optional().describe("Cover clouds removed: mark replaces this sheet's cover clouds; any call drops those whose labels are all over floor now measured"),
   note: z.string(),
 };
 
@@ -225,7 +236,12 @@ export const measurePolygonOutput = {
     agrees_with_printed_area: z.boolean().optional().describe("Present where a room area is printed inside: true when the kept reading was chosen because it agrees with it"),
   }).optional().describe("snap_to_walls: what the snap did"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
-  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
+  check: z.string().optional().describe('Floor shapes, committed or previewed: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only); a preview the commit would refuse says "would be refused: <why>". Trace confidence is not a check'),
+  printed_match: z.object({
+    label: z.string().describe("The printed text"),
+    m2: z.number(),
+    at: z.tuple([z.number(), z.number()]).describe("Where it is printed, image px"),
+  }).optional().describe("The printed room area the outline agrees with (check printed_area), preview or commit: see it is the room the outline was drawn for before committing"),
   warning: z.string().optional().describe("Mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region — verify before trusting these numbers"),
 };
 

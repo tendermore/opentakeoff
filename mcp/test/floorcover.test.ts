@@ -63,6 +63,42 @@ test("measured floor is taken out; its label reads as measured; an unlabelled wa
   assert.ok(Math.abs(r.unlabeled[0].m2 - 50) < 3, `unlabelled ${r.unlabeled[0].m2}`);
 });
 
+test("an unlabelled piece a door or an opening reaches from measured floor is unlabelled floor; one nothing reaches is kept apart", () => {
+  const walls = building();
+  line(walls, 210, 10, 210, 210);                // left: a measured room; right: a labelled room nobody measured
+  rect(walls, 210, 40, 290, 120);                // A: walled in, its door in the wall to the measured room
+  rect(walls, 300, 40, 380, 120);                // A2: walled in, its door into the unmeasured room only
+  rect(walls, 250, 140, 330, 200);               // B: walled in, no door — a shaft, a roof
+  // the left room is measured down to y = 150; below it the floor runs on with no wall between: an opening
+  const measured: [number, number][][] = [[[11, 11], [209, 11], [209, 150], [11, 150]]];
+  const doorA: [[number, number], [number, number]] = [[210, 70], [210, 90]], doorA2: [[number, number], [number, number]] = [[340, 120], [360, 120]];
+  const run = (doors: [[number, number], [number, number]][] | null) =>
+    coverZones({ walls, cuts: null, measured, labels: [stamp(10, 390, 180)], pxPerM: PX_PER_M, leakM2: 10_000, doors });
+  const at = (z: { bbox: number[] }) => `${Math.round(z.bbox[0])},${Math.round(z.bbox[1])}`;
+  const r = run([doorA, doorA2]);
+  assert.deepEqual(r.unlabeled.map((z) => [at(z), z.access]).sort(), [["11,150", "opening"], ["211,41", "door"]]);
+  assert.deepEqual(r.noAccess.map(at).sort(), ["251,141", "301,41"]);
+  // through other floor: once the unmeasured room has a door to measured floor, A2 is reached through it
+  const via = run([doorA, doorA2, [[210, 175], [210, 195]]]);
+  assert.deepEqual(via.noAccess.map(at), ["251,141"]);
+  // no doors read on the sheet: nothing is judged unreachable
+  const blind = run(null);
+  assert.equal(blind.unlabeled.length, 4);
+  assert.equal(blind.noAccess.length, 0);
+});
+
+test("a zone's rectangle round a point is the part of the zone it sits in: one leg of an L", async () => {
+  const { zoneRectAt } = await import("../../web/src/lib/floorcover.ts");
+  const walls = building();
+  rect(walls, 60, 60, 410, 210);                 // a walled block leaves an L of floor: a top strip and a left strip
+  const r = cover(walls, [stamp(10, 300, 35), stamp(10, 35, 180)]);
+  const z = r.zones.find((q) => q.labels.length === 2)!;
+  const [x0, y0, x1, y1] = zoneRectAt(z, 35, 180, r.mw, r.mh, r.ws);
+  assert.ok(x1 - x0 < 60 && y1 - y0 > 150, `left leg ${[x0, y0, x1, y1]}`);
+  const top = zoneRectAt(z, 300, 35, r.mw, r.mh, r.ws);
+  assert.ok(top[2] - top[0] > 350 && top[3] - top[1] < 60, `top leg ${top}`);
+});
+
 test("floor open to the sheet edge is the outside, never a room", () => {
   const walls = building();
   for (let y = 100; y < 120; y++) walls.mask[y * W + 10] = 0;   // a gap in the outer wall

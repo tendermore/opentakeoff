@@ -195,7 +195,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
         assign_from_schedule: z.boolean().default(false).describe("detect: commit each room under the FLOOR finish of its own schedule row"),
         role: roleSchema(),
         return_verts: z.boolean().default(false).describe("Include each traced polygon's vertices"),
-        mark: z.boolean().optional().describe("cover: cloud every flagged room and every unlabelled floor piece of 1 m² or more, so the marked PDF shows what is not measured"),
+        mark: z.boolean().optional().describe("cover: cloud each flagged zone and each reachable unlabelled floor piece of 1 m² or more, so the marked PDF shows what is not measured (a label measured later drops out of it)"),
         min_area_sf: z.number().positive().default(5).describe("detect: enclosed regions smaller than this are withheld, not rooms"),
         labels: z.array(z.union([z.string(), z.object({ text: z.string(), at: point().describe("Where the text is printed (image px), e.g. a find_text hit's center") })])).min(1).optional()
           .describe("detect: seed from these room labels instead of the engine's own choice — a text (every place the sheet prints it) or {text, at} (the one printed there). Each room still has to pass the same checks; texts the sheet does not print return in labels_unmatched. At least one; leave it out for the engine's own choice"),
@@ -313,7 +313,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     if (a.kind === "walls") return { kind: "walls", ...(await session.measureWalls(a.sheet, { condition: a.condition, commit: a.commit, height_ft: a.height_ft, region: a.region })) };
     if (a.kind === "area") {
       needPoints("measure", "area", a.points, 3);
-      if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry
+      if (a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check (commit or preview) reads the geometry
       const snapped = a.snap_to_walls ? await session.snapOutline(a.sheet, a.points) : null;
       return { kind: "area", ...(await session.measurePolygon(a.sheet, snapped ? snapped.verts : a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })), ...(snapped ? { snap: { vertices_moved: snapped.moved, reading: snapped.reading, ...(snapped.agrees !== null ? { agrees_with_printed_area: snapped.agrees } : {}) } } : {}) };
     }

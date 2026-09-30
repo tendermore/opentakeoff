@@ -40,6 +40,19 @@ test("an outline agreeing with the room area printed inside it is verified; one 
   assert.equal(bare.listShapes().shapes[0].check, "unverified: units_not_metric");
 });
 
+test("a preview states the check the commit would record, and both name the printed area the outline matched", async () => {
+  const s = await stamped();
+  const preview = s.measurePolygon(KEY, SQ(0, 0), { role: "floor_area" });
+  assert.equal(preview.check, "printed_area");
+  assert.deepEqual(preview.printed_match, { label: "9,3 m²", m2: 9.3, at: [180, 180] });
+  assert.equal(s.shapes.length, 0, "a preview commits nothing");
+  const refused = s.measurePolygon(KEY, SQ(0, 0, 720, 360), { role: "floor_area" });
+  assert.match(refused.check!, /^would be refused: PRINTED_AREA_DISAGREES/);
+  assert.equal(refused.printed_match, undefined);
+  const committed = s.measurePolygon(KEY, SQ(360, 0), { condition: "GULV", role: "floor_area" });
+  assert.deepEqual(committed.printed_match, { label: "9,3 m²", m2: 9.3, at: [540, 180] });
+});
+
 test("two rooms measured as one outline are refused even when the outline equals their printed sum", async () => {
   const s = await stamped();
   // 720 × 360 px = 200 SF = 18.58 m², the two printed 9,3 m² together

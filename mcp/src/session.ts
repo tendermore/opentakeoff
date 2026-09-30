@@ -9,7 +9,7 @@ import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHan
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
-import { UserError, round1, round2, displayUnits, isRatioScale } from "./format.ts";
+import { UserError, round1, round2, displayUnits, displayLocale, isRatioScale } from "./format.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
 import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPatch, propagateRowRemove,
@@ -38,7 +38,9 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 // scale-unpinned masks here, so an MCP trace and a canvas click at the same
 // seed measured DIFFERENT square footage under the same origin.method.
 import { sweepCommitRefusal } from "./sweepGuard.ts";
-import { coverSheet, coverLabels, snapToWalls, MIN_ROOM_M2 } from "./cover.ts";
+import { coverSheet, coverLabels, snapToWalls, MIN_ROOM_M2, type CoverCloud } from "./cover.ts";
+import { liveCoverItems, coverCloudText, formatCoverArea, cloudInside } from "../../web/src/lib/coverClouds.js";
+import { markedSetText } from "../../web/src/lib/markedsetLocale.js";
 import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, isTotalStamp, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
 import { measureWalls, countWindows, type WallHost, type WallsOpts } from "./walls.ts";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
@@ -423,6 +425,9 @@ export interface CutoutParentPrev {
   computed?: Shape["computed"];
 }
 
+/** One thing a cover cloud is about: where the drawing prints it (normalized) and how its note names it. */
+export interface CoverItem { at: [number, number]; text: string }
+
 /** An annotation — a note ABOUT the work, never a measurement of it.
  *
  *  Field-identical to the canvas's markup (web/src/pages/TakeoffCanvas.jsx), so
@@ -454,8 +459,10 @@ export interface Markup {
   /** "cover": a cloud takeoff_rooms cover {mark: true} drew round floor it could not measure — cover replaces or
    * drops its own, and only its own. */
   source?: "cover";
-  /** cover: the room label a "not measured" cloud is about, with where it is printed ("5,7 m²@1577,630") */
-  room?: string;
+  /** cover: what the cloud is about — the flagged room labels of one zone ("not_measured") or one unlabelled
+   * piece ("no_label"), each with where the drawing prints it (normalized like rect) and its words for the note.
+   * The marked set drops an item a floor shape covers (coverClouds.js). */
+  cover?: { kind: "not_measured" | "no_label"; items: CoverItem[] };
   /** dimension: the measured length in real feet, snapshotted at annotate
    * time from the sheet scale — the renderers (canvas, marked set) draw the
    * label from this, so neither needs scale plumbing of its own. */
@@ -1632,17 +1639,7 @@ export class Session {
     // only on a sheet that tags rooms with printed areas (the same >= 3 test
     // detect_rooms uses) — a lone metric note elsewhere is not a room's area
     if (s.spans.filter((sp) => printedAreaM2((sp.str || "").trim()) != null).length < 3) return { status: "unverified", reason: "no_printed_areas_on_sheet" };
-    const stamps: { label: string; m2: number; x: number; y: number }[] = [];
-    let totalInside = false;
-    for (const sp of s.spans) {
-      const label = (sp.str || "").trim();
-      const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
-      if (isTotalStamp(label)) { if (pointInPoly(x, y, vertsPx)) totalInside = true; continue; }   // totals ("BRA 59,7 m²", "12,400 GSF") are not a room's own area
-      const m2 = printedAreaM2(label);
-      if (m2 == null) continue;
-      if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
-      stamps.push({ label, m2, x, y });
-    }
+    const { stamps, totalInside } = this.printedInside(s, vertsPx);
     if (!stamps.length) return { status: "unverified", reason: "no_printed_area_inside" };
     const traced = areaSf * M2_PER_SF;
     // cover's combined zone: several rooms with nothing drawn between them, measured as one, is a
@@ -1658,6 +1655,31 @@ export class Session {
       throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² and holds ${stamps.length} rooms' printed areas (${printed}), matching none of them. Not committed. An outline around several rooms is refused even when it equals their sum: measure each room on its own, or report them as not measured.`);
     }
     throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area printed inside it says ${printed}. Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
+  }
+
+  /** The room areas printed inside an outline (image px), each once, and whether a printed total sits in it —
+   * totals ("BRA 59,7 m²", "12,400 GSF") are not a room's own area. */
+  private printedInside(s: SheetState, vertsPx: Point[]): { stamps: { label: string; m2: number; x: number; y: number }[]; totalInside: boolean } {
+    if (!s.spans) s.spans = textSpans(s.page);
+    const stamps: { label: string; m2: number; x: number; y: number }[] = [];
+    let totalInside = false;
+    for (const sp of s.spans) {
+      const label = (sp.str || "").trim();
+      const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
+      if (isTotalStamp(label)) { if (pointInPoly(x, y, vertsPx)) totalInside = true; continue; }
+      const m2 = printedAreaM2(label);
+      if (m2 == null) continue;
+      if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
+      stamps.push({ label, m2, x, y });
+    }
+    return { stamps, totalInside };
+  }
+
+  /** The printed room area a floor check matched: its text, value and where it is printed (image px). */
+  private printedMatch(s: SheetState, vertsPx: Point[], check: FloorCheck | undefined): { label: string; m2: number; at: [number, number] } | undefined {
+    if (check?.status !== "verified" || check.by !== "printed_area") return undefined;
+    const t = this.printedInside(s, vertsPx).stamps.find((x) => x.m2 === check.printed_m2);
+    return t ? { label: t.label, m2: t.m2, at: [round1(t.x), round1(t.y)] } : undefined;
   }
 
   /** The wall faces of a sheet for the drawn-walls check, from its vector
@@ -2453,15 +2475,17 @@ export class Session {
     const measured = this.shapes
       .filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
       .map((sh) => ({ id: sh.id, ring: sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point), label: sh.label }));
-    let out: ReturnType<typeof coverSheet>;
+    // what joins an unlabelled piece to measured floor: the doors the sheet draws (none read = none judged unreachable)
+    const doors = raster ? null : (await this.ensureDoors(name))?.doors.map((d) => d.opening) ?? null;
+    let out: Omit<ReturnType<typeof coverSheet>, "clouds">, clouds: CoverCloud[];
     try {
-    out = coverSheet({
+    ({ clouds, ...out } = coverSheet({
       key: s.key, widthPx: s.widthPx, heightPx: s.heightPx, widthPt: s.widthPt, heightPt: s.heightPt, upp, spans: s.spans, roomTags, geo: raster ? null : geo, snap: s.snap,
       nearestSnap: (px, py, d) => (s.snap ? nearestSnap(s.snap, px, py, d) : null),
       ...(wallsOn ? { drawnWalls: {
         refine: (ring: Point[]) => this.onWalls(s, ring, WALL_SNAP_CELLS / mask!.ws).ring,
         judge: (ring: Point[]) => { const w = this.wallCheck(s, ring); return { pass: w.pass, reason: Session.wallCheckText(w) }; },
-      } } : {}), mask, roles: raster ? null : this.rolesFor(s, geo, opts.layers), raster, measured,
+      } } : {}), mask, roles: raster ? null : this.rolesFor(s, geo, opts.layers), raster, measured, doors,
       commit: (ring, area_sf, perimeter_lf, seed, label, combined) => {
         const shape = this.commit(s, opts.condition!, "floor_area", ring, { area_sf, perimeter_lf }, {
           method: "cover_v1", actor: "agent", seed_norm: [seed[0] / s.widthPx, seed[1] / s.heightPx], reviewed: false,
@@ -2469,38 +2493,45 @@ export class Session {
         shape.label = label;
         return { id: shape.id, check: checkText(shape.check) };
       },
-    }, { commit: opts.condition !== undefined });
+    }, { commit: opts.condition !== undefined }));
     } finally {
       this.flushCommits("cover");   // what committed before a failure is still one undo step
     }
     // Cover's clouds carry source "cover" and never touch anyone else's markups. Like every annotation they are
-    // not journaled. mark replaces this sheet's cover clouds; any call drops the ones over floor now measured,
-    // so the marked set never clouds a room it also shows measured.
+    // not journaled. One cloud per flagged zone (its labels share it) and per unlabelled piece a door or an
+    // opening reaches; an enclosed piece nothing reaches (a roof, a shaft) is reported, never clouded. Each
+    // cloud lists what it is about (`cover.items`, where the drawing prints it): the marked set leaves out an
+    // item a floor shape covers at export, whatever committed it, and mark replaces this sheet's clouds; any
+    // call drops the items over floor measured now, and a cloud with none left.
+    const T = markedSetText(displayLocale()), metric = this.displayUnits() === "metric";
+    const norm = ([x, y]: [number, number]): [number, number] => [x / s.widthPx, y / s.heightPx];
     const ours = (m: Markup) => m.sheet_id === s.key && m.source === "cover";
-    const floorRings = this.shapes.filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
-      .map((sh) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point));
-    const roomKey = (r: { label: string; at: [number, number] }) => `${r.label}@${Math.round(r.at[0])},${Math.round(r.at[1])}`;
-    const measuredNow = new Set(out.rooms.filter((r) => r.status !== "flagged").map(roomKey));
-    const stale = (m: Markup) => {
-      if (m.room !== undefined) return measuredNow.has(m.room);
-      if (!m.rect) return false;
-      const cx = ((m.rect[0][0] + m.rect[1][0]) / 2) * s.widthPx, cy = ((m.rect[0][1] + m.rect[1][1]) / 2) * s.heightPx;
-      return floorRings.some((r) => pointInPoly(cx, cy, r));
-    };
+    const floors = this.shapes.filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3).map((sh) => sh.verts_norm);
     const before = this.markups.length;
-    this.markups = this.markups.filter((m) => !(ours(m) && (opts.mark || stale(m))));
+    this.markups = this.markups.filter((m) => {
+      if (!ours(m)) return true;
+      if (opts.mark) return false;
+      const live = liveCoverItems(m, floors) as CoverItem[];
+      if (!live.length) return false;
+      if (m.cover && live.length < m.cover.items.length) { m.cover = { ...m.cover, items: live }; m.text = coverCloudText(m.cover.kind, live, T); }
+      return true;
+    });
     const removed = before - this.markups.length;
     let marked = 0;
     if (opts.mark) {
-      const cloud = (b: [number, number, number, number], text: string, room?: string) => {
-        const id = this.annotate({ sheet: s.key, type: "cloud", text, rect: [[b[0], b[1]], [b[2], b[3]]] }).id;
+      const cloud = (b: [number, number, number, number], kind: "not_measured" | "no_label", items: CoverItem[]) => {
+        const [x0, y0, x1, y1] = cloudInside(b);
+        const id = this.annotate({ sheet: s.key, type: "cloud", text: coverCloudText(kind, items, T), rect: [[x0, y0], [x1, y1]] }).id;
         const m = this.markups.find((x) => x.id === id)!;
         m.source = "cover";
-        if (room !== undefined) m.room = room;
+        m.cover = { kind, items };
         marked++;
       };
-      for (const r of out.rooms) if (r.status === "flagged" && r.bbox) cloud(r.bbox, `Not measured: ${r.name ? `${r.name} ` : ""}${r.label}`, roomKey(r));
-      for (const u of out.unmeasured_floor.unlabeled) if (u.m2 >= 1) cloud(u.bbox, `No room label, ${u.m2} m²`);
+      for (const c of clouds) {
+        cloud(c.rect, c.kind, c.rooms
+          ? c.rooms.map((r) => ({ at: norm(r.at), text: [r.name, r.printed_m2 != null ? formatCoverArea(r.printed_m2, metric, T) : r.label].filter(Boolean).join(" ") }))
+          : [{ at: norm(c.piece!.at), text: formatCoverArea(c.piece!.m2, metric, T) }]);
+      }
     }
     return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
   }
@@ -2558,8 +2589,18 @@ export class Session {
     if (opts.condition) shape_id = this.commit(s, opts.condition, opts.role, ring, { area_sf, perimeter_lf }, { method: "manual", actor: "agent", ...(arcs ? { curved: true as const } : {}) }).id;
     this.flushCommits("measure_polygon");
     const mixed = this.scaleWarningFor(s, ring);
-    const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
-    return { area_sf, perimeter_lf, nverts: ring.length, ...(arcs ? { arcs } : {}), ...(shape_id ? { shape_id } : {}), ...(check ? { check } : {}), ...(mixed ? { warning: mixed } : {}) };
+    // a preview states the check the commit would record, or why it would refuse (oneClick's rule), and both
+    // name the printed room area the outline matched, so a caller can see it is the room it drew
+    let floorCheck = this.shapes.find((x) => x.id === shape_id)?.check;
+    let check = checkText(floorCheck);
+    if (!shape_id && opts.role === "floor_area") {
+      try { floorCheck = this.checkFloor(s, ring, area_sf); check = checkText(floorCheck); } catch (error) {
+        if (!(error instanceof UserError)) throw error;
+        check = `would be refused: ${error.message.split(" Not committed.")[0]}`;
+      }
+    }
+    const printed = this.printedMatch(s, ring, floorCheck);
+    return { area_sf, perimeter_lf, nverts: ring.length, ...(arcs ? { arcs } : {}), ...(shape_id ? { shape_id } : {}), ...(check ? { check } : {}), ...(printed ? { printed_match: printed } : {}), ...(mixed ? { warning: mixed } : {}) };
   }
 
   measureLine(name: string, pts: Point[], opts: { condition?: string; arc_through?: number[]; rise_ft?: number; drop_ft?: number }) {
