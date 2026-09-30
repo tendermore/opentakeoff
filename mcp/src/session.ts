@@ -48,6 +48,7 @@ import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/d
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
 import { fingerprintSymbol, matchSymbol, buildNegative, SWEEP_TOL_PX, type SweepOptions, type SymbolFingerprint, type SymbolMatchResult, type SweepMatch, type SweepWithheld, type SweepRejected, type SymbolNegative } from "../../web/src/lib/symbolsweep.ts";
 import { labelPlacements, type PlacementLabel } from "../../web/src/lib/symbollabels.ts";
+import { wingRotations, ladderHalfSizes, evaluateLadder, pickCandidate, nearestInk, type SeedCandidate } from "../../web/src/lib/symbolseed.ts";
 import { buildSnapGrid, nearestSnap, closedMetrics, openLen, pointInPoly } from "../../web/src/lib/geometry.js";
 // The canvas's three-point arc (Curve mode): a curved wall is a circle, so an
 // agent states the bow point and the server lays the unique arc through it.
@@ -537,6 +538,8 @@ interface SheetState {
   page: PageHandle;
   // lazy per-sheet caches (built once, reused by identity)
   geo?: VectorGeometry;
+  /** the visible strokes: geo.segs without clip-path geometry (count_symbol) */
+  ink?: number[];
   snap?: ReturnType<typeof buildSnapGrid>;
   /** undefined = not built yet; null = sheet has zero vector segments (a scan) */
   mask?: MaskObj | null;
@@ -3563,6 +3566,169 @@ export class Session {
       ...(refusal ? { committed: 0, commit_refused: refusal } : {}),
       ...(notes.length ? { note: notes.join(" ") } : {}),
       ...(capped.length ? { warning: `Work ceiling: candidate placements were dropped un-scored on ${capped.map((p) => p.state.key).join(", ")} — counts there are FLOORS, not totals. The seed's linework is too common there for an exhaustive sweep; tighten the seed rect around more distinctive geometry, or sweep those sheets singly and reconcile the counts.` } : {}),
+    };
+  }
+
+  /** The sheet's visible strokes. A PDF's clip paths ride the same segment list
+   * as ink (meta bit 2) but draw nothing: on a CAD export they are the boxes
+   * around every block, 84% of one plan's "segments", and a fingerprint that
+   * holds one never matches an instance drawn at another angle. */
+  private inkFor(s: SheetState, geo: VectorGeometry): number[] {
+    if (s.ink) return s.ink;
+    const { segs, meta } = geo;
+    if (!meta || meta.length !== segs.length >> 2) return (s.ink = segs);
+    const out: number[] = [];
+    for (let i = 0; i < meta.length; i++) if (!(meta[i] & 2)) out.push(segs[i * 4], segs[i * 4 + 1], segs[i * 4 + 2], segs[i * 4 + 3]);
+    return (s.ink = out);
+  }
+
+  private countLadders = new Map<string, { candidates: SeedCandidate[]; angles: number[]; partial: boolean }>();
+
+  /** count_symbol — count every copy of a symbol from ONE point on an example.
+   * symbol_sweep asks the caller for a tight marquee in sheet pixels, which a
+   * model reading a downsampled crop cannot place; this takes a point on the
+   * example, finds the seed itself (a ladder of nested seeds swept against the
+   * sheet — web/src/lib/symbolseed.ts), searches the plan's own wing angles as
+   * well as the four right angles, drops the mirror-image double reading of one
+   * instance, skips what is already counted under the condition, and returns a
+   * numbered picture so the caller checks by looking instead of by arithmetic. */
+  async countSymbol(name: string, opts: { at: Point; condition: string; level?: number; commit?: boolean; drop?: number[]; include_loose?: boolean; add_withheld?: number[]; wing_angles?: boolean; px?: number }) {
+    const s = this.sheet(name);
+    const geo = await this.ensureGeometry(s);
+    if (!geo.segs.length) throw new UserError("This sheet has no vector linework (likely a scan) — count_symbol reads the drawn segments.");
+    const ink = this.inkFor(s, geo);
+    const at: Point = [Math.max(0, Math.min(opts.at[0], s.widthPx)), Math.max(0, Math.min(opts.at[1], s.heightPx))];
+    const pxPerMetre = s.upp ? 1 / (s.upp * 0.3048) : null;
+    const wing = opts.wing_angles !== false;
+    const sizes = ladderHalfSizes(pxPerMetre);
+    const reach = sizes[sizes.length - 1] ?? 30;
+    const ladderAt = (c: Point) => {
+      const key = `${s.key}|${Math.round(c[0])},${Math.round(c[1])}|${wing ? "w" : "r"}`;
+      let l = this.countLadders.get(key);
+      if (!l) {
+        const angles = wing ? wingRotations(ink, c, 220) : [];
+        const { candidates, partial } = evaluateLadder(ink, c, sizes, { angles, budgetMs: 90_000, clock: () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; } });
+        l = { candidates, angles, partial };
+        this.countLadders.set(key, l);
+        if (this.countLadders.size > 24) this.countLadders.delete(this.countLadders.keys().next().value as string);
+      }
+      return l;
+    };
+    // A point typed from a picture is a few tens of px off: when nothing repeats around it, try the
+    // nearest drawn thing instead (and say so).
+    const repeats = (l: { candidates: SeedCandidate[] }) => l.candidates.some((c) => c.points.length >= 2);
+    let ladder = ladderAt(at);
+    let snappedTo: Point | null = null;
+    if (!repeats(ladder)) {
+      const near = nearestInk(ink, at, reach * 2.5, reach * 2);
+      if (near && Math.hypot(near[0] - at[0], near[1] - at[1]) > 1) {
+        const alt = ladderAt(near);
+        if (repeats(alt) || !ladder.candidates.length) { ladder = alt; snappedTo = near; }
+      }
+    }
+    const { candidates, angles, partial } = ladder;
+    if (!candidates.length) throw new UserError(`No linework near (${round1(at[0])}, ${round1(at[1])}) — give a point on or next to the example symbol (image px), e.g. the middle of the fixture or door swing.`);
+    const level = opts.level ?? pickCandidate(candidates);
+    const cand = candidates[level - 1];
+    if (!cand) throw new UserError(`No seed level ${opts.level} — seeds_tried lists levels 1–${candidates.length}.`);
+
+    const tagOf = new Map(this.conditions.map((c) => [c.id, c.finish_tag] as const));
+    const existing: Point[] = this.shapes
+      .filter((x) => x.sheet_id === s.key && x.measure_role === "count" && tagOf.get(x.condition_id) === opts.condition)
+      .flatMap((x) => x.verts_norm.map(([nx, ny]) => [nx * s.widthPx, ny * s.heightPx] as Point));
+    // one physical thing per radius: over half the example, and never under ~0.5 m (a fragment seed's centre is not the fixture's)
+    const radius = Math.max(cand.footprint * 0.6, pxPerMetre ? 0.5 * pxPerMetre : 14);
+    const marks = cand.points.map((p, i) => ({ n: i, ...p, already: existing.some((e) => Math.hypot(e[0] - p.at[0], e[1] - p.at[1]) <= radius), loose: false }));
+    // LOOSE marks: what a smaller, less specific seed also finds — other variants of the
+    // symbol (its context differs) and look-alikes in one list, for the caller to judge on the picture
+    const looser = candidates
+      .filter((c) => c.level !== cand.level && c.segments >= 3 && c.segments < cand.segments && c.points.length > cand.points.length * 1.3 && c.points.length <= 300)
+      .reduce<SeedCandidate | null>((a, b) => (!a || b.points.length > a.points.length ? b : a), null);
+    for (const p of looser?.points ?? []) {
+      if (marks.length >= 400) break;
+      if (marks.some((m) => Math.hypot(m.at[0] - p.at[0], m.at[1] - p.at[1]) <= radius)) continue;
+      marks.push({ n: marks.length, ...p, seed: undefined, already: existing.some((e) => Math.hypot(e[0] - p.at[0], e[1] - p.at[1]) <= radius), loose: true } as (typeof marks)[number]);
+    }
+    const withheld = cand.withheld.filter((w) => !cand.points.some((p) => Math.hypot(p.at[0] - w.at[0], p.at[1] - w.at[1]) <= radius)).slice(0, 12);
+
+    let committed: { committed: number; shape_ids: string[]; condition: string; ea_total: number } | undefined;
+    const drop = new Set(opts.drop ?? []);
+    const bad = [...drop].filter((n) => !marks[n]);
+    if (bad.length) throw new UserError(`drop: no mark ${bad.join(", ")} — marks are numbered 0–${marks.length - 1} on the picture.`);
+    const badW = (opts.add_withheld ?? []).filter((n) => !withheld[n - 1]);
+    if (badW.length) throw new UserError(`add_withheld: no mark W${badW.join(", W")} — withheld marks are ${withheld.length ? `W1–W${withheld.length}` : "none"} on the picture.`);
+    const near = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]) <= radius;
+    if (opts.commit) {
+      const keep = marks.filter((m) => !m.already && !drop.has(m.n) && (!m.loose || opts.include_loose));
+      // a withheld pick is the same instance as a committed count, a kept mark or an
+      // earlier pick when it sits within the radius of one: counted once, by position
+      const add: SweepWithheld[] = [];
+      for (const w of (opts.add_withheld ?? []).map((n) => withheld[n - 1])) {
+        if (![...existing, ...keep.map((m) => m.at), ...add.map((x) => x.at)].some((p) => near(p, w.at))) add.push(w);
+      }
+      const points: Point[] = [...keep.map((m) => m.at), ...add.map((w) => w.at)];
+      if (!points.length) throw new UserError("Nothing to commit: every mark is dropped or already counted under this condition.");
+      const origin = (score: number, rotation: number, mirrored: boolean) => ({
+        method: "symbol_sweep" as const, actor: "agent" as const, reviewed: false,
+        symbol: { score, rotation, mirrored, seed: { source: "instance" as const, sheet: s.key } },
+      });
+      committed = this.placeCount(name, points, {
+        condition: opts.condition, tool: "count_symbol",
+        origins: [...keep.map((m) => origin(m.score, m.rotation, m.mirrored)), ...add.map((w) => origin(w.score, w.rotation, w.mirrored))],
+      });
+    }
+
+    // the picture: every mark, numbered, over the smallest region that holds them
+    const xs = marks.map((m) => m.at[0]).concat(withheld.map((w) => w.at[0])), ys = marks.map((m) => m.at[1]).concat(withheld.map((w) => w.at[1]));
+    const pad = Math.max(60, cand.footprint * 2.5);
+    const region = { x0: Math.min(...xs) - pad, y0: Math.min(...ys) - pad, x1: Math.max(...xs) + pad, y1: Math.max(...ys) + pad };
+    const view = await this.viewSheet(name, {
+      region, px: opts.px ?? 1600, overlay: !!opts.commit,
+      marks: { numbered: [
+        ...marks.map((m) => ({ at: m.at, label: String(m.n), kind: (m.seed ? "seed" : m.already ? "already" : m.loose ? "loose" : "counted") as "seed" | "already" | "counted" | "loose" })),
+        ...withheld.map((w, i) => ({ at: w.at, label: `W${i + 1}`, kind: "withheld" as const })),
+      ] },
+    });
+
+    // and a close-up of what was taken as the example, so a wrong example is seen at once
+    const ex = cand.rect, exPad = Math.max(6, cand.footprint * 0.3);
+    const close = await this.viewSheet(name, { region: { x0: ex[0][0] - exPad, y0: ex[0][1] - exPad, x1: ex[1][0] + exPad, y1: ex[1][1] + exPad }, px: 500 });
+
+    const flags: string[] = [];
+    if (snappedTo) flags.push(`Nothing repeating sat at your point, so the example was taken at the nearest drawn symbol (${round1(snappedTo[0])}, ${round1(snappedTo[1])}); check the blue mark is the thing you meant.`);
+    if (cand.segments < 8) flags.push(`The example is only ${cand.segments} segment(s) of linework — other objects may share it; look at every mark.`);
+    // a larger seed that still repeats but finds far fewer: this seed is probably a fragment other things share
+    const bigger = candidates
+      .filter((c) => c.segments >= cand.segments * 1.1 && c.points.length >= 3 && c.points.length * 3 <= cand.points.length)
+      .reduce<SeedCandidate | null>((a, b) => (!a || b.points.length > a.points.length ? b : a), null);
+    if (bigger) flags.push(`A larger seed (level ${bigger.level}) still repeats but finds only ${bigger.points.length} against ${cand.points.length} here — the extra marks may be look-alikes sharing part of the symbol; if the picture shows marks off the symbol, pass level:${bigger.level}.`);
+    if (cand.points.length === 1) flags.push("Only the example itself matched: it may be unique, or the point sits on a variant — try another level or another example.");
+    if (!cand.complete) flags.push("The sweep hit its work ceiling: this count is a floor, not a total.");
+    if (partial) flags.push("Not every seed size was tried within the time budget.");
+    const main = marks.filter((m) => !m.loose), loose = marks.filter((m) => m.loose && !m.already);
+    if (loose.length) flags.push(`${loose.length} purple LOOSE mark(s): a smaller seed also matches there — other variants of this symbol, or look-alikes. Judge them on the picture; include_loose:true counts them (drop the wrong ones by number).`);
+    const n = main.filter((m) => !m.already).length;
+    return {
+      png: view.png,
+      png2: close.png,
+      meta: {
+        sheet: s.key, condition: opts.condition,
+        example: { at: [round1((snappedTo ?? at)[0]), round1((snappedTo ?? at)[1])], ...(snappedTo ? { snapped_from: [round1(at[0]), round1(at[1])] } : {}), rect: [round1(cand.rect[0][0]), round1(cand.rect[0][1]), round1(cand.rect[1][0]), round1(cand.rect[1][1])], segments: cand.segments, footprint_px: round1(cand.footprint), level },
+        found: main.length, new: n, already_counted: marks.filter((m) => m.already).map((m) => m.n),
+        marks: main.map((m) => [m.n, round1(m.at[0]), round1(m.at[1]), m.rotation, ...(m.mirrored ? [1] : [])]),
+        ...(loose.length ? { loose: loose.map((m) => [m.n, round1(m.at[0]), round1(m.at[1])]), loose_seed_level: looser!.level } : {}),
+        withheld: withheld.map((w, i) => ({ id: `W${i + 1}`, at: [round1(w.at[0]), round1(w.at[1])], score: w.score })),
+        seeds_tried: candidates.map((c) => ({ level: c.level, segments: c.segments, footprint_px: round1(c.footprint), found: c.points.length })),
+        rotations_searched: [0, 90, 180, 270, ...angles],
+        complete: cand.complete && !partial,
+        ...(flags.length ? { flags } : {}),
+        ...(committed ? { committed: committed.committed, ea_total: committed.ea_total, shape_ids: committed.shape_ids } : {}),
+        image: { region: view.meta.region, img_px: view.meta.img_px, zoom: view.meta.zoom },
+        legend: "image 1: the marks; image 2: a close-up of the example seed. blue = your example (0), green = counted, grey = already counted under this condition, purple = loose (a smaller seed also matches: variants or look-alikes), orange W = withheld near-match",
+        next: committed
+          ? "Committed. If instances are missing (another orientation or variant), call count_symbol again with a point on one of them and the same condition: marks already counted show grey and are never counted twice."
+          : "Look at the picture. Wrong marks: pass drop:[numbers]. Loose (purple) marks that are real: include_loose:true. Wrong seed: pass level from seeds_tried. Right: repeat with commit:true. Then look for instances with no mark and repeat with a point on one of them.",
+      },
     };
   }
 

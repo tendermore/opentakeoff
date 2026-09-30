@@ -104,7 +104,9 @@ test("crossing mode: an empty tile's unbroken runner rejects the phantom, the re
   const seed: [Point, Point] = [[-1, -1], [TW + 1, TH + 1]];    // the fixture on tile (0,0)
 
   const plain = sweepSymbols(segs, seed);
-  assert.ok(plain.matches.length > 10 * fixtures.length,
+  // every tile but the seed and its shadowed neighbour, each once: the rect
+  // reads as itself under four transforms, and those readings are one tile
+  assert.ok(plain.matches.length >= COLS * ROWS - 2 && plain.matches.length > 5 * fixtures.length,
     `without a counter-example every empty tile counts (${plain.matches.length} placements for ${fixtures.length} fixtures)`);
 
   // marquee ONE empty tile — nothing extra inside it, just the runner through
