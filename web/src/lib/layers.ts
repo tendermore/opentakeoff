@@ -67,6 +67,26 @@ export function layerNameTokens(raw: string): string[] {
   return base.replace(/\$\d+\$/g, "-").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
 }
 
+/** NS 3451 building-part code at the head of a layer name — the Norwegian
+ * convention ArchiCAD/Revit exports carry ("23-- Yttervegger", "242- Ikke-bærende
+ * innervegger", "2411 Bærende innervegger betong", "862- Nettoareal"). A name
+ * must follow the code: a bare "30" is a pen number as often as anything. */
+const NS3451_CODE_RE = /^([2-8]\d{1,3})(?:-{1,3}\s*|[\s_]+)[^\s\d_-]/;
+
+/** NS 3451 code → role. Walls (23/24), stairs/rails/balconies (28) and the area
+ * zones (86: the architect's own room outlines, the AIA "AREA"/"RM" family)
+ * bound a room; columns/beams (22) are structure; claddings (235, 246) and
+ * slabs (25) are surface pattern; roofs, fixed furniture, services, outdoor
+ * works and the other 8x drawing layers (grid, text, dimensions) never bound one. */
+function classifyNs3451(code: string): LayerRole {
+  const two = code.slice(0, 2), three = code.slice(0, 3);
+  if (three === "235" || three === "246") return "finish-pattern";
+  if (two === "23" || two === "24" || two === "28" || two === "86") return "boundary";
+  if (two === "22") return "structure";
+  if (two === "25") return "finish-pattern";
+  return "annotation";   // 21, 26, 27, 3x–7x, 8x
+}
+
 /** Raw layer name → { role, confidence }. Pure, total, never throws. */
 export function classifyLayerName(raw: string): { role: LayerRole; confidence: number } {
   const s = String(raw || "").trim();
@@ -88,6 +108,9 @@ export function classifyLayerName(raw: string): { role: LayerRole; confidence: n
   if (has(STRUCTURE)) return { role: "structure", confidence: grade(0.8) };
   if (has(BOUNDARY)) return { role: "boundary", confidence: grade(0.9) };
   if (has(FIXTURES)) return { role: "annotation", confidence: grade(0.65) };
+  // no AIA word: a Norwegian NS 3451 building-part code names the role instead
+  const ns = NS3451_CODE_RE.exec(s);
+  if (ns) return { role: classifyNs3451(ns[1]), confidence: 0.9 };
   return { role: "unknown", confidence: 0.2 };
 }
 

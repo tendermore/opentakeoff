@@ -129,6 +129,9 @@ export const detectRoomsOutput = {
     unowned: z.number().int().describe("Labels whose every clean, non-bubble flood did not SURROUND the label's box — a ladder rung stepped past the wall into a neighbouring space or a door-swing pocket. Withheld rather than committed under the tag (#373); one_click inside the room answers it"),
     implausible: z.number().int().describe("Enclosed, clean, non-bubble, but smaller than min_area_sf — a door swing or wall cavity rather than a room"),
     unresolved: z.number().int().describe("Assign mode: rooms the schedule could not answer for (no row, no FLOOR cell, or a compound cell) — withheld into unresolved[], never committed under a guess. Always present; 0 outside assign mode"),
+    area_disagrees: z.number().int().describe("Rooms labelled by a printed area whose trace disagrees with that area beyond rounding — withheld into area_disagrees[] rather than committed under a number the drawing contradicts. Always present"),
+    already_measured: z.number().int().describe("Labels skipped because they sit inside a floor shape this sheet already has — a repeat call continues, never re-measures. Always present"),
+    not_tried: z.number().int().describe("Labels not reached before the host's time budget (OPENTAKEOFF_CALL_BUDGET_MS) ran out — call detect_rooms again to continue. Always present; 0 without a budget"),
     min_area_sf: z.number().optional().describe("The plausibility floor applied (scaled mode only)"),
   }).describe("What detection skipped and why — a withheld room is a question the caller can ask; a silently dropped one is a hole in a bid"),
   unresolved: z.array(z.object({
@@ -138,6 +141,12 @@ export const detectRoomsOutput = {
     perimeter_lf: z.number(),
     seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — once the estimator answers, one_click here with the stated condition commits it"),
   })).optional().describe("Assign mode only, empty array included: [] is the positive claim that every detected room resolved against its own schedule row"),
+  area_disagrees: z.array(z.object({
+    label: z.string().describe("The printed-area label the room was traced from"),
+    printed_m2: z.number().describe("The area printed in the room, m²"),
+    traced_m2: z.number().describe("What the trace measured, m²"),
+    seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — fix the room there on a close-up, or report it as not measured"),
+  })).optional().describe("Present when any printed-area room was withheld: both numbers and where"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — rooms inside an enlarged viewport may be figured at the wrong scale"),
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable and what to do"),

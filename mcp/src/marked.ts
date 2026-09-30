@@ -15,7 +15,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { buildMarkedSetPdf as buildMarkedSetPdfJs } from "../../web/src/lib/markedset.js";
 import { pointInPoly } from "../../web/src/lib/geometry.js";
 import { RENDER_SCALE } from "../../web/src/lib/sheets.ts";
-import { UserError } from "./format.ts";
+import { UserError, displayLocale } from "./format.ts";
+import { markedSetText } from "../../web/src/lib/markedsetLocale.js";
 import { assertWritable } from "./safewrite.ts";
 import type { Session, Shape } from "./session.ts";
 
@@ -32,6 +33,7 @@ import type { Session, Shape } from "./session.ts";
 export function assignmentDisclosure(
   shapes: Shape[],
   withheld: { sheet_id: string; seed_norm: [number, number] }[] = [],
+  text = markedSetText(displayLocale()),
 ): string | null {
   const agent = shapes.filter((s) => s.origin?.actor === "agent");
   const live = withheld.filter((w) => !shapes.some((s) =>
@@ -44,11 +46,11 @@ export function assignmentDisclosure(
   const asserted = agent.filter((s) => s.origin?.assignment?.source === "asserted").length;
   const pending = agent.filter((s) => s.origin?.reviewed !== true).length;
   const parts: string[] = [];
-  if (schedule) parts.push(`${schedule} schedule-resolved`);
-  if (asserted) parts.push(`${asserted} agent-asserted`);
-  if (pending) parts.push(`${pending} pending human review`);
-  if (live.length) parts.push(`${live.length} room${live.length === 1 ? "" : "s"} withheld, unresolved against the schedule`);
-  return parts.length ? `Finish assignment: ${parts.join(" · ")}` : null;
+  if (schedule) parts.push(text.scheduleResolved(schedule));
+  if (asserted) parts.push(text.agentAsserted(asserted));
+  if (pending) parts.push(text.pendingReview(pending));
+  if (live.length) parts.push(text.withheldUnresolved(live.length));
+  return parts.length ? text.finishAssignment(parts.join(" · ")) : null;
 }
 
 // The builder is untyped canvas JS; tsc infers parameter types from its
@@ -75,10 +77,11 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   }
 
   const base = file.replace(/\.pdf$/i, "");
+  const T = markedSetText(displayLocale());
   // Resolve and vet the destination up front: a refused write shouldn't cost a
   // whole marked-set render first, and a wrong path is worth hearing about
   // before the agent waits on the build.
-  const outPath = path.resolve(opts.path ?? path.join(path.dirname(filePath), `${base} - marked set.pdf`));
+  const outPath = path.resolve(opts.path ?? path.join(path.dirname(filePath), `${base} - ${T.filename}.pdf`));
   await assertWritable(outPath, "pdf", opts.overwrite);
 
   const sheetStates = session.sheetList();
@@ -88,7 +91,7 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
     key: s.key,
     file: session.fileFor(s.key),
     page: s.pageNum,
-    label: s.sheetNumber ? `${s.sheetNumber} · p${s.pageNum}` : s.key,
+    label: s.sheetNumber ? T.sheetPageLabel(s.sheetNumber, s.pageNum) : s.key,
   }));
 
   // markedset.js speaks pdf.js pages; serve it a shim over the PageHandle. The
@@ -128,17 +131,18 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   // the credit line says how many are still pencil.
   const pendingRfis = rfis.filter((r) => r.origin?.actor === "agent" && r.origin.reviewed !== true).length;
   const creditParts = [
-    ...(machine ? [`${machine} shape${machine === 1 ? "" : "s"} pending human review`] : []),
-    ...(pendingRfis ? [`${pendingRfis} agent-raised RFI${pendingRfis === 1 ? "" : "s"} pending acceptance`] : []),
+    ...(machine ? [T.creditShapes(machine)] : []),
+    ...(pendingRfis ? [T.creditRfis(pendingRfis)] : []),
   ];
   const credit = creditParts.length
-    ? `${machine ? "Machine-traced" : "Agent-raised"} via OpenTakeoff MCP — ${creditParts.join(" · ")}`
+    ? T.credit(machine > 0, creditParts.join(" · "))
     : null;
 
   const { bytes, pages } = await buildMarkedSetPdf({
     projectName: opts.project_name || base,
     dark: false,
-    units: "imperial",
+    units: session.displayUnits(),
+    locale: displayLocale(),
     sheets,
     shapes: session.shapes,
     markups: session.markups,
@@ -153,8 +157,8 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
     getPage,
     loadPdfData,
     credit,
-    provenance: assignmentDisclosure(session.shapes, session.scheduleWithheld),
-    coverTitle: "OpenTakeoff · Marked Set",
+    provenance: assignmentDisclosure(session.shapes, session.scheduleWithheld, T),
+    coverTitle: T.mcpCoverTitle,
   });
 
   await writeFile(outPath, bytes);

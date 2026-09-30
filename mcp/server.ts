@@ -8,7 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { Session } from "./src/session.ts";
 import { registerTools } from "./src/tools.ts";
 import { registerResources } from "./src/resources.ts";
-import { applyStagedTools, STAGED_INSTRUCTIONS } from "./src/staging.ts";
+import { applyStagedTools, STAGED_INSTRUCTIONS, TOOL_STAGES } from "./src/staging.ts";
 import { oneClickEnabled, GATE_NOTE } from "./src/gate.ts";
 import pkg from "./package.json" with { type: "json" };
 
@@ -18,7 +18,10 @@ export function buildServer(
   // forty and gets it by default. The option exists so tests don't mutate env.
   // oneClick — the TEMPORARY gate (src/gate.ts): false on a default build, so
   // one_click / detect_rooms are not registered; true puts them back.
-  opts: { stagedTools?: boolean; oneClick?: boolean } = {},
+  // tools — a fixed tool profile for hosts that pay for every description in
+  // every turn: stage names (setup, measure, revise, handoff) and/or tool
+  // names; everything else is not registered. OPENTAKEOFF_TOOLS in the env.
+  opts: { stagedTools?: boolean; oneClick?: boolean; tools?: string[] } = {},
 ): McpServer {
   const staged = opts.stagedTools ?? process.env.OPENTAKEOFF_MCP_STAGED_TOOLS === "1";
   const oneClick = oneClickEnabled(opts.oneClick);
@@ -46,7 +49,13 @@ export function buildServer(
   });
   const registered = registerTools(server, session, { oneClick });
   registerResources(server, session);
-  if (staged) applyStagedTools(server, registered, oneClick);
+  const profile = opts.tools ?? process.env.OPENTAKEOFF_TOOLS?.split(",").map((t) => t.trim()).filter(Boolean);
+  if (profile?.length) {
+    const allowed = new Set(profile.flatMap((name) => TOOL_STAGES[name] ?? [name]));
+    const unknown = profile.filter((name) => !TOOL_STAGES[name] && !registered.has(name));
+    if (unknown.length) throw new Error(`OPENTAKEOFF_TOOLS names no stage or tool: ${unknown.join(", ")}`);
+    for (const [name, tool] of registered) if (!allowed.has(name)) { tool.remove(); registered.delete(name); }
+  } else if (staged) applyStagedTools(server, registered, oneClick);
   return server;
 }
 
