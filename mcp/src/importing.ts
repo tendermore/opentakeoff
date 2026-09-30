@@ -73,11 +73,12 @@ export async function importTakeoff(session: Session, filePath: string) {
   session.conditionEditProposals = (Array.isArray(payload.condition_edit_proposals) ? payload.condition_edit_proposals as ConditionEditProposal[] : []).filter((p) => p && typeof p === "object" && typeof p.id === "string");
   // scales: mergeTakeoffImport already applied "the session's calibration wins
   // per sheet" — adopt the merged rows onto sheets this document actually has
-  for (const row of (payload.sheets as { sheet_id: string; units_per_px: number; scale_source?: string; scale_confirmed?: boolean }[]) ?? []) {
+  for (const row of (payload.sheets as { sheet_id: string; units_per_px: number; scale_source?: string; scale_confirmed?: boolean; scale_label?: string }[]) ?? []) {
     const s = session.sheetOrNull(row.sheet_id);
     if (s && s.upp == null && row.units_per_px > 0) {
       s.upp = row.units_per_px;
       s.scaleSource = row.scale_source ?? "upp";
+      if (typeof row.scale_label === "string") s.scaleLabel = row.scale_label;
       // scale gate — transport, not minting (the approvals rule): an
       // unconfirmed agent scale arriving by file STAYS unconfirmed; absent
       // means confirmed (a human-era payload, or one a human confirmed)

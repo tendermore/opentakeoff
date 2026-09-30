@@ -102,7 +102,7 @@ export interface TakeoffDocument extends Record<string, unknown> {
   schema: string;
   project_name: string;
   units?: "metric";
-  sheets: { sheet_id: string; units_per_px: number; scale_source?: string; scale_confirmed?: false }[];
+  sheets: { sheet_id: string; units_per_px: number; scale_source?: string; scale_confirmed?: false; scale_label?: string }[];
   conditions: Condition[];
   shapes: Shape[];
   markups: Markup[];
@@ -5349,7 +5349,7 @@ export class Session {
     return buildTakeoffDocument({
       project_name: "",
       units: this.displayUnits(),
-      sheets: [...this.sheets.values()].filter((s) => s.upp != null).map((s) => sheetEntry({ sheet_id: s.key, units_per_px: s.upp as number, scale_source: s.scaleSource, scale_confirmed: s.scaleConfirmed })),
+      sheets: [...this.sheets.values()].filter((s) => s.upp != null).map((s) => sheetEntry({ sheet_id: s.key, units_per_px: s.upp as number, scale_source: s.scaleSource, scale_confirmed: s.scaleConfirmed, scale_label: s.scaleLabel })),
       conditions: this.conditions,
       shapes: this.shapes,
       markups: this.markups,

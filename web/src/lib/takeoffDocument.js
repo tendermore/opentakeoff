@@ -30,13 +30,17 @@ export const TAKEOFF_DOCUMENT_KEYS = Object.freeze([
 ]);
 
 /** One `sheets[]` entry. `scale_source` rides only when known; `scale_confirmed`
- *  only when explicitly false (absent = confirmed, the pre-flag reading).
- *  @param {{ sheet_id: string, units_per_px: number, scale_source?: string | null, scale_confirmed?: boolean | null }} e */
-export function sheetEntry({ sheet_id, units_per_px, scale_source = undefined, scale_confirmed = undefined }) {
+ *  only when explicitly false (absent = confirmed, the pre-flag reading);
+ *  `scale_label` only when the sheet's scale was set from a printed label.
+ *  @param {{ sheet_id: string, units_per_px: number, scale_source?: string | null, scale_confirmed?: boolean | null, scale_label?: string | null }} e */
+export function sheetEntry({ sheet_id, units_per_px, scale_source = undefined, scale_confirmed = undefined, scale_label = undefined }) {
   return {
     sheet_id,
     units_per_px,
     ...(scale_source ? { scale_source } : {}),
+    // the printed scale ("1:100", "1/4\" = 1'-0\""): units_per_px alone cannot
+    // tell a metric ratio from an imperial one (1:48 and 1/4" = 1' share it)
+    ...(scale_label ? { scale_label } : {}),
     ...(scale_confirmed === false ? { scale_confirmed: false } : {}),
   };
 }

@@ -227,7 +227,7 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   assert.equal(exported.schema, "opentakeoff.takeoff_canvas.v1");
   // scale gate: provenance rides the payload — scale_source for the report,
   // scale_confirmed:false so the canvas asks the estimator to confirm on import
-  assert.deepEqual(exported.sheets, [{ sheet_id: KEY, units_per_px: UPP, scale_source: "detected", scale_confirmed: false }]);
+  assert.deepEqual(exported.sheets, [{ sheet_id: KEY, units_per_px: UPP, scale_source: "detected", scale_label: `1/4" = 1'-0"`, scale_confirmed: false }]);
   assert.equal(exported.conditions.length, 3);
   assert.equal(exported.shapes.length, 3);
   assert.deepEqual(exported.shapes.map((s: any) => s.measure_role), ["floor_area", "floor_area", "linear"]);
