@@ -95,19 +95,26 @@ const MAX_TITLE_WORDS = 7;
 /** The role a single span NAMES, or null. Running-text references ("SEE
  * FINISH PLAN FOR …", "- Se plantegning for plassering") and look-alike
  * titles (a drawing list, a schematic, the KEY PLAN inset) name none. */
-function roleTermOf(str: string, nordic: boolean, lines = 1): { role: SheetRole; conf: number } | null {
+function roleTermOf(str: string, nordic: boolean, lines = 1): { role: SheetRole; conf: number; mixed?: boolean } | null {
   const u = norm(str).replace(/^[-–—•*·]+\s*/, "");
   // A title is a short line — on dev sets title-block titles run ≤ 6 words;
   // the note text that used to outvote them is sentences.
   if (u.length < 4 || u.length > 80 || u.split(/\s+/).filter((w) => /[\p{L}\d]/u.test(w)).length > MAX_TITLE_WORDS * lines || REFERENCE_RE.test(u) || TITLE_FIELD_LABEL_RE.test(u)) return null;
   const roles = new Set<SheetRole>();
   let levelOnlyPlan = true;   // every plan reading so far came from a bare level name
-  let first: { role: SheetRole; conf: number } | null = null;
+  let first: { role: SheetRole; conf: number; at: number; level: boolean } | null = null;
   const masked = u.replace(NOT_A_ROLE_TITLE, " ");
   for (const sig of ALL_ROLE_TERMS) {
     if (sig.nordic && !nordic) continue;
-    if (!sig.re.test(masked)) continue;
-    if (!first) first = { role: sig.role, conf: sig.conf };
+    const m = sig.re.exec(masked);
+    if (!m) continue;
+    // Two drawing types in one title: the one NAMED FIRST leads ("PLANS AND
+    // DETAILS" is a plan sheet with details, "SNITT OG PLAN" the reverse) —
+    // a title names its principal drawing first. At the same position the
+    // term order decides (the specific "RIVEPLAN" over the general PLAN), and
+    // a bare level name never leads a drawing type.
+    const lvl = !!sig.level;
+    if (!first || (first.level && !lvl) || (!lvl && !first.level && m.index < first.at)) first = { role: sig.role, conf: sig.conf, at: m.index, level: lvl };
     roles.add(sig.role);
     if (sig.role === "plan" && !sig.level) levelOnlyPlan = false;
   }
@@ -118,7 +125,7 @@ function roleTermOf(str: string, nordic: boolean, lines = 1): { role: SheetRole;
   // Two drawing types in one title ("PLAN OG SNITT") are two readings.
   if (first.role !== "plan" && levelOnlyPlan) roles.delete("plan");
   roles.delete(first.role);
-  return roles.size ? { role: first.role, conf: first.conf / 2 } : first;
+  return roles.size ? { role: first.role, conf: first.conf / 2, mixed: true } : { role: first.role, conf: first.conf };
 }
 
 export interface RoleCandidate { role: SheetRole; text: string }
@@ -196,7 +203,7 @@ export function classifySheetRole(sheet: SheetSpans): RoleResult {
   // text size: a quarter-turned line's size is its narrow side
   const hs = spans.map((s) => (isVertical(s) ? s.w || 0 : s.h || 0)).filter((h) => h > 0).sort((a, b) => a - b);
   const medH = hs.length ? hs[hs.length >> 1] : 0;
-  type Hit = { role: SheetRole; conf: number; span: GraphSpan; size: number };
+  type Hit = { role: SheetRole; conf: number; span: GraphSpan; size: number; mixed?: boolean };
   const title: Hit[] = [], view: Hit[] = [], body: Hit[] = [];
   const nordic = spans.some((sp) => NORDIC_TEXT_RE.test(sp.str));
   for (const sp of joinTitleLines(spans, W, H)) {
@@ -245,7 +252,8 @@ export function classifySheetRole(sheet: SheetSpans): RoleResult {
     // A terse title-block word ("SCHEDULE") that the sheet's own headings
     // name more fully ("ROOM FINISH SCHEDULE") is corroborated: the answer
     // takes the stronger of the agreeing signals. Agreement only raises it.
-    const agree = [...view, ...body].filter((h) => h.role === best.role).reduce((m, h) => Math.max(m, h.conf), 0);
+    // (a title that itself names two drawing types stays a two-way reading)
+    const agree = best.mixed ? 0 : [...view, ...body].filter((h) => h.role === best.role).reduce((m, h) => Math.max(m, h.conf), 0);
     const conf = Math.max(best.conf, agree);
     return { role: best.role, confidence: rivals.length ? conf / 2 : conf, evidence: evidenceOf(best), ...(cands ? { candidates: cands } : {}) };
   }
