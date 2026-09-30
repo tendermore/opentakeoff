@@ -51,6 +51,8 @@ import { dimLabel } from "./units";
 import { sourcePageMode, sourceStampNote, noCanvasForRasterMessage } from "./markedsetSource.js";
 import { markedSetText, formatNumber } from "./markedsetLocale.js";
 import { floorCoverage, liveCoverItems, coverNoteLines, placeCloudNotes } from "./coverClouds.js";
+/** The longest leader a cover note is given while a nearer free spot exists: ~3 cm on the printed sheet. */
+const COVER_LEADER_PT = 85;
 
 const COBALT = "#1f3fc7";
 const DEDUCT_RED = "#b03a26";
@@ -746,7 +748,8 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
         for (const b of Array.isArray(avoid.text) ? avoid.text : []) if (Array.isArray(b) && b.length === 4) obstacles.push(px(b));
         const keepOut = (Array.isArray(avoid.keepOut) ? avoid.keepOut : []).filter((b) => Array.isArray(b) && b.length === 4).map(px);
         const areas = here.filter((s) => s.measure_role === "floor_area" && (s.verts_norm || []).length >= 3).map((s) => s.verts_norm.map(([nx, ny]) => [nx * W, ny * H]));
-        const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale, { areas, keepOut });
+        // a leader longer than ~3 cm on paper loses its cloud: a nearer spot wins when there is one
+        const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale, { areas, keepOut, maxLeader: COVER_LEADER_PT / ptScale });
         notes.forEach((n, k) => coverNotes.set(n.id, { lines: n.lines, size, pad, lh, ...placed[k] }));
       }
     } catch { coverNotes.clear(); }
@@ -973,7 +976,13 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
       const [bx0, by0, bx1, by1] = note.box;
       const dp = imageDrawParams(toPage, bx0, by0, bx1 - bx0, by1 - by0);
       pg.drawRectangle({ x: dp.x, y: dp.y, width: dp.width, height: dp.height, rotate: degrees(dp.rotateDeg), color: dark ? rgb(0.08, 0.1, 0.12) : rgb(1, 1, 1), opacity: 0.9, borderColor: col, borderWidth: 0.6 });
-      note.lines.forEach((ln, k) => text(ln, bx0 + note.pad, by0 + (k + 1) * note.lh - note.pad - 1 / ptScale, note.size, col, bold));
+      if (note.rotated) {
+        // turned a quarter, reading upward: line k's baseline runs up the box, the first line leftmost
+        note.lines.forEach((ln, k) => {
+          const [px, py] = toPage(bx0 + (k + 1) * note.lh - note.pad - 1 / ptScale, by1 - note.pad);
+          pg.drawText(ln, { x: px, y: py, size: note.size, font: bold, color: col, rotate: degrees((chipRot.angle || 0) + 90) });
+        });
+      } else note.lines.forEach((ln, k) => text(ln, bx0 + note.pad, by0 + (k + 1) * note.lh - note.pad - 1 / ptScale, note.size, col, bold));
     }
     // approval seals burn in ABOVE the markups, exactly as the canvas layers
     // them: the estimator's APPROVED ring, the agent's AGENT diamond. Radius

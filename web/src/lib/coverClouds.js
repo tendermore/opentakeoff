@@ -103,14 +103,27 @@ const dist = (b, [x, y]) => Math.hypot((b[0] + b[2]) / 2 - x, (b[1] + b[3]) / 2 
  *  (measured floor); `opts.keepOut`: boxes it never covers (the title block). Small clouds are placed first. A
  *  note goes inside its cloud nearest its anchor where it covers nothing; else outside the cloud where it covers
  *  nothing, nearest its anchor, with a leader to the cloud's edge; else where it covers least — never in a
- *  keep-out box while any spot outside one is left. Deterministic, and bounded: at most MAX_INSIDE spots inside
- *  and OUTSIDE_STEPS rings outside per note, each costed once against the obstacles near it. Returns, per note,
- *  its box [x0, y0, x1, y1] and the leader (or null). */
+ *  keep-out box while any spot outside one is left. A cloud too narrow for the note but long enough takes it
+ *  turned a quarter (reading upward) before it goes outside. Outside, a spot whose leader is at most
+ *  `opts.maxLeader` long and crosses no measured floor is taken first. Deterministic, and bounded: at most
+ *  MAX_INSIDE spots inside (per reading) and OUTSIDE_STEPS rings outside per note, each costed once against the
+ *  obstacles near it, a leader sampled at most 16 times. Returns, per note, its box [x0, y0, x1, y1], the leader
+ *  (or null) and whether the note is turned (the box is then h wide and w tall). */
 const MAX_INSIDE = 1600, OUTSIDE_STEPS = 10;
 export function placeCloudNotes(notes, obstacles, bounds, gap = 4, opts = {}) {
   const [W, H] = bounds;
   const areas = (opts.areas || []).filter((p) => Array.isArray(p) && p.length >= 3).map((p) => ({ p, b: boxOf(p) }));
   const keepOut = opts.keepOut || [];
+  const maxLeader = opts.maxLeader ?? Infinity;
+  // does a leader run over measured floor (its ends lie on the note and the cloud, so they are left out)?
+  const crossesFloor = ([[ax, ay], [bx, by]]) => {
+    const n = Math.min(16, Math.max(2, Math.ceil(Math.hypot(bx - ax, by - ay) / Math.max(1, gap))));
+    for (let i = 1; i < n; i++) {
+      const px = ax + ((bx - ax) * i) / n, py = ay + ((by - ay) * i) / n;
+      if (areas.some((a) => px >= a.b[0] && px <= a.b[2] && py >= a.b[1] && py <= a.b[3] && pointInPoly(px, py, a.p))) return true;
+    }
+    return false;
+  };
   const taken = obstacles.map((b) => [b[0] - gap / 2, b[1] - gap / 2, b[2] + gap / 2, b[3] + gap / 2]);
   const order = notes.map((_, k) => k).sort((a, b) => area(notes[a].rect) - area(notes[b].rect) || a - b);
   const out = new Array(notes.length);
@@ -142,16 +155,21 @@ export function placeCloudNotes(notes, obstacles, bounds, gap = 4, opts = {}) {
       }
       return c;
     };
-    // inside: a grid over the cloud, nearest the anchor first
-    const inside = [];
-    if (x1 - x0 >= w + 2 * gap && y1 - y0 >= h + 2 * gap) {
-      const cells = ((x1 - x0 - w) * (y1 - y0 - h)) / MAX_INSIDE;
-      const step = Math.max(2, h / 2, Math.sqrt(Math.max(0, cells)));
-      for (let y = y0 + gap; y + h <= y1 - gap; y += step) for (let x = x0 + gap; x + w <= x1 - gap; x += step) {
-        const b = [x, y, x + w, y + h];
-        if (allowed(b)) inside.push({ b, d: dist(b, anchor) });
+    // inside: a grid over the cloud, nearest the anchor first — the note as set (w × h), or turned a quarter
+    // (h × w) for a cloud too narrow for it but long enough along its other side
+    const insideOf = (bw, bh) => {
+      const list = [];
+      if (x1 - x0 < bw + 2 * gap || y1 - y0 < bh + 2 * gap) return list;
+      const cells = ((x1 - x0 - bw) * (y1 - y0 - bh)) / MAX_INSIDE;
+      const step = Math.max(2, Math.min(bw, bh) / 2, Math.sqrt(Math.max(0, cells)));
+      for (let y = y0 + gap; y + bh <= y1 - gap; y += step) for (let x = x0 + gap; x + bw <= x1 - gap; x += step) {
+        const b = [x, y, x + bw, y + bh];
+        if (allowed(b)) list.push({ b, d: dist(b, anchor) });
       }
-    }
+      return list;
+    };
+    const inside = insideOf(w, h);
+    const turned = w > h ? insideOf(h, w) : [];
     // outside: above, below, left, right of the cloud, stepping away ring by ring
     const cx = Math.min(Math.max(anchor[0] - w / 2, x0), x1 - w);
     const cy = Math.min(Math.max(anchor[1] - h / 2, y0), y1 - h);
@@ -161,21 +179,30 @@ export function placeCloudNotes(notes, obstacles, bounds, gap = 4, opts = {}) {
       const at = [];
       for (const x of [cx, x0, x1 - w]) { at.push([x, y0 - oy - h]); at.push([x, y1 + oy]); }
       for (const y of [cy, y0, y1 - h]) { at.push([x0 - ox - w, y]); at.push([x1 + ox, y]); }
-      for (const [x, y] of at) { const b = [x, y, x + w, y + h]; if (allowed(b)) outside.push({ b, d: dist(b, anchor) }); }
+      for (const [x, y] of at) {
+        const b = [x, y, x + w, y + h];
+        if (!allowed(b)) continue;
+        const onCloud = nearestOnRect(rect, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+        const leader = [nearestOnRect(b, onCloud[0], onCloud[1]), onCloud];
+        outside.push({ b, d: dist(b, anchor), leader, long: Math.hypot(leader[1][0] - leader[0][0], leader[1][1] - leader[0][1]) > maxLeader, crosses: crossesFloor(leader) });
+      }
     }
-    for (const c of inside) c.cost = cost(c.b);
-    for (const c of outside) c.cost = cost(c.b);
+    for (const c of [...inside, ...turned, ...outside]) c.cost = cost(c.b);
     const byDist = (a, b) => a.d - b.d || a.b[1] - b.b[1] || a.b[0] - b.b[0];
     const free = (list) => list.filter((c) => c.cost === 0).sort(byDist)[0];
-    const pick = free(inside) ?? free(outside) ?? [...inside, ...outside].sort((a, b) => a.cost - b.cost || byDist(a, b))[0];
+    // outside, a free spot whose leader stays short and crosses no measured floor wins, then one with a short
+    // leader, then any free one; failing all, the spot that covers least
+    const freeOut = (ok) => free(outside.filter(ok));
+    const pickTurned = free(turned);
+    const pick = free(inside) ?? pickTurned ?? freeOut((c) => !c.long && !c.crosses) ?? freeOut((c) => !c.long) ?? freeOut((c) => !c.crosses) ?? free(outside)
+      ?? [...inside, ...outside].sort((a, b) => a.cost - b.cost || byDist(a, b))[0];
     const box = pick ? pick.b : clamp([x0, y0 - h - gap, x0 + w, y0 - gap]);
-    let leader = null;
-    if (!(box[0] >= x0 && box[2] <= x1 && box[1] >= y0 && box[3] <= y1)) {
+    const leader = pick?.leader ?? (box[0] >= x0 && box[2] <= x1 && box[1] >= y0 && box[3] <= y1 ? null : (() => {
       const onCloud = nearestOnRect(rect, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2);
-      leader = [nearestOnRect(box, onCloud[0], onCloud[1]), onCloud];
-    }
+      return [nearestOnRect(box, onCloud[0], onCloud[1]), onCloud];
+    })());
     taken.push([box[0] - gap / 2, box[1] - gap / 2, box[2] + gap / 2, box[3] + gap / 2]);
-    out[k] = { box, leader };
+    out[k] = { box, leader, rotated: !!pick && pick === pickTurned };
   }
   return out;
 }
