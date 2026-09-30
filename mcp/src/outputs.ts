@@ -210,6 +210,7 @@ export const coverFloorOutput = {
     unlabeled_not_listed: z.number().int().optional(),
   }).describe("The floor no committed outline covers — what reads as whitespace on the marked plan"),
   clouds: z.number().int().optional().describe("mark: clouds added round what is not measured (annotate list shows them)"),
+  clouds_removed: z.number().int().optional().describe("Cover clouds removed: mark replaces this sheet's cover clouds; any call drops those over floor now measured"),
   note: z.string(),
 };
 
@@ -218,7 +219,11 @@ export const measurePolygonOutput = {
   perimeter_lf: z.number(),
   nverts: z.number().int(),
   arcs: z.number().int().optional().describe("How many arc_through bows were laid — present only when the trace was bent; the vertices reported are the baked arc, not the three points you gave"),
-  snapped_edges: z.number().int().optional().describe("snap_to_walls: how many edges moved onto a wall face"),
+  snap: z.object({
+    vertices_moved: z.number().int().describe("How many vertices moved (each edge onto the wall face it parallels, corners rebuilt)"),
+    reading: z.enum(["as_drawn", "nearest_face", "room_side_face"]).describe("Which outline was kept: as drawn, snapped to the nearest wall face, or to the room-side face of the wall"),
+    agrees_with_printed_area: z.boolean().optional().describe("Present where a room area is printed inside: true when the kept reading was chosen because it agrees with it"),
+  }).optional().describe("snap_to_walls: what the snap did"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
   check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
   warning: z.string().optional().describe("Mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region — verify before trusting these numbers"),

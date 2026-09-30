@@ -13,9 +13,9 @@ import { snapVertices, ringArea, buildMask, MASK_MAX_DIM, SEG_FILLONLY } from ".
 import { coverZones, zoneCuts, zoneRing, wallFaceSegs, dropWallIslands, type CoverLabel, type CoverZone } from "../../web/src/lib/floorcover.ts";
 import { RENDER_SCALE } from "../../web/src/lib/sheets.ts";
 import { ROLE_CODE, ROLE_HIDDEN } from "../../web/src/lib/layers.ts";
-import { printedAreaM2, roomLabelSeeds, SF_STAMP_RE } from "../../web/src/lib/detectRooms.ts";
+import { printedAreaM2, roomLabelSeeds, isTotalStamp } from "../../web/src/lib/detectRooms.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
-import { closedMetrics } from "../../web/src/lib/geometry.js";
+import { closedMetrics, pointInPoly } from "../../web/src/lib/geometry.js";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { SNAP_TOL } from "../../web/src/lib/takeoffConstants.ts";
 import { snapEdges } from "../../web/src/lib/edgesnap.ts";
@@ -35,16 +35,15 @@ const ZONE_SNAP_CELLS = 3;
 /** How many unlabelled floor pieces a reply lists (largest first); the total covers all. */
 const MAX_PIECES = 30;
 /** Stamps prefixed as totals ("BRA 59,7 m²") are not one room's area (checkAgainstPrintedArea's rule). */
-const TOTAL_RE = /^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i;
-const isTotal = (text: string) => TOTAL_RE.test(text) && !SF_STAMP_RE.test(text);   // "NSF 705" is a room's own area
 
 /** Per segment, 1 = a wall face (wallFaceSegs) among the ink `mask` stops a flood at — cached per mask. */
 const wallSegCache = new WeakMap<MaskObj, Uint8Array>();
-export function wallSegsIn(geo: VectorGeometry, mask: MaskObj, pxPerM: number): Uint8Array {
-  let out = wallSegCache.get(mask);
+export function wallSegsIn(geo: VectorGeometry, mask: MaskObj, pxPerM: number, roles: Uint8Array | null): Uint8Array {
+  let out = wallSegCache.get(mask);   // a mask is built for one set of layer roles, so it keys them too
   if (out) return out;
   const { segs, meta, subpaths } = geo;
-  const faces = wallFaceSegs(segs, meta, subpaths, pxPerM, SEG_FILLONLY);
+  const gone = notDrawn(roles, segs.length >> 2);
+  const faces = wallFaceSegs(segs, meta, subpaths, pxPerM, SEG_FILLONLY, gone);
   const hard = (x: number, y: number) => {
     const mx = Math.round(x * mask.ws), my = Math.round(y * mask.ws);
     return mx >= 0 && my >= 0 && mx < mask.mw && my < mask.mh && !!(mask.mask[my * mask.mw + mx] & 1);
@@ -55,25 +54,39 @@ export function wallSegsIn(geo: VectorGeometry, mask: MaskObj, pxPerM: number): 
   return out;
 }
 
+/** Per segment, 1 = not drawn on this plan: a layer the sheet (or the caller's override) hides, or one the
+ *  engine's layer-role table (layers.ts: AIA / NS 3451 conventions, the same the flood mask reads) calls
+ *  demolition. An unlayered sheet has no roles and nothing is skipped. */
+function notDrawn(roles: Uint8Array | null, n: number): Uint8Array | null {
+  if (!roles) return null;
+  const gone = new Uint8Array(n);
+  for (let i = 0; i < n; i++) if (roles[i] === ROLE_HIDDEN || roles[i] === ROLE_CODE.demolition) gone[i] = 1;
+  return gone;
+}
+
 /** A rough outline (a vision model's drawing) with each edge moved onto a wall face it parallels within
  *  SNAP_WALL_M (edgesnap.ts, wall faces only). Two readings: the nearest face, and the room-side face
  *  (the outline drawn on or across the wall). Where the sheet prints the room's area inside the outline,
  *  the reading that agrees with it wins — the outline as drawn first, so a snap never spoils an outline
  *  that already agrees; otherwise the nearest face. Returns the outline and how many vertices moved. */
 export const SNAP_WALL_M = 0.3;
-export function snapToWalls(ring: Point[], geo: VectorGeometry, mask: MaskObj, pxPerM: number, printedInside: number[], tolPx = SNAP_WALL_M * pxPerM): { ring: Point[]; moved: number } {
-  const allowed = wallSegsIn(geo, mask, pxPerM);
+export type SnapReading = "as_drawn" | "nearest_face" | "room_side_face";
+export function snapToWalls(ring: Point[], geo: VectorGeometry, mask: MaskObj, pxPerM: number, printedInside: number[], roles: Uint8Array | null, tolPx = SNAP_WALL_M * pxPerM): { ring: Point[]; moved: number; reading: SnapReading; agrees: boolean | null } {
+  const allowed = wallSegsIn(geo, mask, pxPerM, roles);
   const snap = (prefer: "nearest" | "inward") => snapEdges(ring, geo.segs, geo.meta, pxPerM, tolPx, { allowed, prefer }) as Point[];
   const m2 = (r: Point[]) => ringArea(r) / (pxPerM * pxPerM);
   const nearest = snap("nearest");
-  let out = nearest;
+  let out = nearest, reading: SnapReading = "nearest_face", agrees: boolean | null = null;
   if (printedInside.length) {
     const agree = (r: Point[]) => printedInside.some((p) => printedAgrees(m2(r), p));
-    out = [ring, nearest, snap("inward")].find(agree) ?? nearest;
+    const readings: [Point[], SnapReading][] = [[ring, "as_drawn"], [nearest, "nearest_face"], [snap("inward"), "room_side_face"]];
+    const hit = readings.find(([r]) => agree(r));
+    if (hit) [out, reading] = hit;
+    agrees = !!hit;
   }
   let moved = 0;
   for (let e = 0; e < ring.length; e++) if (Math.hypot(out[e][0] - ring[e][0], out[e][1] - ring[e][1]) > 0.5) moved++;
-  return { ring: out, moved };
+  return { ring: out, moved, reading, agrees };
 }
 
 /** A room number the sheet graph corroborates (sheetgraph.ts RoomTag), image px. */
@@ -153,11 +166,12 @@ export function coverLabels(spans: TextSpan[], roomTags: RoomTagIn[] = []): { mo
   const stamps: CoverLabel[] = [];
   for (const sp of spans) {
     const text = (sp.str || "").trim();
-    const m2 = printedAreaM2(text);
+    const total = isTotalStamp(text);
+    const m2 = total ? -1 : printedAreaM2(text);
     if (m2 == null) continue;
     const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
     if (stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
-    stamps.push({ text, m2: isTotal(text) ? -1 : m2, x, y, h: Math.max(1, sp.y1 - sp.y0) });
+    stamps.push({ text, m2, x, y, h: Math.max(1, sp.y1 - sp.y0) });
   }
   if (stamps.length >= 3) return { mode: "printed_areas", labels: stamps.filter((s) => s.m2! > 0), totals: stamps.filter((s) => s.m2! < 0) };
   const labels: CoverLabel[] = [];
@@ -193,7 +207,8 @@ export function coverPartition(sh: Omit<CoverSheet, "commit" | "nearestSnap" | "
     const { segs, meta } = sh.geo;
     const n = segs.length >> 2;
     const M = sh.mask;
-    const wallSeg = wallSegsIn(sh.geo, M, pxPerM);
+    const gone = notDrawn(sh.roles, n);
+    const wallSeg = wallSegsIn(sh.geo, M, pxPerM, sh.roles);
     const ws: number[] = [];
     for (let i = 0; i < n; i++) if (wallSeg[i]) ws.push(segs[4 * i], segs[4 * i + 1], segs[4 * i + 2], segs[4 * i + 3]);
     const pxPerFt = 1 / sh.upp;
@@ -202,9 +217,6 @@ export function coverPartition(sh: Omit<CoverSheet, "commit" | "nearestSnap" | "
     dropWallIslands(bare, pxPerM);
     walls = sealDoorways(bare, findDoorSeals(segs, meta, M, pxPerFt)).mo;
     if (walls.mw !== M.mw || walls.mh !== M.mh) throw new Error("cover: wall and ink masks on different grids");
-    // ink the sheet (or the caller's layer override) hides, or marks demolished, is not drawn on this plan
-    const gone = new Uint8Array(n);
-    if (sh.roles) for (let i = 0; i < n; i++) if (sh.roles[i] === ROLE_HIDDEN || sh.roles[i] === ROLE_CODE.demolition) gone[i] = 1;
     cuts = zoneCuts(segs, meta, wallSeg, walls, pxPerM, gone);
     for (let i = 0; i < cuts.length; i++) if (M.mask[i] & 1 && !(walls.mask[i] & 1)) cuts[i] = 1;
   }
@@ -223,7 +235,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
   const printedOf = (k: number) => (labels[k].m2 != null ? { printed_m2: labels[k].m2! } : {});
   for (const k of res.measuredLabels) {
     const l = labels[k];
-    const hit = sh.measured.find((m) => inRing(l.x, l.y, m.ring));
+    const hit = sh.measured.find((m) => pointInPoly(l.x, l.y, m.ring));
     rooms.push({ label: l.text, ...named(k), ...printedOf(k), status: "measured", ...(hit ? { shape_id: hit.id } : {}), at: pt([l.x, l.y]) });
   }
   let flaggedM2 = 0;
@@ -231,9 +243,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     rooms.push({ label: labels[k].text, ...named(k), ...printedOf(k), status: "flagged", ...(z ? { zone_m2: round2(z.m2), walls_pct: Math.round(z.wallShare * 100), bbox: z.bbox.map(round1) as [number, number, number, number] } : {}), reason, at: pt([labels[k].x, labels[k].y]) });
   };
   const assigned = new Set<number>();
-  const strays: CoverZone[] = [];
   for (const z of res.zones) {
-    if (!z.labels.length) { if (!z.leaks) strays.push(z); continue; }   // a split piece between two rooms
     for (const k of z.labels) assigned.add(k);
     if (!z.leaks) flaggedM2 += z.m2;   // subtracted again below when the zone commits
     const list = z.labels.map((k) => labels[k].text).join(", ");
@@ -246,7 +256,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     const outline = (printed: number[]) => {
       const raw = zoneRing(z, res.mw, res.mh, res.ws);
       const snapped = sh.raster || !sh.snap ? raw : snapVertices(raw, (px, py, d) => sh.nearestSnap(px, py, d), SNAP_TOL);
-      return sh.raster || !sh.geo ? snapped : snapToWalls(snapped, sh.geo, sh.mask, pxPerM, printed, ZONE_SNAP_CELLS / res.ws).ring;
+      return sh.raster || !sh.geo ? snapped : snapToWalls(snapped, sh.geo, sh.mask, pxPerM, printed, sh.roles, ZONE_SNAP_CELLS / res.ws).ring;
     };
     // the outline is the zone's outer edge: floor it surrounds but does not hold (a room, a shaft) would be counted
     const surrounds = (ring: Point[]) => { const e = m2(ringArea(ring)) - z.m2; return e > Math.max(HOLE_M2, HOLE_FRAC * z.m2) ? e : 0; };
@@ -259,8 +269,8 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       const ring = outline([sum]);
       const traced = ring.length >= 3 ? m2(ringArea(ring)) : 0;
       const refuse = ring.length < 3 ? "the zone could not be traced to an outline"
-        : res.totals.some((t) => inRing(t.x, t.y, ring)) ? "a printed total (BRA/BTA …) sits in it, so its printed areas are not all rooms"
-        : z.labels.some((k) => !inRing(labels[k].x, labels[k].y, ring)) ? "not every printed area sits inside its outline"
+        : res.totals.some((t) => pointInPoly(t.x, t.y, ring)) ? "a printed total (BRA/BTA …) sits in it, so its printed areas are not all rooms"
+        : z.labels.some((k) => !pointInPoly(labels[k].x, labels[k].y, ring)) ? "not every printed area sits inside its outline"
         : surrounds(ring) ? `its outline surrounds ${round2(surrounds(ring))} m² that is not part of it`
         : !printedAgrees(traced, sum) ? `zone ${round2(traced)} m² does not agree with their sum ${round2(sum)} m²` : null;
       if (refuse) { for (const k of z.labels) flag(k, z, `${why}; ${refuse}`); continue; }
@@ -290,7 +300,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     if (stamped) {
       // the printed area must sit inside the outline it vouches for (commit() checks the same, and a zone
       // that only brushes its label — a thin strip under the text — would commit unverified)
-      if (!inRing(l.x, l.y, ring)) { flag(k, z, `the printed ${l.text} sits outside the zone's outline (${round2(traced)} m²) — a strip beside the label, not its room`); continue; }
+      if (!pointInPoly(l.x, l.y, ring)) { flag(k, z, `the printed ${l.text} sits outside the zone's outline (${round2(traced)} m²) — a strip beside the label, not its room`); continue; }
       if (!printedAgrees(traced, l.m2!)) { flag(k, z, `zone ${round2(traced)} m² vs printed ${l.text} — the zone runs past the room or stops short of it`); continue; }
     } else if (walls) {
       // the drawn-walls check judges the outline's shape, not whether it is a room's size: a wall cavity or a
@@ -321,7 +331,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     if (!assigned.has(k) && !res.measuredLabels.includes(k)) flag(k, null, "the label sits on wall or linework with no floor round it");
   });
 
-  const unlabeled = [...res.unlabeled, ...strays].sort((a, b) => b.m2 - a.m2);
+  const unlabeled = res.unlabeled.slice().sort((a, b) => b.m2 - a.m2);
   const unlabeledM2 = unlabeled.reduce((a, z) => a + z.m2, 0);
   const counts = {
     labels: labels.length,
@@ -345,11 +355,3 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
   };
 }
 
-export function inRing(x: number, y: number, ring: Point[]): boolean {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i], [xj, yj] = ring[j];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}

@@ -38,8 +38,8 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 // scale-unpinned masks here, so an MCP trace and a canvas click at the same
 // seed measured DIFFERENT square footage under the same origin.method.
 import { sweepCommitRefusal } from "./sweepGuard.ts";
-import { coverSheet, coverLabels, inRing, snapToWalls } from "./cover.ts";
-import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
+import { coverSheet, coverLabels, snapToWalls } from "./cover.ts";
+import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, isTotalStamp, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
@@ -406,9 +406,6 @@ export type FloorCheck =
 /** A room label the caller chose for detect_rooms: a text, or a text at a point (image px). */
 export type SeedLabel = string | { text: string; at: [number, number] };
 
-/** The clouds takeoff_rooms cover {mark: true} draws — recognised so a repeat call replaces them. */
-const COVER_CLOUD_RE = /^(Not measured: |No room label, )/;
-
 /** The one-line form tool replies carry: "printed_area", "drawn_walls", "printed_sum (a + b)" or "unverified: <reason>". */
 export const checkText = (check: FloorCheck | undefined): string | undefined =>
   !check ? undefined : check.status === "verified" ? check.by
@@ -450,6 +447,11 @@ export interface Markup {
   /** bubble: radius normalized to sheet WIDTH (the canvas/marked-set frame —
    * uniform scale off width keeps the circle round on any page). */
   r?: number;
+  /** "cover": a cloud takeoff_rooms cover {mark: true} drew round floor it could not measure — cover replaces or
+   * drops its own, and only its own. */
+  source?: "cover";
+  /** cover: the room label a "not measured" cloud is about, with where it is printed ("5,7 m²@1577,630") */
+  room?: string;
   /** dimension: the measured length in real feet, snapshotted at annotate
    * time from the sheet scale — the renderers (canvas, marked set) draw the
    * label from this, so neither needs scale plumbing of its own. */
@@ -1639,10 +1641,10 @@ export class Session {
     let totalInside = false;
     for (const sp of s.spans) {
       const label = (sp.str || "").trim();
+      const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
+      if (isTotalStamp(label)) { if (pointInPoly(x, y, vertsPx)) totalInside = true; continue; }   // totals ("BRA 59,7 m²", "12,400 GSF") are not a room's own area
       const m2 = printedAreaM2(label);
       if (m2 == null) continue;
-      const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
-      if (/^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i.test(label) && !SF_STAMP_RE.test(label)) { if (pointInPoly(x, y, vertsPx)) totalInside = true; continue; }   // totals ("BRA 59,7 m²") are not a room's own area; "NSF 705" is
       if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
       stamps.push({ label, m2, x, y });
     }
@@ -2456,7 +2458,9 @@ export class Session {
     const measured = this.shapes
       .filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
       .map((sh) => ({ id: sh.id, ring: sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point), label: sh.label }));
-    const out = coverSheet({
+    let out: ReturnType<typeof coverSheet>;
+    try {
+    out = coverSheet({
       key: s.key, widthPx: s.widthPx, heightPx: s.heightPx, widthPt: s.widthPt, heightPt: s.heightPt, upp, spans: s.spans, roomTags, geo: raster ? null : geo, snap: s.snap,
       nearestSnap: (px, py, d) => (s.snap ? nearestSnap(s.snap, px, py, d) : null),
       ...(wallsOn ? { drawnWalls: {
@@ -2471,17 +2475,39 @@ export class Session {
         return { id: shape.id, check: checkText(shape.check) };
       },
     }, { commit: opts.condition !== undefined });
-    this.flushCommits("cover");
-    // mark: cloud what is not measured, so the marked set shows the whitespace (annotate's own records)
+    } finally {
+      this.flushCommits("cover");   // what committed before a failure is still one undo step
+    }
+    // Cover's clouds carry source "cover" and never touch anyone else's markups. Like every annotation they are
+    // not journaled. mark replaces this sheet's cover clouds; any call drops the ones over floor now measured,
+    // so the marked set never clouds a room it also shows measured.
+    const ours = (m: Markup) => m.sheet_id === s.key && m.source === "cover";
+    const floorRings = this.shapes.filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
+      .map((sh) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point));
+    const roomKey = (r: { label: string; at: [number, number] }) => `${r.label}@${Math.round(r.at[0])},${Math.round(r.at[1])}`;
+    const measuredNow = new Set(out.rooms.filter((r) => r.status !== "flagged").map(roomKey));
+    const stale = (m: Markup) => {
+      if (m.room !== undefined) return measuredNow.has(m.room);
+      if (!m.rect) return false;
+      const cx = ((m.rect[0][0] + m.rect[1][0]) / 2) * s.widthPx, cy = ((m.rect[0][1] + m.rect[1][1]) / 2) * s.heightPx;
+      return floorRings.some((r) => pointInPoly(cx, cy, r));
+    };
+    const before = this.markups.length;
+    this.markups = this.markups.filter((m) => !(ours(m) && (opts.mark || stale(m))));
+    const removed = before - this.markups.length;
     let marked = 0;
     if (opts.mark) {
-      // a repeat call replaces this sheet's cover clouds rather than stacking a second set
-      this.markups = this.markups.filter((m) => !(m.sheet_id === s.key && m.type === "cloud" && COVER_CLOUD_RE.test(m.text)));
-      const cloud = (b: [number, number, number, number], text: string) => { this.annotate({ sheet: s.key, type: "cloud", text, rect: [[b[0], b[1]], [b[2], b[3]]] }); marked++; };
-      for (const r of out.rooms) if (r.status === "flagged" && r.bbox) cloud(r.bbox, `Not measured: ${r.name ? `${r.name} ` : ""}${r.label}`);
+      const cloud = (b: [number, number, number, number], text: string, room?: string) => {
+        const id = this.annotate({ sheet: s.key, type: "cloud", text, rect: [[b[0], b[1]], [b[2], b[3]]] }).id;
+        const m = this.markups.find((x) => x.id === id)!;
+        m.source = "cover";
+        if (room !== undefined) m.room = room;
+        marked++;
+      };
+      for (const r of out.rooms) if (r.status === "flagged" && r.bbox) cloud(r.bbox, `Not measured: ${r.name ? `${r.name} ` : ""}${r.label}`, roomKey(r));
       for (const u of out.unmeasured_floor.unlabeled) if (u.m2 >= 1) cloud(u.bbox, `No room label, ${u.m2} m²`);
     }
-    return { ...out, ...(opts.mark ? { clouds: marked } : {}) };
+    return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
   }
 
   /** Bend a trace the way the canvas's Curve mode does (#284): `arcThrough`
@@ -2513,7 +2539,7 @@ export class Session {
   }
 
   /** measure {kind: "area", snap_to_walls}: the outline with its edges moved onto the wall faces they parallel. */
-  async snapOutline(name: string, verts: Point[], layers?: { include?: string[]; exclude?: string[] }): Promise<{ verts: Point[]; moved: number }> {
+  async snapOutline(name: string, verts: Point[], layers?: { include?: string[]; exclude?: string[] }): Promise<{ verts: Point[]; moved: number; reading: string; agrees: boolean | null }> {
     const s = this.sheet(name);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
     const geo = await this.ensureGeometry(s);
@@ -2521,9 +2547,9 @@ export class Session {
     if (!mask) throw new UserError("snap_to_walls needs vector linework — this sheet has none (a scan). Measure without it.");
     if (!s.spans) s.spans = textSpans(s.page);
     const { mode, labels } = coverLabels(s.spans);
-    const printed = mode === "printed_areas" ? labels.filter((l) => inRing(l.x, l.y, verts)).map((l) => l.m2!) : [];
-    const r = snapToWalls(verts, geo, mask, 1 / (s.upp * 0.3048), printed);
-    return { verts: r.ring, moved: r.moved };
+    const printed = mode === "printed_areas" ? labels.filter((l) => pointInPoly(l.x, l.y, verts)).map((l) => l.m2!) : [];
+    const r = snapToWalls(verts, geo, mask, 1 / (s.upp * 0.3048), printed, this.rolesFor(s, geo, layers));
+    return { verts: r.ring, moved: r.moved, reading: r.reading, agrees: r.agrees };
   }
 
   measurePolygon(name: string, verts: Point[], opts: { condition?: string; role: "floor_area" | "deduct"; arc_through?: number[] }) {

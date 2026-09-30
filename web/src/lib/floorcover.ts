@@ -32,6 +32,7 @@
 // Pure module: no pdf.js, no DOM.
 import { SEG_CURVE, SEG_CLIP, traceRegion } from "./oneclick.ts";
 import type { MaskObj, Point } from "./oneclick.ts";
+import { pointInPoly } from "./geometry.js";
 
 /** Free floor thinner than this (m) along a measured outline or a wall is a
  *  trace's slack against the wall face, not floor anyone left out. */
@@ -189,15 +190,6 @@ function components(open: (i: number) => boolean, mw: number, mh: number, within
   return { id, comps };
 }
 
-/** Is the point inside a ring (image px)? */
-function inRing(x: number, y: number, ring: Point[]): boolean {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i], [xj, yj] = ring[j];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
 
 /** The remaining floor of one sheet, as zones. */
 export function coverZones(inp: CoverInput): CoverResult {
@@ -221,7 +213,7 @@ export function coverZones(inp: CoverInput): CoverResult {
 
   const measuredLabels: number[] = [];
   const open: number[] = [];
-  labels.forEach((l, k) => (inp.measured.some((ring) => inRing(l.x, l.y, ring)) ? measuredLabels : open).push(k));
+  labels.forEach((l, k) => (inp.measured.some((ring) => pointInPoly(l.x, l.y, ring)) ? measuredLabels : open).push(k));
 
   const { id, comps } = components(free, mw, mh);
   // a label's cell: the free cell nearest its centre, within its own text height
@@ -373,6 +365,36 @@ function nearBound(j: number, i: number, state: Uint8Array, mw: number, mh: numb
  *  still holds several labels is returned `unsplit`. Cut cells go to a
  *  neighbouring piece, so the pieces tile the zone. */
 function splitZone(z: CoverZone, cuts: Uint8Array, labelCell: Map<number, number>, mw: number, mh: number,
+  leaksAt: (cells: Int32Array) => boolean): { cells: Int32Array; labels: number[]; merged: number; unsplit?: boolean }[] {
+  // work on the zone's own box (plus a margin), not a sheet-sized grid per zone
+  const { x0, y0, lw, lh, toLocal, toSheet } = localBox(z.cells, mw, mh, 4);
+  const lcuts = new Uint8Array(lw * lh);
+  const lcells = toLocal(z.cells);
+  for (let k = 0; k < lcells.length; k++) if (cuts[z.cells[k]]) lcuts[lcells[k]] = 1;
+  const lLabelCell = new Map<number, number>();
+  for (const k of z.labels) {
+    const c = labelCell.get(k)!, x = (c % mw) - x0, y = ((c / mw) | 0) - y0;
+    lLabelCell.set(k, Math.min(lh - 1, Math.max(0, y)) * lw + Math.min(lw - 1, Math.max(0, x)));
+  }
+  const local = splitZoneOn({ ...z, cells: lcells }, lcuts, lLabelCell, lw, lh, (cells) => leaksAt(toSheet(cells)));
+  return local.map((p) => ({ ...p, cells: toSheet(p.cells) }));
+}
+
+/** A cell list's bounding box (plus `margin`) as a local grid, with index maps both ways. */
+function localBox(cells: Int32Array, mw: number, mh: number, margin: number) {
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const i of cells) {
+    const x = i % mw, y = (i / mw) | 0;
+    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y;
+  }
+  const x0 = Math.max(0, bx0 - margin), y0 = Math.max(0, by0 - margin);
+  const lw = Math.min(mw - 1, bx1 + margin) - x0 + 1, lh = Math.min(mh - 1, by1 + margin) - y0 + 1;
+  const toLocal = (g: Int32Array) => g.map((i) => (((i / mw) | 0) - y0) * lw + (i % mw) - x0);
+  const toSheet = (l: Int32Array) => l.map((i) => (((i / lw) | 0) + y0) * mw + (i % lw) + x0);
+  return { x0, y0, lw, lh, toLocal, toSheet };
+}
+
+function splitZoneOn(z: CoverZone, cuts: Uint8Array, labelCell: Map<number, number>, mw: number, mh: number,
   leaksAt: (cells: Int32Array) => boolean): { cells: Int32Array; labels: number[]; merged: number; unsplit?: boolean }[] {
   const inZone = new Uint8Array(mw * mh);
   let anyCut = false;
@@ -592,9 +614,10 @@ export function zoneCuts(segs: ArrayLike<number>, meta: ArrayLike<number>, wallS
 
 /** A zone's outline (image px), traced like a flood region. */
 export function zoneRing(z: CoverZone, mw: number, mh: number, ws: number): Point[] {
-  const region = new Uint8Array(mw * mh);
-  for (const i of z.cells) region[i] = 1;
-  return traceRegion({ region, mw, mh, ws });
+  const { x0, y0, lw, lh, toLocal } = localBox(z.cells, mw, mh, 1);
+  const region = new Uint8Array(lw * lh);
+  for (const i of toLocal(z.cells)) region[i] = 1;
+  return traceRegion({ region, mw: lw, mh: lh, ws }).map(([x, y]) => [x + x0 / ws, y + y0 / ws] as Point);
 }
 
 /** Wall-face thickness band (m) and the shortest face that vouches for a wall — wallpairs.ts's defaults. */
@@ -641,13 +664,14 @@ const POCHE_MAX_M = FACE_TMAX_M;
  *  nor is the end line of such a field, whose one partner is a field member at
  *  the field's own pitch. Everything the mask draws that is not wall is a
  *  drawn line the floor can be split at, never a boundary on its own. */
-export function wallFaceSegs(segs: ArrayLike<number>, meta: ArrayLike<number>, subpaths: { i0: number; i1: number; x0: number; y0: number; x1: number; y1: number; flags: number }[] | undefined, pxPerM: number, fillOnlyBit: number): Uint8Array {
+export function wallFaceSegs(segs: ArrayLike<number>, meta: ArrayLike<number>, subpaths: { i0: number; i1: number; x0: number; y0: number; x1: number; y1: number; flags: number }[] | undefined, pxPerM: number, fillOnlyBit: number, skip?: ArrayLike<number> | null): Uint8Array {
   const n = segs.length >> 2;
   const minLen = FACE_MIN_M * pxPerM, maxOff = FACE_TMAX_M * pxPerM, minOff = FACE_TMIN_M * pxPerM;
   const sinTol = Math.sin((1.5 * Math.PI) / 180);
   const cell = Math.max(maxOff * 2, 1), grid = new Map<number, number[]>();
   for (let i = 0; i < n; i++) {
-    if (meta[i] & (SEG_CURVE | SEG_CLIP)) continue;
+    // ink not drawn on this plan (a hidden or demolition layer) is neither a wall nor a wall's partner
+    if (meta[i] & (SEG_CURVE | SEG_CLIP) || skip?.[i]) continue;
     const x0 = segs[4 * i], y0 = segs[4 * i + 1], x1 = segs[4 * i + 2], y1 = segs[4 * i + 3];
     if (Math.hypot(x1 - x0, y1 - y0) < minLen) continue;
     const gx0 = Math.floor((Math.min(x0, x1) - maxOff) / cell), gx1 = Math.floor((Math.max(x0, x1) + maxOff) / cell);
@@ -700,7 +724,7 @@ export function wallFaceSegs(segs: ArrayLike<number>, meta: ArrayLike<number>, s
   for (const sp of subpaths ?? []) {
     if (!(sp.flags & fillOnlyBit)) continue;
     if (Math.min(sp.x1 - sp.x0, sp.y1 - sp.y0) > POCHE_MAX_M * pxPerM) continue;
-    for (let i = sp.i0; i < sp.i1; i++) if (!(meta[i] & SEG_CLIP)) wall[i] = 1;
+    for (let i = sp.i0; i < sp.i1; i++) if (!(meta[i] & SEG_CLIP) && !skip?.[i]) wall[i] = 1;
   }
   return wall;
 }

@@ -186,7 +186,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
 
   if (oneClick) {
     server.registerTool("takeoff_rooms", {
-      description: "Rooms from the plan's own linework. detect (default): every room label flooded through the sealed engine with the printed-area check; each room returns label, area, method and confidence, each skipped one its reason. at: one room at a point. cover (after detect): the unmeasured floor split at walls, doors and drawn zone lines; a zone commits only if it matches its one printed area (none printed: walled, one named room number); every other room is flagged with its reason, plus unlabelled floor. Commit with condition or assign_from_schedule.",
+      description: "Rooms from the plan\'s own linework. detect (default): every room label flooded through the sealed engine with the printed-area check; each room returns label, area, method and confidence, each skipped one its reason. at: a room at a point. cover (after detect): the unmeasured floor split at walls, doors and drawn zone lines; a zone commits if it matches its one printed area, or as ONE combined row (status combined, check printed_sum) when rooms share an open zone matching their printed sum; others flagged with the reason, plus unlabelled floor. Commit with condition or assign_from_schedule.",
       inputSchema: {
         action: z.enum(["detect", "at", "cover"]).optional().describe("detect (default), at or cover; at is assumed when only `at` is given"),
         sheet: z.string(),
@@ -299,7 +299,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       rise_ft: z.number().min(0).optional().describe("length: this run's vertical leg up, feet"),
       drop_ft: z.number().min(0).optional().describe("length: this run's vertical leg down, feet"),
       height_ft: z.number().positive().optional().describe("surface: wall height, feet (written to the condition)"),
-      snap_to_walls: z.boolean().optional().describe("area: first move each edge onto the wall face it parallels within 0.3 m (a rough outline, e.g. drawn from a picture); snapped_edges says how many moved"),
+      snap_to_walls: z.boolean().optional().describe("area: first move each edge onto the wall face it parallels within 0.3 m (a rough outline, e.g. drawn from a picture); snap says how many vertices moved and which reading was kept"),
     },
     outputSchema: perAction("kind", ["area", "length", "surface"], measurePolygonOutput, measureLineOutput, measureSurfaceOutput),
   }, run("measure", async (a) => {
@@ -307,7 +307,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       needPoints("measure", "area", a.points, 3);
       if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry
       const snapped = a.snap_to_walls ? await session.snapOutline(a.sheet, a.points) : null;
-      return { kind: "area", ...(await session.measurePolygon(a.sheet, snapped ? snapped.verts : a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })), ...(snapped ? { snapped_edges: snapped.moved } : {}) };
+      return { kind: "area", ...(await session.measurePolygon(a.sheet, snapped ? snapped.verts : a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })), ...(snapped ? { snap: { vertices_moved: snapped.moved, reading: snapped.reading, ...(snapped.agrees !== null ? { agrees_with_printed_area: snapped.agrees } : {}) } } : {}) };
     }
     if (a.kind === "length") return { kind: "length", ...(await session.measureLine(a.sheet, a.points, { condition: a.condition, arc_through: a.arc_through, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
     need("measure", "surface", a, "condition");
