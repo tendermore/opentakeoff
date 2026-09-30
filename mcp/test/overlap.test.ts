@@ -101,10 +101,7 @@ test("no two regions the engine hands over on one sheet share floor", async (t) 
   }
 
   const usable = rings.filter((r) => r.verts?.length >= 3);
-  // RE-PINNED 20 -> 5 for the drawn-walls check: this sheet prints no room
-  // areas, and detect_rooms now hands over only the outlines that follow the
-  // drawn walls and hold one room's label — the clicks still come back as previews
-  assert.ok(det.rooms.length > 0 && usable.length >= 5, `only ${usable.length} regions came back — the sweep did not run`);
+  assert.ok(usable.length >= 20, `only ${usable.length} regions came back — the sweep did not run`);
   const sweepable = usable.filter((r) => r.sf < OVERSIZE_SF);
 
   const hits: { a: Ring; b: Ring; sf: number }[] = [];

@@ -9,12 +9,12 @@ import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHan
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
-import { UserError, round1, round2, displayUnits } from "./format.ts";
+import { UserError, round1, round2, displayUnits, isRatioScale } from "./format.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
 import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPatch, propagateRowRemove,
          markRowLocal, dropRowLocal, type VariantCond, type VariantRow } from "../../web/src/lib/variants.ts";
-import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, type DetectedScale } from "../../web/src/lib/sheets.ts";
+import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, DIMTEXT_RE, type DetectedScale } from "../../web/src/lib/sheets.ts";
 import { buildSheetDxf, type DxfBuild } from "../../web/src/lib/dxf.ts";
 import {
   extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodDeadline, FloodDeadline,
@@ -44,7 +44,7 @@ import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
 import { wallSegIndices } from "../../web/src/lib/wallpairs.ts";
 import { snapEdges } from "../../web/src/lib/edgesnap.ts";
-import { NORDIC_TEXT_RE } from "../../web/src/lib/sheetvocab.ts";
+import { readsNordic } from "../../web/src/lib/sheetvocab.ts";
 import { checkOnWalls, closeOpenings, dropOpenLeaves, toInsideFace, hasWallFaces, COVERED as WALL_COVERED, type WallCheck, type DoorReach, type DoorLeaves } from "../../web/src/lib/wallcheck.ts";
 import { buildNet, netRoomAt } from "../../web/src/lib/netroom.js";
 import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/drawnrooms.ts";
@@ -576,6 +576,8 @@ interface SheetState {
   /** Wall faces the drawn-walls check reads (wallcheck.ts): `pairs` = paired wall lines, `faces` = those
    * plus filled poché; built for scale `upp` (the pairing thresholds are metres). */
   wallFaces?: { upp: number; faces: Uint8Array; pairs: Uint8Array; ids: Uint32Array };
+  /** What the sheet's text says about its units (see unitsOf): printed room areas in m² or SF, feet-inch dimensions. */
+  textUnits?: { m2: number; sf: number; ftIn: number };
   /** Hinged doors read off their swings (doors.ts); scale baked in like `mask`.
    * null = no vector linework or no scale to read them with. */
   doors?: { doors: Door[]; rejected: RejectedSwing[] } | null;
@@ -746,9 +748,10 @@ const LABEL_BLOCK_HEIGHTS = 3;
 /** A room name as a sheet prints it: starts with a letter, one short line
  * ("Sov", "Bad/vask", "Stue/kjøkken", "Tekn.rom"); running notes are longer. */
 const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
-/** An ø standing alone, not inside a word, is a diameter sign ("ø 5'-0\"", a
- * turning circle on a US plan), not Nordic text. */
-const DIAMETER_SIGN_RE = /(?<!\p{L})[øØ](?!\p{L})/gu;
+/** Signals of a sheet's units counted from its text: one printed area or one
+ * feet-inch string can be a note, three are a sheet drawn in those units (the
+ * same count that makes a sheet one that prints its room areas). */
+const UNIT_EVIDENCE_MIN = 3;
 /** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
  * floods in well under a second; one still running after this is flooding a
  * whole sheet through a leak, and is no room's outline. */
@@ -1674,7 +1677,43 @@ export class Session {
    * refused with the numbers when it does not. `null` when the geometry was
    * never read (a direct Session call that skipped prepareFloorCheck); the
    * printed-area result stands then. */
+  /** The sheet's unit system, from what the sheet says of itself: the scale it
+   * is set to and the scale note it prints (a ratio "1:100" is metric, an
+   * architectural or engineering scale imperial), its printed room areas (m² or
+   * SF, at least UNIT_EVIDENCE_MIN of them) and its dimensions (at least
+   * UNIT_EVIDENCE_MIN feet-inch strings are imperial). Metric only when some
+   * signal says metric and none says imperial; any imperial signal wins, and
+   * no signal is "unknown". `by` names the signals that voted. */
+  unitsOf(name: string): { system: "metric" | "imperial" | "unknown"; by: string[] } {
+    const s = this.sheet(name);
+    if (!s.textUnits) {
+      if (!s.spans) s.spans = textSpans(s.page);
+      const texts = s.spans.map((sp) => (sp.str || "").trim());
+      const count = (re: RegExp) => texts.filter((t) => re.test(t)).length;
+      s.textUnits = { m2: count(AREA_STAMP_RE), sf: count(SF_STAMP_RE), ftIn: count(DIMTEXT_RE) };
+    }
+    const metric: string[] = [], imperial: string[] = [];
+    const scale = (what: string, label: string | undefined) => { if (label) (isRatioScale(label) ? metric : imperial).push(`${what} ${label}`); };
+    scale("scale", s.scaleLabel);
+    scale("scale note", s.detected?.label);
+    const t = s.textUnits;
+    if (t.m2 >= UNIT_EVIDENCE_MIN) metric.push(`${t.m2} m² areas`);
+    if (t.sf >= UNIT_EVIDENCE_MIN) imperial.push(`${t.sf} SF areas`);
+    if (t.ftIn >= UNIT_EVIDENCE_MIN) imperial.push(`${t.ftIn} feet-inch dimensions`);
+    return imperial.length ? { system: "imperial", by: imperial } : metric.length ? { system: "metric", by: metric } : { system: "unknown", by: [] };
+  }
+
+  /** The no-printed-area rules (outlines must follow the drawn walls; European
+   * sheets seed from room names) hold on metric sheets only. An imperial or
+   * undecided sheet keeps the plain behaviour — a room with no printed area
+   * commits unverified — until the drawn-walls check reads US drafting
+   * (leader arrowheads on walls, boxed room tags, stall doors) as well. */
+  private drawnWallsApply(s: SheetState): boolean {
+    return this.unitsOf(s.key).system === "metric";
+  }
+
   private checkAgainstDrawnWalls(s: SheetState, vertsPx: Point[]): FloorCheck | null {
+    if (!this.drawnWallsApply(s)) return null;
     const walls = this.wallFacesOf(s);
     if (!walls || !s.geo) return null;
     if (!hasWallFaces(walls.faces)) return { status: "unverified", reason: "no_wall_linework" };
@@ -1823,7 +1862,7 @@ export class Session {
     if (ring.length < 3) throw new UserError("Couldn't trace that space into a polygon.");
     // a floor with no printed area inside: onto the drawn walls, as detect does,
     // when that outline follows them (the commit checks it either way)
-    if (!raster && opts.role === "floor_area" && s.upp != null) {
+    if (!raster && opts.role === "floor_area" && s.upp != null && this.drawnWallsApply(s)) {
       await this.prepareFloorCheck(name);
       const walls = this.wallFacesOf(s);
       let unprinted = false;
@@ -2005,8 +2044,10 @@ export class Session {
     // from the words, and the drawn-walls check decides which of them sit in a
     // room. US sheets number their rooms; the numbers stay the seeds there.
     const stamped = labels.filter((l) => printedAreaM2(l.str) != null);
+    // the no-printed-area rules (drawn walls, room names) apply on metric sheets only
+    const strict = !raster && this.drawnWallsApply(s);
     if (stamped.length >= 3) labels.splice(0, labels.length, ...stamped);
-    else if (s.spans.some((sp) => NORDIC_TEXT_RE.test((sp.str || "").replace(DIAMETER_SIGN_RE, "")))) labels.splice(0, labels.length, ...stamped, ...names);
+    else if (strict && s.spans.some((sp) => readsNordic(sp.str || ""))) labels.splice(0, labels.length, ...stamped, ...names);
     // The caller's own choice (a model that read the sheet's text): those texts
     // seed the rooms instead of the engine's choice; the checks are the same.
     const unmatched: string[] = [];
@@ -2058,11 +2099,11 @@ export class Session {
     // is passed explicitly there, exactly as oneClick does
     const sweepMppf = raster ? (s.upp ? mask.ws / s.upp : 0) : (mask.mppf || 0);
     // flattened sheets: a second, walls-only mask for rooms the ink flood cuts short at furniture
-    const wallMasks = !raster && !opts.layers && s.upp != null ? await this.ensureWallMasks(name) : [];
+    const wallMasks = !raster && !opts.layers && s.upp != null && (stamped.length || strict) ? await this.ensureWallMasks(name) : [];
     const wallMask = wallMasks[0]?.mo ?? null;
     // no printed area to choose between candidates: the drawn walls choose
-    if (!raster && s.upp != null) await this.prepareFloorCheck(name);
-    const walls = raster ? null : this.wallFacesOf(s);
+    if (strict && s.upp != null) await this.prepareFloorCheck(name);
+    const walls = strict ? this.wallFacesOf(s) : null;
     const judgeWalls = !!walls && hasWallFaces(walls.faces);
     for (const lb of labels) {
       if (callDeadline && Date.now() > callDeadline) { withheld.not_tried++; continue; }

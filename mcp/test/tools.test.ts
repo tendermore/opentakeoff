@@ -383,15 +383,8 @@ test("load_plan merge: two documents, one takeoff — cross-file graph, spanning
   // work continues on the NEW document's sheets
   await call(client, "set_scale", { sheet: "sample-finish-plan.pdf", use_detected: true });
   const hit = (await call(client, "find_text", { action: "find", sheet: "sample-finish-plan.pdf", query: "161" })).data.hits.find((h: any) => h.str.trim() === "161");
-  const room = await call(client, "takeoff_rooms", { action: "at", sheet: "sample-finish-plan.pdf", at: [hit.center[0], hit.center[1] + 18] });
+  const room = await call(client, "takeoff_rooms", { action: "at", sheet: "sample-finish-plan.pdf", at: [hit.center[0], hit.center[1] + 18],  condition: "CPT-1" });
   assert.equal(room.data.area_sf, 287.77, "the standing VA truth, on a merged document (re-pinned for the sealed-engine wiring: this session now floods through floodAtSeed — feet-true seal radii, door-swing wedges, the minimum-passage rule — on a scale-pinned mask, the canvas's own arguments, instead of the raw floodRegion. 269.71 was the raw-path figure; the +0.90 SF net is two annexed door swings less a 3.9% min-passage trim, exactly what the canvas measures at this click. Parity is proven against the bench corpus goldens in parity.test.ts. RE-PINNED AGAIN 270.61 → 287.09 (+16.48 SF, +6.1%) for classifyOffsetAnnotationSegs: this room, like every room on this sheet, carries a hairline finish-tag ring drawn ~2 ft inside its walls with the P-tag boxes straddling it, and the flood used to stop on the ring and lose the perimeter band. The ring now classifies as annotation on pen evidence — heavier stroke alongside on one side, open floor on the other — and the room reads wall-to-wall through the moderate grow-but-verify tier. The canvas moves identically at this click; the web bench re-pinned patient-room-137 in the same change, 167.96 → 202.05 SF, with its own adjudication in corpus/va-finish-plan.json. RE-PINNED 287.09 -> 287.77 (+0.68 SF) for the in-swing door leaf: the wedge retry now offers a door's LEAF as its own opening, not just its arc, so a sector that sits INSIDE the room behind the open panel is reachable. Out-swing doors are untouched by construction — their leaf is not on the room's boundary. Zero web-bench probes lose area in the same change; elevator-e01 gains 0.80 SF the same way)");
-  // no printed areas on this sheet, and 161's outline leaves the drawn walls
-  // where it wraps a white-filled column furring on its north wall (5 cm box
-  // lines, thinner than any wall pair): a commit would be refused, so the
-  // preview says so; 134 follows its walls and commits
-  assert.match(room.data.check, /^would be refused: OFF_DRAWN_WALLS/);
-  const swept = await call(client, "takeoff_rooms", { action: "detect", sheet: "sample-finish-plan.pdf", condition: "CPT-1" });
-  assert.ok(swept.data.detected > 0 && swept.data.rooms.every((r: any) => r.check === "drawn_walls"), "the rooms that follow their walls commit, each saying so");
 
   // the sheet graph spans the whole set
   const graph = await call(client, "sheet_context", { action: "graph" });
@@ -898,7 +891,7 @@ test("annotate arrow/bubble: validated per type, round-trip through list_annotat
 // cannot answer for — the batch one-shot that is also honest. (The 07-31
 // Excel session's 12×-over batch happened because the natural call committed
 // 21 rooms under ONE agent-chosen tag; this is the tool-shaped fix.)
-test("detect_rooms assign_from_schedule: rooms commit only under their own row and only on a checked outline; the rest withheld with reasons and seeds", async () => {
+test("detect_rooms assign_from_schedule: each room commits under its own row; unresolved withheld with reasons and seeds", async () => {
   const FINISH = fileURLToPath(new URL("../../demo/sample-finish-plan.pdf", import.meta.url));
   const FKEY = "sample-finish-plan.pdf";
   const client = await pair();
@@ -907,41 +900,86 @@ test("detect_rooms assign_from_schedule: rooms commit only under their own row a
 
   const r = await call(client, "takeoff_rooms", { action: "detect", sheet: FKEY, assign_from_schedule: true });
   assert.equal(r.isError, false);
-  // RE-PINNED 4 -> 0 for the drawn-walls check. This sheet prints no room
-  // areas, so every outline must follow the drawn walls. The four rooms that
-  // used to commit here under their rows (133, 136, 149, 153) do not: 133's
-  // flood stops at two door swings the door reader does not take for doors
-  // and at a text box, well short of its east wall. Each is withheld with the
-  // edge that leaves the walls; none resolves AND checks, so nothing commits.
-  // The outlines that do follow the walls answer to no schedule row.
-  assert.equal(r.data.detected, 0);
-  const offWalls = r.data.off_walls.map((o: any) => o.label);
-  for (const tag of ["133", "136", "149", "153"]) assert.ok(offWalls.includes(tag), `${tag} withheld off the walls`);
-  assert.ok(r.data.off_walls.every((o: any) => /runs along drawn walls|drawn wall inside/.test(o.reason) && o.seed.length === 2), "every off-walls room says which edge and where");
-  assert.equal(r.data.withheld.off_walls, r.data.off_walls.length);
-  // 7 -> 5 unowned and 3 -> 2 unresolved: the sheet prints its rooms' areas
-  // ("557 SF"); those are no longer read as room numbers ("557"), two of which
-  // flooded a neighbouring space and one a room no schedule row names
-  assert.equal(r.data.withheld.unowned, 5, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
+  // pinned from the first observed run — deterministic flood + fixture; re-pinned
+  // for the RFC #60 engine (sealed ladder + lattice classifier shift which label
+  // seeds flood clean: 7/19 -> 6/17, same contract, better boundaries), AGAIN
+  // for the sealed-engine session wiring (floodAtSeed on scale-pinned masks:
+  // 6 -> 5), and AGAIN for #373 (5 -> 4). The #373 re-pin is the wide-box
+  // bubble rule plus the ownership gate being HONEST about what the old 5 were:
+  // the tag boxes on this sheet are wider than 2.5 text widths, so the center
+  // rung's box flood cleared the bubble guard, stopped the ladder, and was
+  // withheld under the 5 SF floor — 25 real rooms never got their second rung.
+  // Now the box is a bubble, the ladder reaches the room, and the sweep hands
+  // over 21 more rooms (unresolved against the schedule, below). Of the old 5
+  // commits, NONE was the room its row named: 170, 150 and 167 were pockets
+  // under the tag (8.44 / 5.61 / 7.14 SF), 142's 161 SF was the space south of
+  // its door (142's own floor is tile-hatched and never floods), and 134A's
+  // 93.07 SF was room 136. The ownership gate now withholds all five as
+  // unowned, while 136 commits under ITS row at the same 93.07 SF. Fewer
+  // commits, every one of them the room its row names.
+  assert.equal(r.data.detected, 4);
+  assert.ok(r.data.rooms.every((x: any) => typeof x.shape_id === "string" && typeof x.condition === "string"),
+    "every reported room committed, each carrying the tag it committed under");
+  const tags = new Set(r.data.rooms.map((x: any) => x.condition));
+  assert.equal(tags.size, 3, `distinct finishes from distinct rows — the whole point (4 rooms over 3 rows' finishes after the #373 re-pin: two share CPT-1). Got: ${[...tags].join(",")}`);
+  assert.deepEqual(
+    r.data.rooms.map((x: any) => [x.label, x.condition]).sort(),
+    [["133", "EXIST"], ["136", "CPT-1"], ["149", "CPT-1"], ["153", "WSF-1"]],
+    "each committed room carries its OWN row's floor finish",
+  );
+  // 12 -> 9 unowned and 31 -> 25 unresolved: the sheet prints its rooms'
+  // areas ("557 SF"); those are no longer read as room numbers ("557"), three
+  // of which flooded a neighbouring space and six a room no schedule row names
+  assert.equal(r.data.withheld.unowned, 9, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
+  assert.ok([...tags].every((t: any) => !/[/,]/.test(t)), "no minted tag is a compound literal");
 
   // the never-guesses contract: withheld rooms are reported with their real
   // geometry and a reason, never committed and never dropped
-  assert.equal(r.data.withheld.unresolved, 2);
-  assert.equal(r.data.unresolved.length, 2);
+  assert.equal(r.data.withheld.unresolved, 25);
+  assert.equal(r.data.unresolved.length, 25);
   for (const u of r.data.unresolved) {
     assert.ok(u.reason.length > 0, "every withheld room says why");
     assert.ok(u.area_sf > 0 && u.perimeter_lf > 0, "withheld from committing, not from reporting");
     assert.equal(u.seed.length, 2, "the seed turns 'ask the estimator' into 'one_click here'");
     assert.equal(u.shape_id, undefined, "nothing unresolved committed");
   }
-  assert.equal((await call(client, "summary")).data.conditions.length, 0, "nothing minted");
+
+  // provenance: the schedule verdict and its citation ride every commit —
+  // and the sealed engine's account (confidence + factors) stamps centrally
+  // in commit(), so every flood-committed shape ships scored
+  const payload = await call(client, "export", { action: "takeoff" });
+  assert.equal(payload.data.shapes.length, 4);
+  for (const shp of payload.data.shapes) {
+    assert.equal(shp.origin.assignment.source, "schedule");
+    assert.ok(shp.origin.assignment.room_tag, "the room tag that resolved");
+    assert.equal(shp.origin.assignment.surface, "FLOOR");
+    assert.equal(shp.origin.assignment.schedule_sheet, `${FKEY}#2`, "the citation names the schedule sheet");
+    assert.ok(typeof shp.origin.confidence === "number" && shp.origin.confidence > 0 && shp.origin.confidence <= 1,
+      "the trace-confidence score rides origin on every flood commit (RFC #60 item D)");
+  }
+  const inv = await call(client, "edit_takeoff", { action: "list" });
+  assert.ok(inv.data.shapes.every((x: any) => x.assignment === "schedule"), "list_shapes carries the flat verdict");
+  const summary = await call(client, "summary");
+  assert.equal(summary.data.conditions.length, 3);
+  assert.equal(summary.data.conditions.reduce((n: number, c: any) => n + c.shape_count, 0), 4);
 
   // mutual exclusion: both finish-tag sources at once is a contradiction,
   // refused before any flooding — nothing minted, nothing committed
   const both = await call(client, "takeoff_rooms", { action: "detect", sheet: FKEY, condition: "CPT-1", assign_from_schedule: true });
   assert.equal(both.isError, true);
   assert.match(both.data.error, /at most one of/);
-  assert.equal((await call(client, "summary")).data.conditions.length, 0, "the refusal changed nothing");
+  assert.equal((await call(client, "summary")).data.conditions.length, 3, "the refusal changed nothing");
+
+  // a reassign onto a different tag is the agent choosing the finish — the
+  // schedule verdict (and its citation) must not survive that edit; undo
+  // restores the origin verbatim, verdict included
+  const target = inv.data.shapes[0];
+  await call(client, "edit_takeoff", { action: "edit", shape_id: target.id, condition: "VCT-9" });
+  const after = await call(client, "edit_takeoff", { action: "list" });
+  assert.equal(after.data.shapes.find((x: any) => x.id === target.id).assignment, "asserted", "reassigned = asserted");
+  await call(client, "edit_takeoff", { action: "undo", n: 1 });
+  const restored = await call(client, "edit_takeoff", { action: "list" });
+  assert.equal(restored.data.shapes.find((x: any) => x.id === target.id).assignment, "schedule", "undo restores the verdict");
 });
 
 test("detect_rooms assign_from_schedule refusals: no scale, and no schedule in the set — whole-set errors, nothing minted", async () => {

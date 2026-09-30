@@ -80,6 +80,11 @@ export const NOT_A_ROLE_TITLE = new RegExp([
 /** A sheet shows Nordic text: æ/ø/å anywhere, or a Norwegian drawing word
  * no English sheet prints. Gates the terms marked `nordic`. */
 export const NORDIC_TEXT_RE = new RegExp(`[ÆØÅæøå]|(?<![${L}])(?:ETASJE|ETG|TEGNING|TEGNINGSNR|SNITT|FASADE|SKJEMA|TILTAKSHAVER|PLANTEGNING|OPPRISS)(?![${L}])`, "iu");
+/** An ø standing alone, not inside a word, is a diameter sign ("ø 5'-0\"", a
+ * turning circle on a US plan), not Nordic text. */
+const DIAMETER_SIGN_RE = /(?<!\p{L})[øØ](?!\p{L})/gu;
+/** Does this text read as Nordic (NORDIC_TEXT_RE), a diameter sign aside? */
+export const readsNordic = (text: string): boolean => NORDIC_TEXT_RE.test(text.replace(DIAMETER_SIGN_RE, ""));
 
 /** Running-text references are not titles: "SEE FINISH PLAN FOR …", "Se
  * plantegning for plassering", "iht. snitt A-A". Tested after a leading
