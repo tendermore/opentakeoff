@@ -168,6 +168,25 @@ export function scopeCollisions(shapes, conditions, frameFor, opts = {}) {
   return { collisions, duplicates, shared_floor_sf: round2(sharedTotal), by_sheet: bySheetOut, unmeasured };
 }
 
+/** The floor shapes a candidate would claim twice: each of `others` it shares
+ *  at least `minFraction` of the smaller shape with — the measurement and floor
+ *  scopeCollisions lists after the fact, asked before a commit instead. */
+export function overlapsOf(candidate, others, dims, minFraction = SCOPE_MIN_FRACTION) {
+  const c = shapePolygon(candidate, dims);
+  if (!c.poly) return [];
+  const cb = bboxOf(c.poly), ca = c.poly.getArea(), out = [];
+  for (const o of others) {
+    const r = shapePolygon(o, dims);
+    if (!r.poly || !envelopesTouch(cb, bboxOf(r.poly))) continue;
+    let inter;
+    try { inter = OverlayOp.overlayOp(c.poly, r.poly, OverlayOp.INTERSECTION); } catch { continue; }
+    const shared = inter ? inter.getArea() : 0;
+    const smaller = Math.min(ca, r.poly.getArea());
+    if (smaller > 0 && shared / smaller >= minFraction) out.push({ shape_id: o.id, fraction_of_smaller: round2(shared / smaller) });
+  }
+  return out;
+}
+
 /** Pairs per condition id — the panel badge's count, both flavors. */
 export function collisionsByCondition(result) {
   const out = new Map();
