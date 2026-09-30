@@ -30,3 +30,32 @@ test("#375: a note the exporter split across runs still detects through the fall
   const items = [item("SCALE:", 4000, 4000), item('1/4"', 4100, 4000), item("=", 4150, 4000), item("1'-0\"", 4180, 4000)];
   assert.equal(detectScale({ items } as never, VP)?.label, '1/4" = 1\'-0"');
 });
+
+// A paper-size token before the scale ("A3/1:100", "A1 1:100") is a prefix, not a digit boundary;
+// "1:20 / 1:50" is two scales and says so. The imperial "11/8\"" guard still holds.
+import { scaleFromLabel } from "../src/lib/sheets";
+test("scale notes with a paper-size prefix parse; a slash between two ratios does not hide the second", () => {
+  const tb = (str: string) => detectScale({ items: [item(str, 4000, 4000)] } as never, VP);
+  assert.equal(tb("A3/1:100")?.label, "1:100");
+  assert.equal(tb("A1 1:100")?.label, "1:100");
+  assert.equal(tb("ISO A3 / 1:100")?.label, "1:100");
+  assert.equal(tb("1:100/A3")?.label, "1:100");
+  assert.equal(tb("Målestokk 1:50 (A1)")?.label, "1:50");
+  assert.equal(tb("Målestokk: 1:100 A3")?.label, "1:100");
+  const two = tb("1:20 / 1:50");
+  assert.equal(two?.label, "1:20");
+  assert.equal(two?.multi, true, "two distinct ratio scales in one note are flagged");
+  assert.equal(tb("1:100-1:50")?.multi, true);
+  // a prefix does not read as its own scale, and a longer ratio never reads as a shorter one
+  assert.equal(tb("A3/1:1000")?.label, "1:1000");
+  assert.equal(tb("1:500")?.label, "1:500");
+  assert.equal(tb("A3")?.label, undefined);
+  // the label reader (set_scale by note) takes the same forms and refuses an ambiguous note
+  assert.equal(scaleFromLabel("A3/1:100")?.label, "1:100");
+  assert.equal(scaleFromLabel("A1 1:100")?.label, "1:100");
+  assert.equal(scaleFromLabel("1:20 / 1:50"), null);
+  // imperial: the fraction guard still holds, and a paper size before one is fine
+  assert.equal(tb('11/8" = 1\'-0"'), null);
+  assert.equal(tb('1-1/2" = 1\'-0"')?.label, '1-1/2" = 1\'-0"');
+  assert.equal(tb('ANSI D 1/8" = 1\'-0"')?.label, '1/8" = 1\'-0"');
+});

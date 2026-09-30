@@ -173,13 +173,24 @@ export function extractSheetNumber(textContent: TextContentLike, viewport: Viewp
   return best;
 }
 
+/** A metric ratio label ("1:100"), as against an architectural or engineering one. */
+const isRatioLabel = (label: string): boolean => /^1:\d{1,5}$/.test(label);
+
 // ── scale detect: read the drawn scale note off the page text ────────────────
 // Plans state their scale ("SCALE: 1/8" = 1'-0"") in the title block and under
 // viewports. Match the page text against STANDARD_SCALES — wrong scale is the
 // top takeoff error source, and the note is sitting right there.
+// A paper-size token ends in a digit ("A3", "A1"), and a note often prefixes the scale with one
+// ("A3/1:100", "A1 1:100"): stripping the spaces would fuse it onto the ratio ("A11:100"), so
+// the text is tokenised first and such a token becomes a boundary ("|"), never a digit.
+const PAPER_SIZE_RE = /^(?:ISO-?)?A[0-4]$/;
+const PAPER_SIZE_PREFIX_RE = /^(?:ISO-?)?A[0-4]\//;
 const _canonScaleText = (s: string): string => s
   .replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'")
-  .replace(/\s+/g, "").toUpperCase();
+  .toUpperCase()
+  .split(/\s+/)
+  .map((tok) => (PAPER_SIZE_RE.test(tok) ? "|" : tok.replace(PAPER_SIZE_PREFIX_RE, "|")))
+  .join("");
 const SCALE_KEYS: ScaleWithKeys[] = STANDARD_SCALES.map((s) => {
   const full = _canonScaleText(s.label);
   const keys = new Set<string>([full]);
@@ -191,14 +202,16 @@ function _findScales(canon: string): ScaleWithKeys[] {
   const out: ScaleWithKeys[] = [];
   for (const sc of SCALE_KEYS) {
     let hit = false;
+    // an imperial key may be the tail of a longer fraction: "11/8"=1'" or "1-1/2"=…" must not read
+    // as 1/8" or 1/2". A ratio key cannot ("1:20 / 1:50" lists two scales), so "/" and "-" bound it.
+    const fraction = !isRatioLabel(sc.label);
     for (const k of sc.keys) {
       let i = canon.indexOf(k);
       while (i !== -1 && !hit) {
         const prev = canon[i - 1];
         const next = canon[i + k.length];
-        // boundary: "11/8"=1'" or "1-1/2"=…" must not read as 1/8" or 1/2";
-        // and a metric "1:500" must not read as its "1:50" prefix
-        if (!(prev >= "0" && prev <= "9") && prev !== "/" && prev !== "-"
+        // boundary: no digit on either side (a metric "1:500" must not read as its "1:50" prefix)
+        if (!(prev >= "0" && prev <= "9") && !(fraction && (prev === "/" || prev === "-"))
             && !(next >= "0" && next <= "9")) hit = true;
         else i = canon.indexOf(k, i + 1);
       }
