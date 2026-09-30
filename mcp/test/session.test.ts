@@ -369,3 +369,49 @@ test("recalibration refuses nonfinite scales and reviewed measurements atomicall
   assert.throws(() => s.setScale(KEY, { upp: 1 / 18 }), /human-reviewed/);
   assert.deepEqual(s.exportPayload(), before);
 });
+
+// Budgets are work (mask cells filled), never time: the same sheet gives the same rooms
+// and the same withheld list on every run, whatever the machine is doing; the wall-clock
+// safety cap is checked between rooms and reported apart, never a silent change.
+test("detectRooms: two runs of the same sheet are identical, and a work budget withholds the same rooms every time", async () => {
+  const run = async () => {
+    const s = new Session();
+    await s.loadPlan(PLAN);
+    s.setScale(KEY, { use_detected: true });
+    return s.detectRooms(KEY, { role: "floor_area", returnVerts: true });
+  };
+  const a = await run(), b = await run();
+  assert.deepEqual(a, b);
+  assert.ok(a.work_cells > 0, "the call reports the work it did");
+  assert.equal(a.withheld.budget_wallclock, 0);
+  const saved = process.env.OPENTAKEOFF_SEED_BUDGET;
+  process.env.OPENTAKEOFF_SEED_BUDGET = "0.001";   // a thousandth of a mask fill: no room's ladder fits
+  try {
+    const c = await run(), d = await run();
+    assert.deepEqual(c, d);
+    assert.equal(c.detected, 0);
+    assert.equal(c.withheld.over_budget, 4, JSON.stringify(c.withheld));
+    assert.equal(c.withheld.total, 4);
+  } finally {
+    if (saved === undefined) delete process.env.OPENTAKEOFF_SEED_BUDGET; else process.env.OPENTAKEOFF_SEED_BUDGET = saved;
+  }
+});
+
+test("detectRooms: the wall-clock safety cap names the rooms it left and flags the reply, never silently", async () => {
+  const s = new Session();
+  await s.loadPlan(PLAN);
+  s.setScale(KEY, { use_detected: true });
+  const saved = process.env.OPENTAKEOFF_CALL_BUDGET_MS;
+  process.env.OPENTAKEOFF_CALL_BUDGET_MS = "1";
+  try {
+    // the cap is checked between rooms: the first room may run, every room after the cap is named
+    const r = await s.detectRooms(KEY, { role: "floor_area", returnVerts: false });
+    assert.equal(r.budget_wallclock, true);
+    assert.ok(r.withheld.budget_wallclock >= 1, JSON.stringify(r.withheld));
+    assert.equal(r.detected + r.withheld.total, 4, "every room is either detected or named as left by the cap");
+    assert.ok(r.withheld_labels.every((w) => w.reason === "budget_wallclock"));
+    assert.match(r.note!, /budget_wallclock/);
+  } finally {
+    if (saved === undefined) delete process.env.OPENTAKEOFF_CALL_BUDGET_MS; else process.env.OPENTAKEOFF_CALL_BUDGET_MS = saved;
+  }
+});

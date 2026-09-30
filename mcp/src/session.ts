@@ -17,7 +17,7 @@ import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPat
 import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, DIMTEXT_RE, type DetectedScale } from "../../web/src/lib/sheets.ts";
 import { buildSheetDxf, type DxfBuild } from "../../web/src/lib/dxf.ts";
 import {
-  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodDeadline, FloodDeadline,
+  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodBudget, floodWorkDone, FloodBudget,
   hatchFamilies, MASK_MAX_DIM, SENS_BALANCED, type FloodResult, type MaskObj, type VectorGeometry, type Point, type HatchFamily,
 } from "../../web/src/lib/oneclick.ts";
 // The trace-confidence module (RFC #60 item D) — the engine's own account of a
@@ -776,16 +776,27 @@ const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
  * feet-inch string can be a note, three are a sheet drawn in those units (the
  * same count that makes a sheet one that prints its room areas). */
 const UNIT_EVIDENCE_MIN = 3;
-/** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
- * floods in well under a second; one still running after this is flooding a
- * whole sheet through a leak, and is no room's outline. */
-const SEED_BUDGET_MS = 10_000;
-/** Per-call budget (OPENTAKEOFF_CALL_BUDGET_MS): a sandboxed agent's command
- * times out at 120 s, so a call stops before that and reports the labels it
- * did not reach (not_tried); a repeat call continues. */
-const CALL_BUDGET_MS = 100_000;
-/** A host-set budget (ms) overrides the default; 0 turns it off. */
-const budgetMs = (env: string, fallback: number): number => {
+/** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET): the mask cells every
+ * flood and check one label tries may fill, as a multiple of the sheet's mask area. A
+ * room's floods fill it a few dozen times over at most (the ladder rungs, the seal and
+ * bridge retries, the walls-only masks); one still filling after this many whole-sheet
+ * fills is flooding the sheet through a leak, and is no room's outline. Work, not time:
+ * the same input spends it at the same point on every machine, whatever the load. */
+const SEED_BUDGET_MASKS = 40;
+/** Per-call budget (OPENTAKEOFF_CALL_BUDGET), the same unit: a call stops here and reports
+ * the labels it did not reach (not_tried); a repeat call continues. */
+const CALL_BUDGET_MASKS = 300;
+/** Wall-clock SAFETY cap on a call (OPENTAKEOFF_CALL_BUDGET_MS): a sandboxed agent's command
+ * times out at 120 s. Checked between labels only, never inside a flood, and reported as
+ * budget_wallclock when hit — the labels after it are named, so the result set never
+ * changes silently with the machine's load. */
+const CALL_WALLCLOCK_MS = 100_000;
+/** count_symbol's seed ladder: placements scored across every seed size tried (symbolsweep's own work
+ * unit), and a wall-clock safety cap checked between seed sizes only. */
+const LADDER_BUDGET_CANDIDATES = 2_000_000;
+const LADDER_WALLCLOCK_MS = 90_000;
+/** A host-set budget overrides the default; 0 turns it off. */
+const budgetOf = (env: string, fallback: number): number => {
   const v = process.env[env];
   return v === undefined || v === "" ? fallback : Number(v) || 0;
 };
@@ -2098,18 +2109,22 @@ export class Session {
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, no_ring: 0, over_budget: 0, implausible: 0, unresolved: 0, area_disagrees: 0, off_walls: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0 };
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, no_ring: 0, over_budget: 0, implausible: 0, unresolved: 0, area_disagrees: 0, off_walls: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0, budget_wallclock: 0 };
     // every withheld label by name, with the reason it was counted under
     const withheldLabels: { label: string; reason: keyof typeof withheld }[] = [];
     const withhold = (label: string, reason: keyof typeof withheld) => { withheld[reason]++; withheldLabels.push({ label, reason }); };
-    // Time limits (defaults above; a host may set or, with 0, lift them): a per-room budget, shared by
-    // every flood and check one label tries, turns a room that runs away into "no outline here"
-    // (over_budget); a per-call budget stops the sweep
-    // and reports the labels not reached, which a repeat call picks up — labels
-    // inside a room this sheet already measured are skipped, never re-measured.
-    const seedBudgetMs = budgetMs("OPENTAKEOFF_SEED_BUDGET_MS", SEED_BUDGET_MS);
-    const callBudgetMs = budgetMs("OPENTAKEOFF_CALL_BUDGET_MS", CALL_BUDGET_MS);
-    const callDeadline = callBudgetMs ? Date.now() + callBudgetMs : 0;
+    // Work limits (defaults above; a host may set or, with 0, lift them), in mask cells filled: a
+    // per-room budget, shared by every flood and check one label tries, turns a room that runs away
+    // into "no outline here" (over_budget); a per-call budget stops the sweep and reports the labels
+    // not reached (not_tried), which a repeat call picks up — labels inside a room this sheet already
+    // measured are skipped, never re-measured. Both are deterministic. The wall-clock cap is a safety
+    // net only, checked between labels and reported apart (budget_wallclock).
+    const maskCells = mask.mw * mask.mh;
+    const seedBudget = Math.round(budgetOf("OPENTAKEOFF_SEED_BUDGET", SEED_BUDGET_MASKS) * maskCells);
+    const callBudget = Math.round(budgetOf("OPENTAKEOFF_CALL_BUDGET", CALL_BUDGET_MASKS) * maskCells);
+    const wallclockMs = budgetOf("OPENTAKEOFF_CALL_BUDGET_MS", CALL_WALLCLOCK_MS);
+    const callDeadline = wallclockMs ? Date.now() + wallclockMs : 0;
+    let callWork = 0, wallclockHit = false;
     // a room counts as measured when the agent committed a floor shape around
     // this label and no other: a hand-traced or whole-floor outline holds many
     // labels and never silences the rooms inside it
@@ -2151,13 +2166,17 @@ export class Session {
     if (strict && s.upp != null) await this.prepareFloorCheck(name);
     const walls = strict ? this.wallFacesOf(s) : null;
     const judgeWalls = !!walls && hasWallFaces(walls.faces);
+    try {
+    setFloodBudget(seedBudget);   // counting starts here: the sweep's own floods only
     for (const lb of labels) {
-      if (callDeadline && Date.now() > callDeadline) { withhold(lb.str, "not_tried"); continue; }
+      callWork += floodWorkDone();   // the previous label's work
+      // one budget for everything this label tries: ladder rungs, walls-only masks, wall checks
+      setFloodBudget(seedBudget);
+      if (callBudget && callWork > callBudget) { withhold(lb.str, "not_tried"); continue; }
+      if (wallclockHit || (callDeadline && Date.now() > callDeadline)) { wallclockHit = true; withhold(lb.str, "budget_wallclock"); continue; }
       const [cx, cy] = labelAt(lb);
       if (measuredRings.some((r) => pointInPoly(cx, cy, r))) { withhold(lb.str, "already_measured"); continue; }
-      // one deadline for everything this label tries: ladder rungs, walls-only masks, wall checks
-      const labelDeadline = seedBudgetMs ? Date.now() + seedBudgetMs : 0;
-      const overBudget = () => !!labelDeadline && Date.now() > labelDeadline;
+      const overBudget = () => !!seedBudget && floodWorkDone() > seedBudget;
       let ranOut = false;
       // more text inside a room already found on the drawn walls (its name's
       // neighbours: a finish, a height) floods to that room again: counted there
@@ -2173,14 +2192,11 @@ export class Session {
         // so a batch detection and a canvas click at the same seed can never
         // measure different square footage again
         let f: ReturnType<typeof floodAtSeed>;
-        setFloodDeadline(labelDeadline);
         try {
           f = floodAtSeed(m, probe[0], probe[1], opts.sensitivity ?? SENS_BALANCED, mppf);
         } catch (error) {
-          if (error instanceof FloodDeadline) { ranOut = true; break; }   // this room's budget is spent: no outline from here on
+          if (error instanceof FloodBudget) { ranOut = true; break; }   // this room's budget is spent: no outline from here on
           throw error;
-        } finally {
-          setFloodDeadline(0);
         }
         if (f.status !== "ok") continue;
         // raster trace differences mirror oneClick (#154): looser eps, no snap
@@ -2304,6 +2320,10 @@ export class Session {
       byRing.set(key, cand);
       order.push(cand);
     }
+    callWork += floodWorkDone();
+    } finally {
+      setFloodBudget(0);   // the budget is this sweep's; a click after it floods unbudgeted
+    }
 
     const upp = s.upp;
     const rooms = order
@@ -2420,7 +2440,7 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.no_ring + withheld.over_budget + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.off_walls + withheld.not_tried;
+    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.no_ring + withheld.over_budget + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.off_walls + withheld.not_tried + withheld.budget_wallclock;
     return {
       detected: rooms.length,
       rooms,
@@ -2439,9 +2459,11 @@ export class Session {
       ...(unmatched.length ? { labels_unmatched: unmatched } : {}),
       // every withheld label by name: the room behind each count above
       withheld_labels: withheldLabels,
+      work_cells: callWork,
+      ...(wallclockHit ? { budget_wallclock: true as const } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable${withheld.no_ring ? `, ${withheld.no_ring} with no clean flood at any probe` : ""}${withheld.over_budget ? `, ${withheld.over_budget} over the per-room time budget` : ""}, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable${withheld.no_ring ? `, ${withheld.no_ring} with no clean flood at any probe` : ""}${withheld.over_budget ? `, ${withheld.over_budget} over the per-room work budget` : ""}, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the call's work budget ran out — call detect_rooms again to continue` : ""}${withheld.budget_wallclock ? `, ${withheld.budget_wallclock} not tried because the wall-clock safety cap was hit (budget_wallclock: the machine was slow, not the drawing) — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -4422,7 +4444,7 @@ export class Session {
     return (s.ink = out);
   }
 
-  private countLadders = new Map<string, { candidates: SeedCandidate[]; angles: number[]; partial: boolean }>();
+  private countLadders = new Map<string, { candidates: SeedCandidate[]; angles: number[]; partial: boolean; wallclock: boolean }>();
 
   /** count_symbol — count every copy of a symbol from ONE point on an example.
    * symbol_sweep asks the caller for a tight marquee in sheet pixels, which a
@@ -4447,8 +4469,10 @@ export class Session {
       let l = this.countLadders.get(key);
       if (!l) {
         const angles = wing ? wingRotations(ink, c, 220) : [];
-        const { candidates, partial } = evaluateLadder(ink, c, sizes, { angles, budgetMs: 90_000, clock: () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; } });
-        l = { candidates, angles, partial };
+        // a deterministic work budget (placements scored) decides how far the ladder goes; the wall-clock
+        // cap is a safety net, reported apart (budget_wallclock) and never a silent change of the count
+        const { candidates, partial, wallclock } = evaluateLadder(ink, c, sizes, { angles, budgetWork: LADDER_BUDGET_CANDIDATES, wallclockMs: LADDER_WALLCLOCK_MS });
+        l = { candidates, angles, partial, wallclock };
         this.countLadders.set(key, l);
         if (this.countLadders.size > 24) this.countLadders.delete(this.countLadders.keys().next().value as string);
       }
@@ -4466,7 +4490,7 @@ export class Session {
         if (repeats(alt) || !ladder.candidates.length) { ladder = alt; snappedTo = near; }
       }
     }
-    const { candidates, angles, partial } = ladder;
+    const { candidates, angles, partial, wallclock } = ladder;
     if (!candidates.length) throw new UserError(`No linework near (${round1(at[0])}, ${round1(at[1])}) — give a point on or next to the example symbol (image px), e.g. the middle of the fixture or door swing.`);
     const level = opts.level ?? pickCandidate(candidates);
     const cand = candidates[level - 1];
@@ -4548,7 +4572,8 @@ export class Session {
     else if (bigger) flags.push(`A larger seed (level ${bigger.level}) still repeats but finds only ${bigger.points.length} against ${cand.points.length} here — the extra marks may be look-alikes sharing part of the symbol; if the picture shows marks off the symbol, pass level:${bigger.level}.`);
     if (cand.points.length === 1) flags.push("Only the example itself matched: it may be unique, or the point sits on a variant — try another level or another example.");
     if (!cand.complete) flags.push("The sweep hit its work ceiling: this count is a floor, not a total.");
-    if (partial) flags.push("Not every seed size was tried within the time budget.");
+    if (partial) flags.push("Not every seed size was tried within the work budget.");
+    if (wallclock) flags.push("The wall-clock safety cap stopped the seed ladder (budget_wallclock): the machine was slow, not the drawing — the seed sizes after it were not tried; call again to retry.");
     const main = marks.filter((m) => !m.loose), loose = marks.filter((m) => m.loose && !m.already);
     if (loose.length) flags.push(`${loose.length} purple LOOSE mark(s): a smaller seed also matches there — other variants of this symbol, or look-alikes. Judge them on the picture; include_loose:true counts them (drop the wrong ones by number).`);
     const n = main.filter((m) => !m.already).length;
@@ -4564,7 +4589,8 @@ export class Session {
         withheld: withheld.map((w, i) => ({ id: `W${i + 1}`, at: [round1(w.at[0]), round1(w.at[1])], score: w.score })),
         seeds_tried: candidates.map((c) => ({ level: c.level, segments: c.segments, footprint_px: round1(c.footprint), found: c.points.length })),
         rotations_searched: [0, 90, 180, 270, ...angles],
-        complete: cand.complete && !partial,
+        complete: cand.complete && !partial && !wallclock,
+        ...(wallclock ? { budget_wallclock: true as const } : {}),
         ...(flags.length ? { flags } : {}),
         ...(committed ? { committed: committed.committed, ea_total: committed.ea_total, shape_ids: committed.shape_ids } : {}),
         image: { region: view.meta.region, img_px: view.meta.img_px, zoom: view.meta.zoom },

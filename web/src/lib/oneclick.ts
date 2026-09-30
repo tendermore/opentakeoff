@@ -2075,7 +2075,7 @@ function dropRegion(b: Uint8Array): void {
 // softHits count blocking encounters so the caller can tell a wall-bounded
 // region from a hatch-bounded one.
 function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   const { mask, mw, mh, ws } = maskObj;
   // virtual dilation (see DilatedMask): identical bits, no 9 MB buffer
   const dilDT = (maskObj as DilatedMask).dilDT;
@@ -2151,7 +2151,7 @@ function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): F
     // of the function returned "leak" anyway. Nothing between here and there
     // can change that verdict or is read after it, so returning now is the
     // same value for up to a third of a raster less work (A8).
-    if (x0 === 0 || x1 === mw - 1 || py === 0 || py === mh - 1) { dropRegion(region); return { status: "leak" }; }
+    if (x0 === 0 || x1 === mw - 1 || py === 0 || py === mh - 1) { floodWork += count; dropRegion(region); return { status: "leak" }; }
     if (x0 < bx0) bx0 = x0; if (x1 > bx1) bx1 = x1; if (py < by0) by0 = py; if (py > by1) by1 = py;
     let upOpen = false, downOpen = false;
     for (let x = x0; x <= x1; x++) {
@@ -2171,8 +2171,9 @@ function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): F
         else { if (db & barrier) { if (db & 1) hardHits++; else softHits++; } downOpen = false; }
       }
     }
-    if (count > cap) { dropRegion(region); return { status: "leak" }; }
+    if (count > cap) { floodWork += count; dropRegion(region); return { status: "leak" }; }
   }
+  floodWork += count;
   // hatch/text slivers: plenty of cells but no room-like thickness
   if (count < tinyPx || bx1 - bx0 + 1 < minThick || by1 - by0 + 1 < minThick) { dropRegion(region); return { status: "tiny", count }; }
   regionBox.set(region, { x0: bx0, y0: by0, x1: bx1, y1: by1 });
@@ -2234,16 +2235,21 @@ export function dilateHard(maskObj: MaskObj, r: number): MaskObj {
 // The wrapper MaskObj is rebuilt from the caller's `mo` each time so the
 // riding fields (ws, softCount, mppf) always match the caller's view.
 const bridgeCache = new WeakMap<Uint8Array, (Uint8Array | undefined)[]>();
-/** Host-set wall-clock deadline for the flood ladders (0 = none). Some seeds on
- *  large flattened sheets spend minutes in the seal/bridge/wedge retries; a batch
- *  caller sets a per-seed budget and treats the thrown FloodDeadline as "no
- *  outline here". */
-let floodDeadline = 0;
-export class FloodDeadline extends Error {}
-export function setFloodDeadline(at: number): void { floodDeadline = at; }
-function checkFloodDeadline(): void { if (floodDeadline && Date.now() > floodDeadline) throw new FloodDeadline("flood deadline"); }
+/** Host-set WORK budget for the flood ladders, in mask cells filled (0 = none). Some
+ *  seeds on large flattened sheets spend minutes in the seal/bridge/wedge retries; a
+ *  batch caller sets a per-seed budget and treats the thrown FloodBudget as "no outline
+ *  here". Work, not time: the cells a fill visits are a function of the mask and the
+ *  seed alone, so the same input spends the budget at the same point on every machine
+ *  and under any load, and a batch's result set is reproducible. */
+let floodBudget = 0, floodWork = 0;
+export class FloodBudget extends Error {}
+/** Start counting: the budget (cells) every fill from here on shares; 0 = unlimited. */
+export function setFloodBudget(cells: number): void { floodBudget = cells; floodWork = 0; }
+/** Cells filled since the last setFloodBudget. */
+export function floodWorkDone(): number { return floodWork; }
+function checkFloodBudget(): void { if (floodBudget && floodWork > floodBudget) throw new FloodBudget("flood budget"); }
 function bridgedMask(mo: MaskObj, r: number): MaskObj {
-  checkFloodDeadline();
+  checkFloodBudget();
   let per = bridgeCache.get(mo.mask);
   if (!per) { per = []; bridgeCache.set(mo.mask, per); }
   let m = per[r];
@@ -2295,7 +2301,7 @@ export function floodRegion(maskObj: MaskObj, ix: number, iy: number, sensitivit
 // wrong geometry at the wrong cost. Bridging joins the sealed ladder exactly
 // once, as its last rung (see floodRegionSealedInner).
 function floodRegionLadder(maskObj: MaskObj, ix: number, iy: number, sensitivity: number): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   const r1 = floodPass(maskObj, ix, iy, 3);
   if (!maskObj.softCount) return r1;
   if (r1.status === "leak") return r1;
@@ -3149,7 +3155,7 @@ function ascendSeed(dt: Uint8Array, mw: number, mh: number, ws: number, ix: numb
 // refused: `base` is bounded only when the min-passage flood produced no
 // bounded region at all, and then there is nothing to report.
 function sealAttempt(mo: MaskObj, ix: number, iy: number, sensitivity: number, radii: number[], minPassPx = 0, given?: SealScratch): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   // `given` is the caller's own scratch — the per-arc-cluster retries run
   // against a REUSED mask buffer, which the sealCache (keyed on mask identity)
   // must never see: it would hand back the previous cluster's distance field.
