@@ -739,6 +739,9 @@ const WHITE_FILL_LUM = 250;
 const WALL_SNAP_CELLS = 3;
 /** A room name as a sheet prints it: starts with a letter, one short line
  * ("Sov", "Bad/vask", "Stue/kjøkken", "Tekn.rom"); running notes are longer. */
+/** Stacked lines of one room label (name, number, finish) sit within about a
+ * line pitch of each other; three text heights spans a three-line block. */
+const LABEL_BLOCK_HEIGHTS = 3;
 const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
 /** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
  * floods in well under a second; one still running after this is flooding a
@@ -1998,6 +2001,22 @@ export class Session {
     const unresolved: { label: string; reason: string; area_sf: number; perimeter_lf: number; seed: [number, number] }[] = [];
     type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence | null; method: "one_click_v1" | "net_v1" | "drawn_v1"; netFaces?: number; netStarved?: boolean; merged: string[]; walls?: WallCheck };
     const offWalls: { label: string; reason: string; seed: [number, number] }[] = [];
+    // Separate label blocks inside an outline: labels whose centres lie within
+    // LABEL_BLOCK_HEIGHTS text heights of each other are one room's block (a
+    // name over a number over a finish note); two blocks are two rooms' labels,
+    // and an outline holding both is two rooms measured as one, whatever
+    // divides them on the drawing (a single-line partition, a glass wall).
+    const labelDots = labels.map((l) => ({ x: (l.bbox.x0 + l.bbox.x1) / 2, y: (l.bbox.y0 + l.bbox.y1) / 2, h: Math.max(1, l.bbox.y1 - l.bbox.y0) }));
+    const labelBlocks = (ring: Point[]): number => {
+      const inside = labelDots.filter((d) => pointInPoly(d.x, d.y, ring));
+      const root = inside.map((_, i) => i);
+      const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+      for (let i = 0; i < inside.length; i++) for (let j = i + 1; j < inside.length; j++) {
+        const a = inside[i], b = inside[j];
+        if (Math.hypot(a.x - b.x, a.y - b.y) <= LABEL_BLOCK_HEIGHTS * Math.max(a.h, b.h)) root[find(i)] = find(j);
+      }
+      return inside.filter((_, i) => find(i) === i).length;
+    };
     const byRing = new Map<string, Cand>();
     const order: Cand[] = [];
     // one mask, one mppf for the whole sweep — the raster mask carries no
@@ -2075,14 +2094,19 @@ export class Session {
       const { sawBubble, sawDegenerate, sawUnowned } = t;
       let method: Cand["method"] = "one_click_v1", netFaces: number | undefined, netStarved: boolean | undefined;
       let wallsResult: WallCheck | undefined;
-      // No printed area: every engine's outline, snapped onto the wall faces it
-      // parallels, until one follows the drawn walls (wallcheck.ts). The ink
-      // flood first; the walls-only floods where furniture stopped it; then
-      // the wall network and the drafter's closed figures at the same probes.
+      let twoRooms = 0;
+      // No printed area: each flood's outline, snapped onto the wall faces it
+      // parallels, until one follows the drawn walls (wallcheck.ts) — the ink
+      // flood first, then the walls-only floods where furniture stopped it.
+      // The wall network and the drafter's closed figures are not tried: with
+      // no printed area to confirm them they added as many wrong rooms as
+      // right ones (dev no-stamp sheets).
       if (printed == null && judgeWalls && s.upp != null) {
         const onWalls = (r: Point[] | null, tolPx: number): { ring: Point[]; w: WallCheck } | null => {
           if (!r || r.length < 3) return null;
           const { ring: snapped, w } = this.onWalls(s, r, tolPx);
+          const blocks = w.pass ? labelBlocks(snapped) : 1;
+          if (blocks > 1) { twoRooms = blocks; return null; }
           wallsResult = w.pass || !wallsResult ? w : wallsResult;
           return w.pass ? { ring: snapped, w } : null;
         };
@@ -2094,26 +2118,11 @@ export class Session {
           if (hit) ({ ev, seed } = w);
           if (!ring && w.ring) ({ ring, ev, seed } = w);
         }
-        if (!hit) {
-          const pxPerFt = 1 / s.upp;
-          const { net, drawn } = await this.roomEngines(s);
-          for (const probe of seedLadderPx(lb.bbox)) {
-            if (callDeadline && Date.now() > callDeadline) break;
-            try {
-              const r = netRoomAt(net, probe[0], probe[1], pxPerFt) as { ring: Point[]; holes?: Point[][]; areaPx: number; faces: number; starved: boolean } | null;
-              if (r && !r.holes?.length && r.ring.length >= 3 && pointInPoly((lb.bbox.x0 + lb.bbox.x1) / 2, (lb.bbox.y0 + lb.bbox.y1) / 2, r.ring) && (hit = onWalls(r.ring, 0))) {
-                ev = null; seed = probe; method = "net_v1"; netFaces = r.faces; netStarved = r.starved; break;
-              }
-            } catch { /* an engine failure at one probe is a missing candidate */ }
-            const d = roomAtPoint(drawn, probe[0], probe[1]);
-            if (d && (hit = onWalls(d.verts, 0))) { ev = null; seed = probe; method = "drawn_v1"; break; }
-          }
-        }
         if (hit) ring = hit.ring;
         else if (ring && seed) {
           // an outline, and none of them follows the drawn walls: withheld with the numbers
           withheld.off_walls++;
-          offWalls.push({ label: lb.str, reason: Session.wallCheckText(wallsResult!), seed: [round1(seed[0]), round1(seed[1])] });
+          offWalls.push({ label: lb.str, reason: twoRooms ? `this outline holds ${twoRooms} rooms' labels — two or more rooms measured as one.` : Session.wallCheckText(wallsResult!), seed: [round1(seed[0]), round1(seed[1])] });
           continue;
         }
       }

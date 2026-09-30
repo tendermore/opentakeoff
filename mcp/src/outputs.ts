@@ -149,7 +149,7 @@ export const detectRoomsOutput = {
     implausible: z.number().int().describe("Enclosed, clean, non-bubble, but smaller than min_area_sf — a door swing or wall cavity rather than a room"),
     unresolved: z.number().int().describe("Assign mode: rooms the schedule could not answer for (no row, no FLOOR cell, or a compound cell) — withheld into unresolved[], never committed under a guess. Always present; 0 outside assign mode"),
     area_disagrees: z.number().int().describe("Rooms labelled by a printed area whose trace disagrees with that area beyond rounding — withheld into area_disagrees[] rather than committed under a number the drawing contradicts. Always present"),
-    off_walls: z.number().int().describe("Rooms with no printed area to check against whose every candidate outline leaves the drawn walls (an edge along furniture, text or open floor) or holds a wall inside (two rooms as one) — withheld into off_walls[]. Always present"),
+    off_walls: z.number().int().describe("Rooms with no printed area to check against whose every candidate outline leaves the drawn walls (an edge along furniture, text or open floor) or holds a wall inside or two separate room labels (two rooms as one) — withheld into off_walls[]. Always present"),
     overlaps_measured: z.number().int().describe("Rooms whose trace would share floor with an outline of the same condition already measured — withheld rather than counted twice. Always present"),
     already_measured: z.number().int().describe("Labels skipped because they sit inside a floor shape this sheet already has — a repeat call continues, never re-measures. Always present"),
     not_tried: z.number().int().describe("Labels not reached before the call's time budget (OPENTAKEOFF_CALL_BUDGET_MS, default 100 s) ran out — call takeoff_rooms again to continue. Always present"),
@@ -170,7 +170,7 @@ export const detectRoomsOutput = {
   })).optional().describe("Present when any printed-area room was withheld: both numbers and where"),
   off_walls: z.array(z.object({
     label: z.string().describe("The text the room was seeded from"),
-    reason: z.string().describe("Which edge left the drawn walls and by how much, or how much wall the outline holds inside"),
+    reason: z.string().describe("Which edge left the drawn walls and by how much, how much wall the outline holds inside, or how many rooms' labels"),
     seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — trace the room there on a close-up, or report it as not measured"),
   })).optional().describe("Present when any room with no printed area was withheld because no outline followed the drawn walls"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
