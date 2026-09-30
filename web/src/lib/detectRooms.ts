@@ -46,7 +46,7 @@ export const ROOM_LABEL_RE = /^\d{2,3}[A-Z]?$/;
  *  "m²"/"m2"/"m" (the superscript often arrives as its own text run). */
 // A bare "m" counts only after a decimal ("12,6 m": the superscript came as its
 // own text run); a whole number needs m²/m2, so "5m" or "12 M" in a note is not a room.
-export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*:?\s*)?(?:\d{1,4}(?:[.,]\d{1,2})?\s*m[²2]|\d{1,4}[.,]\d{1,2}\s*m)$/i;
+export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*(?::\s*)?)?(?:\d{1,4}(?:[.,]\d{1,2})?\s*m[²2]|\d{1,4}[.,]\d{1,2}\s*m)$/i;
 
 /** The m² a European area-stamp label prints ("A: 12,0 m²" → 12), or null for
  *  any other label (a US room number carries no area). */

@@ -1,7 +1,7 @@
 // Wall linework without layers or pen weights. A flattened export draws a wall as
 // two parallel lines at wall thickness (often with hatch between), in the same pen
 // as the furniture, and draws grid axes as single lines — so pairing separates
-// walls where neither layer nor pen weight can. Port of Datum's walls.mjs.
+// walls where neither layer nor pen weight can.
 
 /** Per-segment flag (1 = wall face): a segment at least `minSeg` long with a
  *  parallel partner `tmin`..`tmax` away that overlaps it by `minOverlap`.

@@ -132,10 +132,12 @@ export function joinUnitExponents<T extends BoxSpan>(spans: readonly T[]): T[] {
   const out: T[] = [];
   const exps: number[] = [];
   for (let j = 0; j < spans.length; j++) if (SUPERSCRIPT[spans[j].str.trim()]) exps.push(j);
+  if (!exps.length) return spans.slice();
+  const slot: number[] = [];   // out[k] came from spans[slot[k]]
   for (let i = 0; i < spans.length; i++) {
     if (used[i]) continue;
     const A = ax[i], a = spans[i];
-    if (!(A.h > 0) || !UNIT_END.test(a.str.trimEnd())) { out.push(a); continue; }
+    if (!(A.h > 0) || !UNIT_END.test(a.str.trimEnd())) { out.push(a); slot.push(i); continue; }
     let best = -1, bestGap = Infinity;
     for (const j of exps) {
       if (used[j] || (spans[j].rot ?? 0) !== (a.rot ?? 0)) continue;
@@ -146,13 +148,14 @@ export function joinUnitExponents<T extends BoxSpan>(spans: readonly T[]): T[] {
       if (shift < EXP_SHIFT[0] * A.h || shift > EXP_SHIFT[1] * A.h) continue;
       if (Math.abs(gap) < Math.abs(bestGap)) { best = j; bestGap = gap; }
     }
-    if (best < 0) { out.push(a); continue; }
+    if (best < 0) { out.push(a); slot.push(i); continue; }
     used[best] = 1;
     const b = spans[best];
     // the box stays the unit run's own: seeds and the surround test read a
     // label's box, and a small room's wall can sit right past the exponent
     out.push({ ...a, str: a.str.trimEnd() + SUPERSCRIPT[b.str.trim()] });
+    slot.push(-1);
   }
   // an exponent run consumed above is dropped from its original slot
-  return out.filter((s) => { const k = spans.indexOf(s); return k < 0 || !used[k]; });
+  return out.filter((_, k) => slot[k] < 0 || !used[slot[k]]);
 }

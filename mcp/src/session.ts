@@ -1523,7 +1523,7 @@ export class Session {
     for (const sp of s.spans) {
       const label = (sp.str || "").trim();
       const m2 = printedAreaM2(label);
-      if (m2 == null || /^[A-ZÆØÅ]{2,4}\s*:?\s*\d/i.test(label)) continue;   // totals ("BRA 59,7 m²") are not a room's own area
+      if (m2 == null || /^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i.test(label)) continue;   // totals ("BRA 59,7 m²") are not a room's own area
       const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
       if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
       stamps.push({ label, m2, x, y });
@@ -1749,9 +1749,10 @@ export class Session {
     const labels: { str: string; bbox: LabelBBox }[] = [];
     for (const sp of s.spans) {
       const text = (sp.str || "").trim();
+      // a whole-number stamp ("12 m²") would otherwise read as room number "12"
+      if (AREA_STAMP_RE.test(text)) { labels.push({ str: text, bbox: sp }); continue; }
       const num = text.split(/\s+/).find((tok) => ROOM_LABEL_RE.test(tok));
       if (num) labels.push({ str: num, bbox: sp });
-      else if (AREA_STAMP_RE.test(text)) labels.push({ str: text, bbox: sp });
     }
     // A sheet that tags its rooms with printed areas follows the European
     // convention: there, bare 2–3 digit numbers are dimensions and levels far
@@ -1770,9 +1771,14 @@ export class Session {
     const seedBudgetMs = Number(process.env.OPENTAKEOFF_SEED_BUDGET_MS) || 0;
     const callBudgetMs = Number(process.env.OPENTAKEOFF_CALL_BUDGET_MS) || 0;
     const callDeadline = callBudgetMs ? Date.now() + callBudgetMs : 0;
+    // a room counts as measured when the agent committed a floor shape around
+    // this label and no other: a hand-traced or whole-floor outline holds many
+    // labels and never silences the rooms inside it
+    const labelAt = (l: { bbox: LabelBBox }) => [(l.bbox.x0 + l.bbox.x1) / 2, (l.bbox.y0 + l.bbox.y1) / 2] as const;
     const measuredRings = this.shapes
-      .filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.verts_norm.length >= 3)
-      .map((sh) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as [number, number]));
+      .filter((sh) => sh.sheet_id === s.key && sh.measure_role === "floor_area" && sh.origin?.actor === "agent" && sh.verts_norm.length >= 3)
+      .map((sh) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as [number, number]))
+      .filter((r) => labels.filter((l) => pointInPoly(...labelAt(l), r)).length === 1);
     const disagreements: { label: string; printed_m2: number; traced_m2: number; seed: [number, number] }[] = [];
     const unresolved: { label: string; reason: string; area_sf: number; perimeter_lf: number; seed: [number, number] }[] = [];
     type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence | null; method: "one_click_v1" | "net_v1" | "drawn_v1"; netFaces?: number; netStarved?: boolean; merged: string[] };
@@ -1783,10 +1789,10 @@ export class Session {
     // is passed explicitly there, exactly as oneClick does
     const sweepMppf = raster ? (s.upp ? mask.ws / s.upp : 0) : (mask.mppf || 0);
     // flattened sheets: a second, walls-only mask for rooms the ink flood cuts short at furniture
-    const wallMask = !raster && !opts.layers && s.upp != null ? await this.ensureWallMask(name) : null;
+    const wallMask = !raster && !opts.layers && s.upp != null && stamped.length ? await this.ensureWallMask(name) : null;
     for (const lb of labels) {
       if (callDeadline && Date.now() > callDeadline) { withheld.not_tried++; continue; }
-      const cx = (lb.bbox.x0 + lb.bbox.x1) / 2, cy = (lb.bbox.y0 + lb.bbox.y1) / 2;
+      const [cx, cy] = labelAt(lb);
       if (measuredRings.some((r) => pointInPoly(cx, cy, r))) { withheld.already_measured++; continue; }
       const traceWith = (m: MaskObj, mppf: number) => {
       let ring: Point[] | null = null, ev: FloodEvidence | null = null, seed: [number, number] | null = null;

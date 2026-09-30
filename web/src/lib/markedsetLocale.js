@@ -128,7 +128,8 @@ export const MARKED_SET_LOCALES = { en, nb };
 /** The text table for a locale tag ("nb", "nb-NO", "no", "en-US" …); unknown → English. */
 export function markedSetText(locale) {
   const tag = String(locale || "en").toLowerCase();
-  const lang = tag === "no" || tag.startsWith("nn") ? "nb" : tag.split(/[-_]/)[0];
+  const base = tag.split(/[-_]/)[0];
+  const lang = base === "no" || base === "nn" ? "nb" : base;
   return MARKED_SET_LOCALES[lang] || en;
 }
 

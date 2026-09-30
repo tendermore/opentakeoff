@@ -2237,7 +2237,7 @@ const bridgeCache = new WeakMap<Uint8Array, (Uint8Array | undefined)[]>();
 /** Host-set wall-clock deadline for the flood ladders (0 = none). Some seeds on
  *  large flattened sheets spend minutes in the seal/bridge/wedge retries; a batch
  *  caller sets a per-seed budget and treats the thrown FloodDeadline as "no
- *  outline here". Ported from Datum's patch 0003. */
+ *  outline here". */
 let floodDeadline = 0;
 export class FloodDeadline extends Error {}
 export function setFloodDeadline(at: number): void { floodDeadline = at; }
