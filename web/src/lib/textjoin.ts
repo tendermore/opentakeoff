@@ -112,3 +112,47 @@ export function joinAbuttingSpans<T extends BoxSpan>(spans: readonly T[]): T[] {
     return { ...first, str, x0, y0, x1, y1 };
   });
 }
+
+// Unit exponents — "8 m" + a raised "2" is "8 m²". PDF exports often set the
+// exponent of an area or volume unit as its own smaller run, off the line, so
+// the abutment rule (same size, same line) rightly leaves it apart and every
+// reader sees "8 m" and a stray "2". Joined here: a run ending in a metric unit
+// (m, cm, mm, km), followed along the line by a run that is exactly "2" or "3",
+// set smaller (EXP_SIZE × the unit's height) and shifted off its line, within
+// EXP_GAP × height. The digit becomes the superscript character.
+const EXP_GAP = 0.35;
+const EXP_SIZE = [0.35, 0.9] as const;
+const EXP_SHIFT = [0.1, 0.7] as const;
+const UNIT_END = /(?:^|[\d\s])(?:m|cm|mm|km)$/i;
+const SUPERSCRIPT: Record<string, string> = { "2": "²", "3": "³" };
+
+export function joinUnitExponents<T extends BoxSpan>(spans: readonly T[]): T[] {
+  const ax = spans.map(axis);
+  const used = new Uint8Array(spans.length);
+  const out: T[] = [];
+  const exps: number[] = [];
+  for (let j = 0; j < spans.length; j++) if (SUPERSCRIPT[spans[j].str.trim()]) exps.push(j);
+  for (let i = 0; i < spans.length; i++) {
+    if (used[i]) continue;
+    const A = ax[i], a = spans[i];
+    if (!(A.h > 0) || !UNIT_END.test(a.str.trimEnd())) { out.push(a); continue; }
+    let best = -1, bestGap = Infinity;
+    for (const j of exps) {
+      if (used[j] || (spans[j].rot ?? 0) !== (a.rot ?? 0)) continue;
+      const B = ax[j];
+      const gap = B.a0 - A.a1, shift = Math.abs(A.p - B.p);
+      if (gap < -0.05 * A.h || gap > EXP_GAP * A.h) continue;
+      if (B.h < EXP_SIZE[0] * A.h || B.h > EXP_SIZE[1] * A.h) continue;
+      if (shift < EXP_SHIFT[0] * A.h || shift > EXP_SHIFT[1] * A.h) continue;
+      if (Math.abs(gap) < Math.abs(bestGap)) { best = j; bestGap = gap; }
+    }
+    if (best < 0) { out.push(a); continue; }
+    used[best] = 1;
+    const b = spans[best];
+    // the box stays the unit run's own: seeds and the surround test read a
+    // label's box, and a small room's wall can sit right past the exponent
+    out.push({ ...a, str: a.str.trimEnd() + SUPERSCRIPT[b.str.trim()] });
+  }
+  // an exponent run consumed above is dropped from its original slot
+  return out.filter((s) => { const k = spans.indexOf(s); return k < 0 || !used[k]; });
+}

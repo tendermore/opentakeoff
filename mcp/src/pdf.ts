@@ -7,7 +7,7 @@ import path from "node:path";
 import * as pdfjs from "pdfjs-dist";
 import type { OpList, OpsTable } from "../../web/src/lib/oneclick.ts";
 import { RENDER_SCALE } from "../../web/src/lib/sheets.ts";
-import { joinAbuttingSpans } from "../../web/src/lib/textjoin.ts";
+import { joinAbuttingSpans, joinUnitExponents } from "../../web/src/lib/textjoin.ts";
 
 const requireHere = createRequire(import.meta.url);
 const PDFJS_ROOT = path.dirname(requireHere.resolve("pdfjs-dist/package.json"));
@@ -192,7 +192,7 @@ export async function openPdf(filePath: string): Promise<DocHandle> {
  * ("WB" + "-" + "01") come back joined, anchored at the first run's origin —
  * see web/src/lib/textjoin.ts. */
 export function positionedText(ph: PageHandle): { str: string; x: number; y: number }[] {
-  return joinAbuttingSpans(rawSpans(ph)).map((s) => ({ str: s.str, x: s.ox, y: s.oy }));
+  return joinUnitExponents(joinAbuttingSpans(rawSpans(ph))).map((s) => ({ str: s.str, x: s.ox, y: s.oy }));
 }
 
 /** The page's text items FILTERED to an image-px rect (#153) — a TextContentLike
@@ -260,5 +260,5 @@ function rawSpans(ph: PageHandle): RawSpan[] {
 
 export function textSpans(ph: PageHandle): TextSpan[] {
   // abutting runs joined (textjoin.ts); the origin fields stay internal
-  return joinAbuttingSpans(rawSpans(ph)).map(({ ox: _ox, oy: _oy, ...span }) => span);
+  return joinUnitExponents(joinAbuttingSpans(rawSpans(ph))).map(({ ox: _ox, oy: _oy, ...span }) => span);
 }
