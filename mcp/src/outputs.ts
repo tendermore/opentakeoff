@@ -353,7 +353,7 @@ const summaryRow = z.object({
 const scopeSide = z.object({
   shape_id: z.string(), condition_id: z.string(), condition: z.string(),
   label: z.string().optional(), area_sf: z.number(),
-  reviewed: z.boolean().describe("true = the estimator affirmed this shape — ink; scope_merge never trims or deletes it"),
+  reviewed: z.boolean().describe("true = the estimator affirmed this shape — ink; conditions {action: \"scope_merge\"} never trims or deletes it"),
 });
 export const scopePairRow = z.object({
   sheet_id: z.string(), a: scopeSide, b: scopeSide,
@@ -376,7 +376,7 @@ export const scopeDuplicatesOutput = {
   note: z.string(),
 };
 export const scopeMergeOutput = {
-  action: z.enum(["trimmed", "deleted"]),
+  outcome: z.enum(["trimmed", "deleted"]).describe("What happened to the loser"),
   winner: z.string(), loser: z.string(),
   shared_sf: z.number(),
   loser_before_sf: z.number(), loser_after_sf: z.number(),
@@ -442,7 +442,7 @@ export const takeoffSummaryOutput = {
     sy_net: z.number(),
   }).passthrough(),
   scale_unconfirmed: z.array(z.string()).optional().describe("Sheets whose scale is agent-set and no human has confirmed — these totals stand on an unverified scale; verify against a stated dimension or confirm in the canvas"),
-  shared_floor_sf: z.number().describe("Scope collision (#366): floor claimed by more than one shape across the whole takeoff, counted once per cell (Σ areas − union), in SF through each sheet's scale. Has to read 0 before a total means anything — scope_duplicates names the pairs"),
+  shared_floor_sf: z.number().describe("Scope collision (#366): floor claimed by more than one shape across the whole takeoff, counted once per cell (Σ areas − union), in SF through each sheet's scale. Has to read 0 before a total means anything — conditions {action: \"scope_duplicates\"} names the pairs"),
   shared_floor_unmeasured: z.array(scopeUnmeasuredRow).optional().describe("Floor shapes the collision check could not measure (unscaled sheet, degenerate ring) — left OUT of shared_floor_sf rather than counted as zero; present only when any"),
   proposals: z.array(proposalRow).optional().describe("The proposal ledger (#365): per batch, how many shapes are still pending, how many the estimator accepted, whether it was withdrawn, and which batch new commits attach to (current). Present only when a proposal exists"),
   proposed_condition_edits: z.array(proposedConditionEditRow).optional().describe("Pending condition-edit diffs (#365) beside the current knobs. The rows above are the CURRENT values — nothing changes until the estimator accepts. Present only when any are pending"),
@@ -630,7 +630,7 @@ export const listShapesOutput = {
     reviewed: z.boolean().describe("true = human-affirmed ink, refused by every agent mutation"),
     assignment: z.enum(["schedule", "asserted"]).optional().describe('Where the finish tag came from: "schedule" = resolved from the room\'s own schedule row, "asserted" = the agent chose it. origin.assignment in export {action: "takeoff"} carries the citation. Absent on human canvas shapes'),
     agent_edits: z.number().int().optional().describe("Present when the agent has revised this shape"),
-    proposal_id: z.string().optional().describe("The propose_takeoff batch this shape was committed under (#365) — present on shapes committed while a proposal was open; an accepted shape keeps it as history"),
+    proposal_id: z.string().optional().describe("The proposal {action: \"propose\"} batch this shape was committed under (#365) — present on shapes committed while a proposal was open; an accepted shape keeps it as history"),
   })),
   count: z.number().int(),
 };
@@ -701,7 +701,7 @@ const materialRow = z.object({
   round: z.boolean().describe("true = round up to whole purchase units (the default — you buy whole bags/buckets)"),
   note: z.string().optional(),
   origin_id: z.string().optional().describe("On a twin: the parent row this one follows (the variants.ts family link)"),
-  inherited: z.boolean().optional().describe("On a twin: true while the row still follows the family — a patch on it takes it local, split_condition freezes them all"),
+  inherited: z.boolean().optional().describe("On a twin: true while the row still follows the family — a patch on it takes it local, conditions {action: \"split\"} freezes them all"),
 });
 
 export const editMaterialsOutput = {
@@ -1032,7 +1032,7 @@ const annotationRow = z.object({
   from: z.tuple([z.number(), z.number()]).optional().describe("Arrow tail / dimension start (image px)"),
   to: z.tuple([z.number(), z.number()]).optional().describe("Arrow head / dimension end (image px)"),
   r: z.number().optional().describe("Bubble radius (image px)"),
-  length_lf: z.number().optional().describe("Dimension only: the measured length in real feet, snapshotted at annotate time from the sheet scale"),
+  length_lf: z.number().optional().describe("Dimension only: the measured length in real feet, snapshotted when the note was added, from the sheet scale"),
 });
 
 export const editAnnotationOutput = { id: z.string(), text: z.string(), note: z.string() };
@@ -1083,7 +1083,7 @@ export const deleteVerdictOutput = {
 export const listAnnotationsOutput = {
   annotations: z.array(annotationRow),
   count: z.number().int(),
-  unattached: z.number().int().describe("How many carry no condition — candidates for link_annotation"),
+  unattached: z.number().int().describe("How many carry no condition — candidates for annotate {action: \"link\"}"),
   verdicts: z.array(verdictRow).describe("Approval-family records (#176) under the same filters: sheet applies directly; a condition filter reaches a verdict THROUGH its target shape (a sheet-point mark carries no scope and drops out)"),
   verdict_count: z.number().int(),
 };
@@ -1126,7 +1126,7 @@ export const listRfisOutput = {
   count: z.number().int(),
   open: z.number().int().describe("Still awaiting an answer"),
   pending: z.number().int().describe("Agent-raised and not yet accepted by an estimator"),
-  withdrawn: z.array(z.string()).describe("Numbers of withdrawn RFIs (delete_rfi tombstones) — the gaps in the sequence, explained"),
+  withdrawn: z.array(z.string()).describe("Numbers of withdrawn RFIs (rfi {action: \"delete\"} tombstones) — the gaps in the sequence, explained"),
 };
 
 export const resolveRfiOutput = {

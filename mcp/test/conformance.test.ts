@@ -32,7 +32,7 @@ import {
   createRfiOutput, listRfisOutput, resolveRfiOutput, deleteRfiOutput,
   proposeTakeoffOutput, reviseProposalOutput, withdrawProposalOutput,
   proposeConditionEditOutput, withdrawConditionEditOutput, listShapesOutput,
-  scopeDuplicatesOutput, scopeMergeOutput,
+  scopeDuplicatesOutput, scopeMergeOutput, editAnnotationOutput, linkAnnotationOutput,
 } from "../src/outputs.ts";
 
 const PLAN = fileURLToPath(new URL("../../demo/sample-plan.pdf", import.meta.url));
@@ -77,25 +77,27 @@ const SCHEMAS: Record<string, z.ZodTypeAny> = {
   "derive:deduct": z.object(cutOutOutput),
   "derive:base": z.object(deriveBaseOutput),
   "derive:transitions": z.object(deriveTransitionsOutput),
-  edit_materials: z.object(editMaterialsOutput),
-  edit_condition: z.object(editConditionOutput),
-  annotate: z.object(annotateOutput),
-  list_annotations: z.object(listAnnotationsOutput),
-  mark_verdict: z.object(markVerdictOutput),
-  delete_verdict: z.object(deleteVerdictOutput),
-  duplicate_condition: z.object(duplicateConditionOutput),
-  split_condition: z.object(splitConditionOutput),
-  create_rfi: z.object(createRfiOutput),
-  list_rfis: z.object(listRfisOutput),
-  resolve_rfi: z.object(resolveRfiOutput),
-  delete_rfi: z.object(deleteRfiOutput),
-  propose_takeoff: z.object(proposeTakeoffOutput),
-  revise_proposal: z.object(reviseProposalOutput),
-  withdraw_proposal: z.object(withdrawProposalOutput),
-  propose_condition_edit: z.object(proposeConditionEditOutput),
-  withdraw_condition_edit: z.object(withdrawConditionEditOutput),
-  scope_duplicates: z.object(scopeDuplicatesOutput),
-  scope_merge: z.object(scopeMergeOutput),
+  "conditions:edit": z.object(editConditionOutput),
+  "conditions:duplicate": z.object(duplicateConditionOutput),
+  "conditions:split": z.object(splitConditionOutput),
+  "conditions:materials": z.object(editMaterialsOutput),
+  "conditions:scope_duplicates": z.object(scopeDuplicatesOutput),
+  "conditions:scope_merge": z.object(scopeMergeOutput),
+  "proposal:propose": z.object(proposeTakeoffOutput),
+  "proposal:revise": z.object(reviseProposalOutput),
+  "proposal:withdraw": z.object(withdrawProposalOutput),
+  "proposal:propose_condition_edit": z.object(proposeConditionEditOutput),
+  "proposal:withdraw_condition_edit": z.object(withdrawConditionEditOutput),
+  "review:mark": z.object(markVerdictOutput),
+  "review:delete": z.object(deleteVerdictOutput),
+  "rfi:create": z.object(createRfiOutput),
+  "rfi:list": z.object(listRfisOutput),
+  "rfi:resolve": z.object(resolveRfiOutput),
+  "rfi:delete": z.object(deleteRfiOutput),
+  "annotate:add": z.object(annotateOutput),
+  "annotate:edit": z.object(editAnnotationOutput),
+  "annotate:link": z.object(linkAnnotationOutput),
+  "annotate:list": z.object(listAnnotationsOutput),
 };
 
 /** The SCHEMAS key a call answers under: the task tools add their action. */
@@ -264,12 +266,12 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   const foundRegion = await callOk(client, "find_text", { action: "find", sheet: KEY, query: "office", region: { x0: 500, y0: 1000, x1: 700, y1: 1200 } });
   assert.deepEqual(foundRegion.hits.map((h: any) => h.str), ["OFFICE 101"]);
 
-  const materials = await callOk(client, "edit_materials", { condition: "CPT-1", add: [
+  const materials = await callOk(client, "conditions", { action: "materials", condition: "CPT-1", add: [
     { name: "Adhesive", per: 250, basis: "area", unit: "gal" },
   ] });
   assert.equal(materials.materials.length, 1);
   assert.equal(materials.materials[0].round, true);
-  const matched = await callOk(client, "edit_materials", { condition: "CPT-1",
+  const matched = await callOk(client, "conditions", { action: "materials", condition: "CPT-1",
     patch: [{ id: materials.materials[0].id, fields: { per: 300 } }] });
   assert.equal(matched.materials[0].per, 300);
 
@@ -277,14 +279,14 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   // nets (#131 — before this tool, an agent takeoff always shipped net === gross)
   const preRow = (await callOk(client, "summary")).conditions.find((r: any) => r.finish_tag === "CPT-1");
   assert.deepEqual({ w: preRow.waste_pct, m: preRow.multiplier }, { w: 0, m: 1 }, "minted conditions start net === gross");
-  const knobs = await callOk(client, "edit_condition", { condition: "CPT-1", waste_pct: 10, multiplier: 2 });
+  const knobs = await callOk(client, "conditions", { action: "edit", condition: "CPT-1", waste_pct: 10, multiplier: 2 });
   assert.deepEqual({ w: knobs.waste_pct, m: knobs.multiplier }, { w: 10, m: 2 });
   const postRow = (await callOk(client, "summary")).conditions.find((r: any) => r.finish_tag === "CPT-1");
   assert.ok(Math.abs(postRow.total_sf - preRow.total_sf * 2) < 0.05, "multiplier scales gross");
   assert.ok(Math.abs(postRow.total_sf_net - postRow.total_sf * 1.1) < 0.05, "waste lifts net over gross");
-  assert.match(await callErr(client, "edit_condition", { condition: "NOPE-9", waste_pct: 5 }),
+  assert.match(await callErr(client, "conditions", { action: "edit", condition: "NOPE-9", waste_pct: 5 }),
     /No condition "NOPE-9"\. Known tags: /);        // resolve-or-error — a typo must not mint
-  assert.match(await callErr(client, "edit_condition", { condition: "CPT-1" }), /Nothing to change/);
+  assert.match(await callErr(client, "conditions", { action: "edit", condition: "CPT-1" }), /Nothing to change/);
   const undone = await callOk(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(undone.steps[0].op, "condition");
   const revRow = (await callOk(client, "summary")).conditions.find((r: any) => r.finish_tag === "CPT-1");
@@ -292,15 +294,15 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
 
   // condition twins (#205): mint → follow → split → exact inverses, then the
   // session goes back to pre-twins state so the later tests see what they expect
-  const twin = await callOk(client, "duplicate_condition", { condition: "CPT-1", label: "Level 2" });
+  const twin = await callOk(client, "conditions", { action: "duplicate", condition: "CPT-1", label: "Level 2" });
   assert.equal(twin.condition, "CPT-1 – Level 2");
   assert.equal(twin.inherited_rows, 1, "the adhesive row arrived following");
-  assert.match(await callErr(client, "duplicate_condition", { condition: "CPT-1", label: "level 2" }),
+  assert.match(await callErr(client, "conditions", { action: "duplicate", condition: "CPT-1", label: "level 2" }),
     /already called/);                              // collision is case-insensitive, refused not de-collided
-  const familyEdit = await callOk(client, "edit_materials", { condition: "CPT-1",
+  const familyEdit = await callOk(client, "conditions", { action: "materials", condition: "CPT-1",
     patch: [{ id: materials.materials[0].id, fields: { per: 275 } }] });
   assert.equal(familyEdit.materials[0].per, 275);
-  const cut = await callOk(client, "split_condition", { condition: "CPT-1 – Level 2" });
+  const cut = await callOk(client, "conditions", { action: "split", condition: "CPT-1 – Level 2" });
   assert.deepEqual({ s: cut.split, f: cut.frozen_rows }, { s: true, f: 1 });
   const twinUndo = await callOk(client, "edit_takeoff", { action: "undo", n: 3 });   // split, family edit, mint
   assert.deepEqual(twinUndo.steps.map((s: any) => s.op), ["split_condition", "materials", "duplicate_condition"],
@@ -310,7 +312,7 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
 
   // export_report: the canvas Report document over MCP (#130) — computed buy
   // list included, math parity with the app's totals.js
-  await callOk(client, "edit_condition", { condition: "CPT-1", waste_pct: 5 });
+  await callOk(client, "conditions", { action: "edit", condition: "CPT-1", waste_pct: 5 });
   const report = await callOk(client, "export", { action: "report" });
   assert.equal(report.schema, "opentakeoff.report.v1");
   const rRow = report.conditions.find((r: any) => r.finish_tag === "CPT-1");
@@ -328,7 +330,7 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   assert.deepEqual(report.roll_goods, [], "roll_goods (#136) always emitted — empty until a condition carries a roll_setup");
   const labeled = await callOk(client, "export", { action: "report", project_name: "Summit Phase 2" });
   assert.equal(labeled.project_name, "Summit Phase 2", "a consumer can label the document it prices from");
-  await callOk(client, "edit_condition", { condition: "CPT-1", waste_pct: 0 });   // leave the session as the later tests expect
+  await callOk(client, "conditions", { action: "edit", condition: "CPT-1", waste_pct: 0 });   // leave the session as the later tests expect
 
   const del = await callOk(client, "edit_takeoff", { action: "delete", shape_id: clicked.shape_id });
   assert.deepEqual(del, { action: "delete", deleted: clicked.shape_id, shape_count: 2 });
@@ -336,25 +338,25 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   // proposals (#365) over the wire: every verb's reply validates against its
   // schema, the summary and the report carry the ledger beside the current
   // values, and every new journal op survives undo_last's output enum
-  const prop = await callOk(client, "propose_takeoff", { label: "Level 1 rooms", rationale: "finish schedule row CPT-1" });
+  const prop = await callOk(client, "proposal", { action: "propose", label: "Level 1 rooms", rationale: "finish schedule row CPT-1" });
   const batched = await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[800, 800], [1160, 800], [1160, 1160], [800, 1160]], condition: "CPT-1" });
-  const revised = await callOk(client, "revise_proposal", { proposal_id: prop.proposal_id, shapes: [
-    { sheet: KEY, condition: "CPT-1", role: "floor_area", verts: [[800, 800], [1520, 800], [1520, 1160], [800, 1160]], label: "OFFICE 101" },
-    { sheet: KEY, condition: "TH-1", role: "count", verts: [[810, 810]] },
+  const revised = await callOk(client, "proposal", { action: "revise", proposal_id: prop.proposal_id, shapes: [
+    { sheet: KEY, condition: "CPT-1", role: "floor_area", points: [[800, 800], [1520, 800], [1520, 1160], [800, 1160]], label: "OFFICE 101" },
+    { sheet: KEY, condition: "TH-1", role: "count", points: [[810, 810]] },
   ] });
   assert.deepEqual([revised.replaced, revised.committed], [1, 2]);
   assert.equal((await callOk(client, "edit_takeoff", { action: "list" })).shapes.some((x: any) => x.id === batched.shape_id), false);
   const withLedger = await callOk(client, "summary");
   assert.deepEqual(withLedger.proposals.map((r: any) => [r.label, r.pending, r.accepted, r.current]), [["Level 1 rooms", 2, 0, true]]);
-  const cedit = await callOk(client, "propose_condition_edit", { condition: "CPT-1", waste_pct: 10, rationale: "spec 09 68 13" });
+  const cedit = await callOk(client, "proposal", { action: "propose_condition_edit", condition: "CPT-1", waste_pct: 10, rationale: "spec 09 68 13" });
   assert.deepEqual(cedit.proposed, { waste_pct: 10 });
   const reportPending = await callOk(client, "export", { action: "report" });
   assert.equal(reportPending.conditions.find((r: any) => r.finish_tag === "CPT-1").waste_pct, 0, "the report prints the current knob");
   assert.deepEqual(reportPending.proposed_condition_edits.map((r: any) => [r.condition, r.proposed.waste_pct]), [["CPT-1", 10]], "with the diff beside it");
-  await callOk(client, "withdraw_condition_edit", { proposal_id: cedit.proposal_id });
-  const withdrawn = await callOk(client, "withdraw_proposal", { proposal_id: prop.proposal_id });
+  await callOk(client, "proposal", { action: "withdraw_condition_edit", proposal_id: cedit.proposal_id });
+  const withdrawn = await callOk(client, "proposal", { action: "withdraw", proposal_id: prop.proposal_id });
   assert.deepEqual([withdrawn.withdrawn, withdrawn.accepted_kept], [2, 0]);
-  await callErr(client, "revise_proposal", { proposal_id: prop.proposal_id, shapes: [{ sheet: KEY, condition: "CPT-1", role: "floor_area", verts: [[0, 0], [10, 0], [10, 10]] }] });
+  await callErr(client, "proposal", { action: "revise", proposal_id: prop.proposal_id, shapes: [{ sheet: KEY, condition: "CPT-1", role: "floor_area", points: [[0, 0], [10, 0], [10, 10]] }] });
   const propUndo = await callOk(client, "edit_takeoff", { action: "undo", n: 6 });
   assert.deepEqual(propUndo.steps.map((x: any) => x.op), ["proposal_withdraw", "condition_proposal_withdraw", "condition_proposal", "proposal_revise", "commit", "proposal_open"], "every proposal op validates on the wire");
   assert.equal((await callOk(client, "open_drawings", { action: "info", sheet: KEY })).shape_count, 2, "the session is exactly as it was before the proposal");
@@ -363,18 +365,18 @@ test("every tool: canonical valid call → schema-valid structuredContent mirror
   // scope collision (#366) over the wire: the shipped takeoff on the bundled
   // plan reads 0 shared floor; a deliberate collision is caught, merged with
   // the winner stated, and the merge is one undo step
-  const clean = await callOk(client, "scope_duplicates", {});
+  const clean = await callOk(client, "conditions", { action: "scope_duplicates" });
   assert.deepEqual([clean.collisions, clean.duplicates, clean.shared_floor_sf, clean.unmeasured], [[], [], 0, []], "the bundled sample plan's takeoff shares no floor");
   assert.equal((await callOk(client, "summary")).shared_floor_sf, 0);
   const collide = await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [460, 100], [460, 460], [100, 460]], condition: "LVT-9" });
-  const dup = await callOk(client, "scope_duplicates", { sheet: KEY });
+  const dup = await callOk(client, "conditions", { action: "scope_duplicates", sheet: KEY });
   assert.equal(dup.collisions.length, 1);
   assert.deepEqual([dup.collisions[0].a.condition, dup.collisions[0].b.condition, dup.collisions[0].fraction_of_smaller], ["VCT-1", "LVT-9", 1]);
   assert.equal(dup.shared_floor_sf, dup.collisions[0].shared_sf);
   assert.equal((await callOk(client, "summary")).shared_floor_sf, dup.shared_floor_sf);
-  await callErr(client, "scope_merge", { shape_a: poly.shape_id, shape_b: collide.shape_id });   // neither reviewed, no winner stated
-  const merged = await callOk(client, "scope_merge", { shape_a: poly.shape_id, shape_b: collide.shape_id, winner: poly.shape_id });
-  assert.deepEqual([merged.action, merged.loser, merged.shape_count], ["deleted", collide.shape_id, 2]);
+  await callErr(client, "conditions", { action: "scope_merge", shape_a: poly.shape_id, shape_b: collide.shape_id });   // neither reviewed, no winner stated
+  const merged = await callOk(client, "conditions", { action: "scope_merge", shape_a: poly.shape_id, shape_b: collide.shape_id, winner: poly.shape_id });
+  assert.deepEqual([merged.outcome, merged.loser, merged.shape_count], ["deleted", collide.shape_id, 2]);
   assert.equal((await callOk(client, "summary")).shared_floor_sf, 0);
   const mergeUndo = await callOk(client, "edit_takeoff", { action: "undo", n: 2 });
   assert.deepEqual(mergeUndo.steps.map((x: any) => x.op), ["delete", "commit"]);
@@ -485,6 +487,11 @@ test("schema-invalid arguments: -32602 validation error naming the tool; the ses
   assert.match(await callErr(client, "count", { action: "sweep", sheet: KEY }), /count sweep needs seed_rect/);
   assert.match(await callErr(client, "takeoff_rooms", { action: "at", sheet: KEY }), /takeoff_rooms at needs at/);
   assert.match(await callErr(client, "schedule", { action: "sweep_row" }), /schedule sweep_row needs tag/);
+  assert.match(await callErr(client, "conditions", { action: "duplicate", condition: "CPT-1" }), /conditions duplicate needs label/);
+  assert.match(await callErr(client, "conditions", { action: "scope_merge", shape_a: "shp-1" }), /conditions scope_merge needs shape_b/);
+  assert.match(await callErr(client, "proposal", { action: "propose", label: "L1" }), /proposal propose needs rationale/);
+  assert.match(await callErr(client, "annotate", { action: "add", sheet: KEY }), /annotate add needs type/);
+  assert.match(await callErr(client, "annotate", { action: "link", annotation_id: "mk-1" }), /annotate link needs condition/);
   // info without a sheet is the sheet list, not a miss
   assert.equal((await callOk(client, "open_drawings", { action: "info" })).sheets.length, 1);
   await callViolation(client, "set_scale", { sheet: KEY, upp: "half" });                   // wrong type
@@ -504,11 +511,11 @@ test("schema-invalid arguments: -32602 validation error naming the tool; the ses
   await callViolation(client, "count", { action: "sweep", sheet: KEY, seed_rect: [[0, 0], [50, 50]], tolerance_px: 0 }); // tolerance must be positive
   await callViolation(client, "count", { action: "sweep", sheet: KEY, seed_rect: [[0, 0], [50, 50]], scope: "document" }); // bad scope enum
   await callViolation(client, "schedule", { action: "sweep_row", tag: "" });                          // empty tag fails the min-1 gate
-  await callViolation(client, "annotate", { sheet: KEY, type: "measure" });                // bad type enum
-  await callViolation(client, "edit_materials", { condition: "CPT-1", add: [{ per: 250 }] }); // add row missing name
-  await callViolation(client, "edit_condition", { condition: "CPT-1", waste_pct: -5 });    // negative waste
-  await callViolation(client, "edit_condition", { condition: "CPT-1", multiplier: 0 });    // 0 silently means 1 on the canvas — rejected
-  await callViolation(client, "edit_condition", { condition: "CPT-1", waste_pct: "ten" }); // wrong type
+  await callViolation(client, "annotate", { action: "add", sheet: KEY, type: "measure" });                // bad type enum
+  await callViolation(client, "conditions", { action: "materials", condition: "CPT-1", add: [{ per: 250 }] }); // add row missing name
+  await callViolation(client, "conditions", { action: "edit", condition: "CPT-1", waste_pct: -5 });    // negative waste
+  await callViolation(client, "conditions", { action: "edit", condition: "CPT-1", multiplier: 0 });    // 0 silently means 1 on the canvas — rejected
+  await callViolation(client, "conditions", { action: "edit", condition: "CPT-1", waste_pct: "ten" }); // wrong type
 
   // none of that touched the session — a real call still works on the same pair
   const r = await callOk(client, "takeoff_rooms", { action: "at", sheet: KEY, at: [600, 1084] });
@@ -868,8 +875,8 @@ test("annotate dimension: reply validates against the schema, length rides the r
   const client = await pair();
   await callOk(client, "open_drawings", { action: "load", path: PLAN });
   await callOk(client, "set_scale", { sheet: KEY, use_detected: true });
-  const dim = await callOk(client, "annotate", { sheet: KEY, type: "dimension", from: [100, 100], to: [460, 100] });
-  assert.deepEqual(z.object(annotateOutput).parse(dim), dim, "schema states every returned field");
+  const dim = await callOk(client, "annotate", { action: "add", sheet: KEY, type: "dimension", from: [100, 100], to: [460, 100] });
+  assert.deepEqual(z.object(annotateOutput).parse(dim), bare(dim), "schema states every returned field");
   assert.equal(dim.length_lf, 10);
 });
 
@@ -882,31 +889,31 @@ test("mark_verdict / delete_verdict / list_annotations verdicts: replies validat
   await callOk(client, "set_scale", { sheet: KEY, use_detected: true });
   const poly = await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [460, 100], [460, 460], [100, 460]], condition: "CPT-1" });
 
-  const onShape = await callOk(client, "mark_verdict", { shape_id: poly.shape_id, text: "checked against walls" });
-  assert.deepEqual(z.object(markVerdictOutput).parse(onShape), onShape, "schema states every returned field");
+  const onShape = await callOk(client, "review", { action: "mark", shape_id: poly.shape_id, text: "checked against walls" });
+  assert.deepEqual(z.object(markVerdictOutput).parse(onShape), bare(onShape), "schema states every returned field");
   assert.equal(onShape.actor, "agent");
   assert.equal(onShape.condition, "CPT-1");
-  const onSheet = await callOk(client, "mark_verdict", { sheet: KEY, at: [900, 900] });
-  assert.deepEqual(z.object(markVerdictOutput).parse(onSheet), onSheet);
+  const onSheet = await callOk(client, "review", { action: "mark", sheet: KEY, at: [900, 900] });
+  assert.deepEqual(z.object(markVerdictOutput).parse(onSheet), bare(onSheet));
 
-  const listed = await callOk(client, "list_annotations", {});
-  assert.deepEqual(z.object(listAnnotationsOutput).parse(listed), listed, "verdicts[] and verdict_count are fully stated");
+  const listed = await callOk(client, "annotate", { action: "list" });
+  assert.deepEqual(z.object(listAnnotationsOutput).parse(listed), bare(listed), "verdicts[] and verdict_count are fully stated");
   assert.equal(listed.verdict_count, 2);
 
-  const del = await callOk(client, "delete_verdict", { verdict_id: onSheet.id });
-  assert.deepEqual(z.object(deleteVerdictOutput).parse(del), del);
+  const del = await callOk(client, "review", { action: "delete", verdict_id: onSheet.id });
+  assert.deepEqual(z.object(deleteVerdictOutput).parse(del), bare(del));
 
   // semantic misuse is a clean isError surface
-  await callErr(client, "mark_verdict", {});                                              // no target
-  await callErr(client, "mark_verdict", { shape_id: poly.shape_id, sheet: KEY, at: [1, 1] }); // both targets
-  await callErr(client, "mark_verdict", { shape_id: "shp-nope" });                        // unknown shape
-  await callErr(client, "delete_verdict", { verdict_id: "apr-nope" });                    // unknown record
+  await callErr(client, "review", { action: "mark" });                                              // no target
+  await callErr(client, "review", { action: "mark", shape_id: poly.shape_id, sheet: KEY, at: [1, 1] }); // both targets
+  await callErr(client, "review", { action: "mark", shape_id: "shp-nope" });                        // unknown shape
+  await callErr(client, "review", { action: "delete", verdict_id: "apr-nope" });                    // unknown record
 
   // schema violations are -32602, session unharmed
-  await callViolation(client, "mark_verdict", { sheet: KEY, at: [100] });                 // one coordinate is not a point
-  await callViolation(client, "mark_verdict", { shape_id: 42 });                          // wrong type
-  await callViolation(client, "delete_verdict", {});                                      // missing id
-  const alive = await callOk(client, "list_annotations", {});
+  await callViolation(client, "review", { action: "mark", sheet: KEY, at: [100] });                 // one coordinate is not a point
+  await callViolation(client, "review", { action: "mark", shape_id: 42 });                          // wrong type
+  assert.match(await callErr(client, "review", { action: "delete" }), /review delete needs verdict_id/); // missing id: the handler names it
+  const alive = await callOk(client, "annotate", { action: "list" });
   assert.equal(alive.verdict_count, 1, "the violations changed nothing");
 });
 
@@ -930,38 +937,38 @@ test("detect_rooms assign mode: reply validates AND round-trips the schema unstr
 test("create_rfi / list_rfis / resolve_rfi / delete_rfi: replies validate and round-trip the schema unstripped; misuse is clean", async () => {
   const client = await pair();
   await callOk(client, "open_drawings", { action: "load", path: PLAN });
-  const cloud = await callOk(client, "annotate", { sheet: KEY, type: "cloud", text: "conflict", rect: [[400, 900], [800, 1200]], condition: "CPT-1" });
+  const cloud = await callOk(client, "annotate", { action: "add", sheet: KEY, type: "cloud", text: "conflict", rect: [[400, 900], [800, 1200]], condition: "CPT-1" });
 
-  const made = await callOk(client, "create_rfi", { title: "Room 102 finish conflict", question: "CPT-1 or VCT-1?", sheet: KEY, markup_ids: [cloud.id] });
-  assert.deepEqual(z.object(createRfiOutput).parse(made), made, "schema states every returned field");
+  const made = await callOk(client, "rfi", { action: "create", title: "Room 102 finish conflict", question: "CPT-1 or VCT-1?", sheet: KEY, markup_ids: [cloud.id] });
+  assert.deepEqual(z.object(createRfiOutput).parse(made), bare(made), "schema states every returned field");
   assert.equal(made.number, "RFI-001");
-  const listed = await callOk(client, "list_rfis", {});
-  assert.deepEqual(z.object(listRfisOutput).parse(listed), listed);
+  const listed = await callOk(client, "rfi", { action: "list" });
+  assert.deepEqual(z.object(listRfisOutput).parse(listed), bare(listed));
   assert.equal(listed.count, 1);
-  const done = await callOk(client, "resolve_rfi", { rfi_id: made.id, answer: "VCT-1 governs" });
-  assert.deepEqual(z.object(resolveRfiOutput).parse(done), done);
+  const done = await callOk(client, "rfi", { action: "resolve", rfi_id: made.id, answer: "VCT-1 governs" });
+  assert.deepEqual(z.object(resolveRfiOutput).parse(done), bare(done));
   assert.equal(done.status, "answered");
-  const gone = await callOk(client, "delete_rfi", { rfi_id: made.id });
-  assert.deepEqual(z.object(deleteRfiOutput).parse(gone), gone);
+  const gone = await callOk(client, "rfi", { action: "delete", rfi_id: made.id });
+  assert.deepEqual(z.object(deleteRfiOutput).parse(gone), bare(gone));
   const undo = await callOk(client, "edit_takeoff", { action: "undo", n: 3 });
   assert.deepEqual(undo.steps.map((s: any) => s.op), ["rfi_delete", "rfi_resolve", "rfi_create"], "every RFI op names itself through undoLastOutput's enum");
 
   // semantic misuse is a clean isError surface
-  await callErr(client, "create_rfi", { title: "x", question: "q", sheet: KEY, markup_ids: ["mk-nope"] });   // unknown markup
-  await callErr(client, "create_rfi", { title: "x", question: "q", sheet: "Z-999" });                       // unknown sheet
-  await callErr(client, "create_rfi", { title: "  ", question: "q", sheet: KEY });                          // blank title
-  const live = await callOk(client, "create_rfi", { title: "y", question: "q", sheet: KEY });
-  await callOk(client, "resolve_rfi", { rfi_id: live.id, answer: "a" });
-  await callErr(client, "resolve_rfi", { rfi_id: live.id, answer: "b" });                                   // not open
-  await callErr(client, "resolve_rfi", { rfi_id: "rfi-nope", answer: "b" });                                // unknown id
-  await callOk(client, "delete_rfi", { rfi_id: live.id });
-  await callErr(client, "delete_rfi", { rfi_id: live.id });                                                 // already withdrawn
+  await callErr(client, "rfi", { action: "create", title: "x", question: "q", sheet: KEY, markup_ids: ["mk-nope"] });   // unknown markup
+  await callErr(client, "rfi", { action: "create", title: "x", question: "q", sheet: "Z-999" });                       // unknown sheet
+  await callErr(client, "rfi", { action: "create", title: "  ", question: "q", sheet: KEY });                          // blank title
+  const live = await callOk(client, "rfi", { action: "create", title: "y", question: "q", sheet: KEY });
+  await callOk(client, "rfi", { action: "resolve", rfi_id: live.id, answer: "a" });
+  await callErr(client, "rfi", { action: "resolve", rfi_id: live.id, answer: "b" });                                   // not open
+  await callErr(client, "rfi", { action: "resolve", rfi_id: "rfi-nope", answer: "b" });                                // unknown id
+  await callOk(client, "rfi", { action: "delete", rfi_id: live.id });
+  await callErr(client, "rfi", { action: "delete", rfi_id: live.id });                                                 // already withdrawn
 
   // schema violations are -32602, session unharmed
-  await callViolation(client, "create_rfi", { question: "q", sheet: KEY });                                 // missing title
-  await callViolation(client, "create_rfi", { title: "x", question: "q", sheet: KEY, markup_ids: "mk-1" }); // wrong type
-  await callViolation(client, "resolve_rfi", { rfi_id: live.id });                                          // missing answer
-  await callViolation(client, "delete_rfi", {});                                                            // missing id
-  const alive = await callOk(client, "list_rfis", {});
+  assert.match(await callErr(client, "rfi", { action: "create", question: "q", sheet: KEY }), /rfi create needs title/); // missing title: the handler names it
+  await callViolation(client, "rfi", { action: "create", title: "x", question: "q", sheet: KEY, markup_ids: "mk-1" }); // wrong type
+  assert.match(await callErr(client, "rfi", { action: "resolve", rfi_id: live.id }), /rfi resolve needs answer/);    // missing answer
+  assert.match(await callErr(client, "rfi", { action: "delete" }), /rfi delete needs rfi_id/);                         // missing id
+  const alive = await callOk(client, "rfi", { action: "list" });
   assert.deepEqual({ count: alive.count, withdrawn: alive.withdrawn }, { count: 0, withdrawn: ["RFI-001"] }, "the violations changed nothing");
 });

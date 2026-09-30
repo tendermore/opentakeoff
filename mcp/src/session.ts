@@ -2120,7 +2120,7 @@ export class Session {
     const existing = this.conditions.find((x) => x.finish_tag === opts.condition);
     const h = opts.height_ft ?? (Number(existing?.height_ft) || 0);
     if (!(h > 0)) {
-      throw new UserError(`Set a height for ${opts.condition} first — Surface Area = traced LF × height. Pass height_ft on this call, or set it with edit_condition.`);
+      throw new UserError(`Set a height for ${opts.condition} first — Surface Area = traced LF × height. Pass height_ft on this call, or set it with conditions {action: "edit"}.`);
     }
     const c = this.conditionFor(opts.condition);
     if (opts.height_ft !== undefined && c.height_ft !== opts.height_ft) {
@@ -2156,7 +2156,7 @@ export class Session {
     const p = this.proposals.find((x) => x.id === id);
     if (!p) {
       const open = this.proposals.filter((x) => !x.withdrawn_at).map((x) => `${x.id} (${x.label})`);
-      throw new UserError(`No proposal with id ${JSON.stringify(id)}.${open.length ? ` Open proposals: ${open.join(", ")}.` : " Nothing has opened a proposal yet — propose_takeoff first."}`);
+      throw new UserError(`No proposal with id ${JSON.stringify(id)}.${open.length ? ` Open proposals: ${open.join(", ")}.` : " Nothing has opened a proposal yet — proposal {action: \"propose\"} first."}`);
     }
     return p;
   }
@@ -2208,7 +2208,7 @@ export class Session {
     this.currentProposalId = proposal.id;
     return {
       proposal_id: proposal.id, label: proposal.label, rationale: proposal.rationale,
-      note: "Open. Every shape you commit from now on (measure, count, derive) attaches to this proposal until you open another or withdraw it; the estimator sees the batch as one Accept. revise_proposal replaces its pending shapes as one step, withdraw_proposal removes them.",
+      note: "Open. Every shape you commit from now on (measure, count, derive) attaches to this proposal until you open another or withdraw it; the estimator sees the batch as one Accept. proposal {action: \"revise\"} replaces its pending shapes as one step, proposal {action: \"withdraw\"} removes them.",
     };
   }
 
@@ -2219,8 +2219,8 @@ export class Session {
    * and the replacement shapes attach to the same proposal. */
   reviseProposal(id: string, shapes: { sheet: string; condition: string; role: MeasureRole; verts: Point[]; label?: string; height_ft?: number }[]) {
     const p = this.proposalOrError(id);
-    if (p.withdrawn_at) throw new UserError(`Proposal ${id} (${p.label}) was withdrawn — open a new one with propose_takeoff.`);
-    if (!Array.isArray(shapes) || !shapes.length) throw new UserError("shapes is empty — to remove the batch, call withdraw_proposal instead.");
+    if (p.withdrawn_at) throw new UserError(`Proposal ${id} (${p.label}) was withdrawn — open a new one with proposal {action: "propose"}.`);
+    if (!Array.isArray(shapes) || !shapes.length) throw new UserError("shapes is empty — to remove the batch, call proposal {action: \"withdraw\"} instead.");
     // validate everything first; refuse whole, never half-revise
     const plan = shapes.map((r, i) => {
       const s = this.sheet(r.sheet);
@@ -2233,7 +2233,7 @@ export class Session {
       if (r.role === "surface_area") {
         const existing = this.conditions.find((x) => x.finish_tag === tag);
         height = r.height_ft ?? (Number(existing?.height_ft) || 0);
-        if (!(height > 0)) throw new UserError(`shapes[${i}]: a surface_area shape needs a height — pass height_ft, or set it on ${tag} with edit_condition. Nothing was revised.`);
+        if (!(height > 0)) throw new UserError(`shapes[${i}]: a surface_area shape needs a height — pass height_ft, or set it on ${tag} with conditions {action: "edit"}. Nothing was revised.`);
       }
       return { s, tag, role: r.role, verts: r.verts, label: r.label?.trim() || undefined, height };
     });
@@ -2448,7 +2448,7 @@ export class Session {
       floor_shapes: floors,
       min_fraction: opts.min_fraction ?? 0.05,
       note: !floors ? "No floor_area shapes to compare."
-        : r.collisions.length ? `${r.collisions.length} pair(s) on different conditions share floor — every total downstream counts that floor twice. scope_merge a pair with the winner stated, or view_sheet its look region and re-trace.`
+        : r.collisions.length ? `${r.collisions.length} pair(s) on different conditions share floor — every total downstream counts that floor twice. conditions {action: "scope_merge"} a pair with the winner stated, or view_sheet its look region and re-trace.`
         : r.duplicates.length ? "No cross-condition collision; the same-condition pairs listed are double traces — edit_takeoff {action: \"delete\"} one of each."
         : "No shared floor on the compared sheets.",
     };
@@ -2465,8 +2465,8 @@ export class Session {
     if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     const A = this.shapes.find((x) => x.id === opts.shape_a);
     const B = this.shapes.find((x) => x.id === opts.shape_b);
-    if (!A) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_a)} — scope_duplicates or edit_takeoff {action: "list"} for real ids.`);
-    if (!B) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_b)} — scope_duplicates or edit_takeoff {action: "list"} for real ids.`);
+    if (!A) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_a)} — conditions {action: "scope_duplicates"} or edit_takeoff {action: "list"} for real ids.`);
+    if (!B) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_b)} — conditions {action: "scope_duplicates"} or edit_takeoff {action: "list"} for real ids.`);
     if (A.id === B.id) throw new UserError("shape_a and shape_b are the same shape.");
     for (const x of [A, B]) if (x.measure_role !== "floor_area") throw new UserError(`Shape ${x.id} is ${x.measure_role} — only floor_area shapes claim floor. A deduct subtracts, a run has no area to share.`);
     if (A.sheet_id !== B.sheet_id) throw new UserError(`Shapes on different sheets (${A.sheet_id} / ${B.sheet_id}) cannot share floor.`);
@@ -4300,7 +4300,7 @@ export class Session {
       const condId = patch.condition !== undefined ? this.conditionFor(patch.condition).id : cur.condition_id;
       const cond = this.conditions.find((x) => x.id === condId);
       const h = Number(cur.height_ft) || Number(cond?.height_ft) || 0;
-      if (!(h > 0)) throw new UserError(`Surface Area needs a height — set height_ft on ${cond?.finish_tag ?? "the condition"} with edit_condition first.`);
+      if (!(h > 0)) throw new UserError(`Surface Area needs a height — set height_ft on ${cond?.finish_tag ?? "the condition"} with conditions {action: "edit"} first.`);
       return h;
     };
     // linear legs: null CLEARS a field (the condition's default applies again),
@@ -5007,8 +5007,8 @@ export class Session {
    * context must stay attached to the question the estimator is reviewing. */
   editAnnotation(id: string, text: string): Record<string, unknown> {
     const m = this.markups.find((x) => x.id === id);
-    if (!m) throw new UserError(`No annotation ${JSON.stringify(id)} — call list_annotations for annotation ids; verdicts cannot be edited here.`);
-    if (m.rfi_id) throw new UserError("This annotation is linked to an RFI. Review its context in the browser RFI register; edit_annotation cannot rewrite it.");
+    if (!m) throw new UserError(`No annotation ${JSON.stringify(id)} — call annotate {action: "list"} for annotation ids; verdicts cannot be edited here.`);
+    if (m.rfi_id) throw new UserError("This annotation is linked to an RFI. Review its context in the browser RFI register; annotate {action: \"edit\"} cannot rewrite it.");
     if (m.text === text) throw new UserError("The annotation already has that text — nothing changed.");
     this.record({ op: "annotation_text", tool: "edit_annotation", id, before: m.text });
     m.text = text;
@@ -5019,7 +5019,7 @@ export class Session {
    *  canvas's Attach/Detach, reachable by an agent. */
   linkAnnotation(id: string, condition: string): Record<string, unknown> {
     const m = this.markups.find((x) => x.id === id);
-    if (!m) throw new UserError(`no annotation "${id}" — call list_annotations for real ids`);
+    if (!m) throw new UserError(`no annotation "${id}" — call annotate {action: "list"} for real ids`);
     if (!condition) {
       m.condition_id = "";
       return { id: m.id, condition: "", note: "Detached — now a note about the sheet." };
@@ -5043,7 +5043,7 @@ export class Session {
 
   private rfiById(id: string): Rfi {
     const r = this.rfis.find((x) => x.id === id);
-    if (!r || r.deleted === true) throw new UserError(`No RFI ${JSON.stringify(id)}${r ? ` — ${r.number} was withdrawn (its number stays reserved)` : ""} — list_rfis has the real ids.`);
+    if (!r || r.deleted === true) throw new UserError(`No RFI ${JSON.stringify(id)}${r ? ` — ${r.number} was withdrawn (its number stays reserved)` : ""} — rfi {action: "list"} has the real ids.`);
     return r;
   }
 
@@ -5084,7 +5084,7 @@ export class Session {
     const ids = [...new Set(a.markup_ids ?? [])];
     const marks = ids.map((id) => {
       const m = this.markups.find((x) => x.id === id);
-      if (!m) throw new UserError(`No annotation ${JSON.stringify(id)} — list_annotations has the real ids; annotate first to give the question something to point at.`);
+      if (!m) throw new UserError(`No annotation ${JSON.stringify(id)} — annotate {action: "list"} has the real ids; annotate {action: "add"} first to give the question something to point at.`);
       return m;
     });
     const now = new Date();
@@ -5113,7 +5113,7 @@ export class Session {
     this.record({ op: "rfi_create", tool: "create_rfi", id: r.id, links });
     return {
       ...this.rfiRow(r),
-      note: `Raised ${r.number} as the agent — PENDING in the estimator's register until accepted there (origin.reviewed false). It prints in the marked set's RFI schedule like any other RFI${marks.length ? `; ${marks.length} linked markup${marks.length === 1 ? "" : "s"} carry its number on the sheet` : "; link a cloud or callout (annotate, then markup_ids) so it points at something on the sheet"}.`,
+      note: `Raised ${r.number} as the agent — PENDING in the estimator's register until accepted there (origin.reviewed false). It prints in the marked set's RFI schedule like any other RFI${marks.length ? `; ${marks.length} linked markup${marks.length === 1 ? "" : "s"} carry its number on the sheet` : "; link a cloud or callout (annotate {action: \"add\"}, then markup_ids) so it points at something on the sheet"}.`,
     };
   }
 
@@ -5141,9 +5141,9 @@ export class Session {
   resolveRfi(id: string, answer: string): Record<string, unknown> {
     const r = this.rfiById(id);
     const text = (answer ?? "").trim();
-    if (!text) throw new UserError(`${r.number} needs an answer — resolve_rfi records the response; to withdraw the question use delete_rfi.`);
+    if (!text) throw new UserError(`${r.number} needs an answer — rfi {action: "resolve"} records the response; to withdraw the question use rfi {action: "delete"}.`);
     if (r.status !== "open") {
-      throw new UserError(`${r.number} is ${r.status}, not open — resolve_rfi answers an OPEN question only. list_rfis shows each status; a resolved RFI stays resolved (edit_takeoff {action: "undo"} reverses your own resolve).`);
+      throw new UserError(`${r.number} is ${r.status}, not open — rfi {action: "resolve"} answers an OPEN question only. rfi {action: "list"} shows each status; a resolved RFI stays resolved (edit_takeoff {action: "undo"} reverses your own resolve).`);
     }
     const before = structuredClone(r);
     const now = new Date();
@@ -5241,7 +5241,7 @@ export class Session {
       // anchor is invisible duplication, the same failure class the canvas's
       // click-to-lift toggle prevents. Re-mark = delete_verdict + mark_verdict.
       const dup = this.approvals.find((x) => x.actor === "agent" && x.shape_id === shape!.id);
-      if (dup) throw new UserError(`Shape ${shape.id} already carries an agent verdict (${dup.id}) — one mark per shape. delete_verdict it first to re-mark.`);
+      if (dup) throw new UserError(`Shape ${shape.id} already carries an agent verdict (${dup.id}) — one mark per shape. review {action: "delete"} it first to re-mark.`);
       sheetId = shape.sheet_id;
       // anchor in sheet px, normalized back for storage; a shape riding a
       // file this session hasn't loaded (#152) anchors in normalized space —
@@ -5295,7 +5295,7 @@ export class Session {
    * retracts only its own marks. */
   deleteVerdict(id: string): Record<string, unknown> {
     const a = this.approvals.find((x) => x.id === id);
-    if (!a) throw new UserError(`No verdict ${JSON.stringify(id)} — list_annotations returns the real ids in verdicts[].`);
+    if (!a) throw new UserError(`No verdict ${JSON.stringify(id)} — annotate {action: "list"} returns the real ids in verdicts[].`);
     if (a.actor !== "agent") {
       throw new UserError(`${id} is the estimator's APPROVED seal — human ink, refused. An agent lifts only its own marks (actor "agent").`);
     }

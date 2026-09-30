@@ -375,7 +375,7 @@ an order quantity. Removing a roll setup stops the figuring; manual
 cut edits on shapes are kept but go inert.
 
 Agents get the same thing headlessly—`roll_setup` is a field on the MCP server's
-`edit_condition`, and the reply echoes the figured order ([§14](#14-ai-settings-and-driving-opentakeoff-from-an-agent)).
+`conditions {action: "edit"}`, and the reply echoes the figured order ([§14](#14-ai-settings-and-driving-opentakeoff-from-an-agent)).
 
 ### Import from schedule
 
@@ -632,8 +632,8 @@ Two glyphs, deliberately unmistakable: the estimator's seal is a green circular 
 **APPROVED**; an agent's verdict is a graphite diamond always labeled **AGENT**. Only the toolbar
 tool—a human hand—places the estimator seal: no agent, MCP, or import path mints one. Agent
 verdict marks are the same record family (`actor: "agent"`), and they render, persist, and undo
-identically. An agent working over MCP signs its own work with `mark_verdict` (and clears it with
-`delete_verdict`); the tool takes no actor argument, so it can only ever produce the graphite
+identically. An agent working over MCP signs its own work with `review {action: "mark"}` (and clears it with
+`review {action: "delete"}`); the tool takes no actor argument, so it can only ever produce the graphite
 diamond. That's the whole point of two glyphs: the agent can say *"I measured this and I stand by
 it"* without ever being able to claim a person checked it.
 
@@ -800,7 +800,7 @@ A proposal whose sheet you've since closed (or unscaled) is skipped at accept wi
 
 ### Proposals from an MCP agent — one decision per batch
 
-Work that arrives from an MCP session (**Import takeoff…**, or a synced workspace) lands as dashed pencil too, and an agent can group it: `propose_takeoff` names a batch and every shape it commits afterwards belongs to it. On the canvas that batch is **one pill** — *Accept "Level 1 offices per finish schedule" · 3* — with a ✕ to reject it. Accept inks the whole batch in one step (one `⌘Z`); Reject removes its pending shapes (`⌘Z` restores them). Shapes you already accepted are never part of a batch again, so an agent that revises or withdraws its proposal cannot touch your ink. Anything un-batched keeps the plain **Accept N proposed shapes** pill.
+Work that arrives from an MCP session (**Import takeoff…**, or a synced workspace) lands as dashed pencil too, and an agent can group it: `proposal {action: "propose"}` names a batch and every shape it commits afterwards belongs to it. On the canvas that batch is **one pill** — *Accept "Level 1 offices per finish schedule" · 3* — with a ✕ to reject it. Accept inks the whole batch in one step (one `⌘Z`); Reject removes its pending shapes (`⌘Z` restores them). Shapes you already accepted are never part of a batch again, so an agent that revises or withdraws its proposal cannot touch your ink. Anything un-batched keeps the plain **Accept N proposed shapes** pill.
 
 ### Reviewing an agent's takeoff, start to finish
 
@@ -838,7 +838,7 @@ The screens above were captured in a throwaway browser driven by a script agains
 
 ### Shared floor — when two conditions claim the same room
 
-Two conditions can claim the same floor and nothing used to say so: a room detected under `CPT-1`, then traced again under `LVT-2` on another day, and every total downstream counts that floor twice. Now a condition row that shares floor with another wears a **⚠ N** badge (the number of pairs). Activate the row and the pairs list under it — the other condition, the shared square feet, how much of the smaller shape that is, and whether both were already accepted — each with a **Look** that frames the pair on the plan. Deciding which one wins is yours: delete one, or fix the ring. A room traced twice under the *same* condition shows as a **double trace** in the same list. The same measurement (an exact polygon intersection, not a guess) is what an MCP agent reads with `scope_duplicates`, and `summary` carries the whole takeoff's shared floor as one number that has to read zero.
+Two conditions can claim the same floor and nothing used to say so: a room detected under `CPT-1`, then traced again under `LVT-2` on another day, and every total downstream counts that floor twice. Now a condition row that shares floor with another wears a **⚠ N** badge (the number of pairs). Activate the row and the pairs list under it — the other condition, the shared square feet, how much of the smaller shape that is, and whether both were already accepted — each with a **Look** that frames the pair on the plan. Deciding which one wins is yours: delete one, or fix the ring. A room traced twice under the *same* condition shows as a **double trace** in the same list. The same measurement (an exact polygon intersection, not a guess) is what an MCP agent reads with `conditions {action: "scope_duplicates"}`, and `summary` carries the whole takeoff's shared floor as one number that has to read zero.
 
 An agent can also **propose a change to a condition** instead of making it — a new tag, a waste %, a multiplier, a height, a roll-goods setup. The proposal sits under the condition's row in the Takeoffs panel as *current → proposed* with the agent's reason and **Accept** / **Reject**. Until you accept, nothing changes: every total and the Report use the current values, and the Report shows the proposed ones beside them (`proposed: waste 0% → 10%`). Accept applies exactly the edit typing those values would; Reject drops it.
 
@@ -875,7 +875,7 @@ What's sent, and only when you run an AI feature: the sheet region in question a
 
 The same engine speaks [MCP](https://modelcontextprotocol.io), one command away:
 `npx -y opentakeoff-mcp` (or the one-click `opentakeoff-mcp.mcpb` bundle for Claude Desktop). An
-MCP client gets **<!--tool-count-->33<!--/tool-count--> tools** plus browsable sheet resources, over the very same measuring engine,
+MCP client gets **<!--tool-count-->17<!--/tool-count--> tools** plus browsable sheet resources, over the very same measuring engine,
 with the same scale gate and the same provenance receipts:
 
 | Group | Tools |
@@ -884,9 +884,10 @@ with the same scale gate and the same provenance receipts:
 | Scale | `set_scale` |
 | Measure and count | `takeoff_rooms` · `measure` · `count` |
 | Derive and schedules | `derive` · `schedule` |
-| Edit and audit | `edit_takeoff` · `edit_condition` · `edit_materials` · `duplicate_condition` · `split_condition` |
-| Mark and sign | `annotate` · `list_annotations` · `link_annotation` · `mark_verdict` · `delete_verdict` |
-| Ask | `create_rfi` · `list_rfis` · `resolve_rfi` · `delete_rfi` |
+| Edit and audit | `edit_takeoff` · `conditions` |
+| Propose | `proposal` |
+| Mark and sign | `annotate` · `review` |
+| Ask | `rfi` |
 | Hand off | `summary` · `export` |
 
 If you're the one wiring an agent up rather than the one reading its output, the operating manual
@@ -931,7 +932,7 @@ A few worth knowing about from the canvas side, because they're the same feature
   threshold in a doorway and nothing in the trace record locates the doorway. Answer those by
   looking at the sheet and measuring the threshold yourself—the same doctrine as `count {action: "sweep"}`,
   where a near-match is never a silent commit and never a silent drop.
-- `edit_condition` reaches the waste %, the ×N multiplier, and `roll_setup`
+- `conditions {action: "edit"}` reaches the waste %, the ×N multiplier, and `roll_setup`
   ([§4](#4-conditions--your-finishes)), so an agent's takeoff doesn't come back with net === gross.
 - `view_sheet` renders a sheet or a tight crop with a calibrated 1-ft/5-ft measuring grid and a
   committed-shapes overlay, so an agent measures off grid cells and verifies its own work by
@@ -1138,7 +1139,7 @@ The marked-set cover shows linear allowances in LF (or m in metric), alongside a
 
 ### Annotation cleanup and small overlap warnings
 
-An agent can shorten or clear annotation text with `edit_annotation`, then undo
+An agent can shorten or clear annotation text with `annotate {action: "edit"}`, then undo
 that text edit. This leaves positions, dimension lengths, quantities, links and
 review records unchanged. An RFI-linked note requires review in the browser RFI
 register. Human approval remains a separate action.

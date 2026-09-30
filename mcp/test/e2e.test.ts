@@ -53,7 +53,7 @@ test("e2e: load → set_scale(detected) → one_click × 4 rooms → summary →
 
   // the agent signs its own work (#176): a verdict mark on the first room —
   // actor is agent by construction, and it must not move a single quantity
-  const verdict = await call("mark_verdict", { shape_id: shapeIds[0], text: "traced and checked" });
+  const verdict = await call("review", { action: "mark", shape_id: shapeIds[0], text: "traced and checked" });
   assert.match(verdict.id, /^apr-/);
   assert.equal(verdict.actor, "agent");
   assert.equal(verdict.condition, "CPT-1");

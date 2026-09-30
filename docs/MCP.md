@@ -168,54 +168,54 @@ The tools and their actions, in the order an agent tends to reach for them:
   parent and hole together, and deleting the deduct later reverts the cut
   (multi-cut parents rebuild from the pristine snapshot minus survivors—the
   canvas's own delete semantics, ported as the spec)
-- **Revise**—`edit_takeoff {action: "edit"}` (all five roles), `edit_materials`,
-  `edit_condition` (waste %, ×N multiplier, `height_ft`, `rise_ft` / `drop_ft` — the vertical legs every linear run adds to its plan length (#441), and the roll-goods
+- **Revise**—`edit_takeoff {action: "edit"}` (all five roles), `conditions {action: "materials"}`,
+  `conditions {action: "edit"}` (waste %, ×N multiplier, `height_ft`, `rise_ft` / `drop_ft` — the vertical legs every linear run adds to its plan length (#441), and the roll-goods
   `roll_setup` opt-in—the reply echoes the figured order), `edit_takeoff {action: "delete"}`,
   `edit_takeoff {action: "undo"}`, with `edit_takeoff {action: "list"}` as the mid-session inventory the mutating
   verbs assume you have
-- **Proposals** (#365)—`propose_takeoff` opens a named batch that every
+- **Proposals** (#365)—`proposal {action: "propose"}` opens a named batch that every
   commit after it attaches to (the estimator sees ONE Accept per batch, not
-  one per shape); `revise_proposal` replaces the batch's still-pending shapes
-  as one journal step and `withdraw_proposal` removes them, accepted shapes
-  untouched either way. `propose_condition_edit` holds a diff against a
+  one per shape); `proposal {action: "revise"}` replaces the batch's still-pending shapes
+  as one journal step and `proposal {action: "withdraw"}` removes them, accepted shapes
+  untouched either way. `proposal {action: "propose_condition_edit"}` holds a diff against a
   condition (tag, waste, multiplier, height, roll setup) pending the
   estimator's acceptance in the canvas—nothing changes until then, and the
   summary and report carry the diff beside the current values;
-  `withdraw_condition_edit` drops it. Design: `design/PROPOSALS.md`
+  `proposal {action: "withdraw_condition_edit"}` drops it. Design: `design/PROPOSALS.md`
 - **Scope collision** (#366)—`summary.shared_floor_sf` is the floor
   claimed by more than one shape across the takeoff (Σ areas − union, once per
   cell), the number that has to read zero before a total means anything;
-  `scope_duplicates` names every pair on different conditions with the shared
+  `conditions {action: "scope_duplicates"}` names every pair on different conditions with the shared
   SF, both sides' review state and a `view_sheet` look region (same-condition
-  double traces as their own list); `scope_merge` resolves one pair with the
+  double traces as their own list); `conditions {action: "scope_merge"}` resolves one pair with the
   winner stated—the loser trimmed to its remainder by an exact boolean
   difference or deleted when near-total, one undo step, never a shape the
   estimator affirmed. Design: `design/SCOPE_COLLISION.md`
-- **Condition twins**—`duplicate_condition` (the same finish measured
+- **Condition twins**—`conditions {action: "duplicate"}` (the same finish measured
   somewhere else with its own preparation underneath: the twin arrives carrying
   the original's materials and keeps *following* them, so a coverage-rate fix on
   the original reaches every twin that hasn't touched that row) and
-  `split_condition` (cut a twin loose—following rows freeze at their current
+  `conditions {action: "split"}` (cut a twin loose—following rows freeze at their current
   values and the original stops reaching it). One finish in two areas is neither
   one condition nor two; both are reversible with `edit_takeoff {action: "undo"}`
 - **Read the sheet**—`find_text {action: "read"}`, `find_text`, `view_sheet` (render a
   sheet or crop to PNG with an optional calibrated measuring grid and
   committed-shapes overlay—the agent's eyes and its self-check)
-- **Annotate**—`annotate` (cloud, highlight, text, callout, arrow—plank/seam
+- **Annotate**—`annotate {action: "add"}` (cloud, highlight, text, callout, arrow—plank/seam
   direction—keynote bubble, and dimension: two endpoints, drawn
   as a dimension line labeled with the measured length at the sheet's scale,
-  refused on an unscaled sheet), `list_annotations`,
-  `link_annotation` (notes *about* the work, never measurements of it;
+  refused on an unscaled sheet), `annotate {action: "list"}`,
+  `annotate {action: "link"}` (notes *about* the work, never measurements of it;
   attaching one to a finish tag is what makes it part of that scope rather
   than a floating remark—it then wears the condition's color on the canvas
   and in the marked set)
-- **Sign**—`mark_verdict`, `delete_verdict` (the agent half of the approval
+- **Sign**—`review {action: "mark"}`, `review {action: "delete"}` (the agent half of the approval
   family: the graphite AGENT diamond, the agent's pencil-signature on work it
   checked—anchored on a committed shape or dropped at a sheet point, listed
-  in `list_annotations`' `verdicts[]`. The estimator's APPROVED ring is the
+  in `annotate {action: "list"}`' `verdicts[]`. The estimator's APPROVED ring is the
   other half and stays human-only: these tools take no actor input, so no
   agent path can mint or lift the human's ink. A verdict touches no quantity)
-- **Ask**—`create_rfi`, `list_rfis`, `resolve_rfi`, `delete_rfi` (the canvas's
+- **Ask**—`rfi {action: "create"}`, `rfi {action: "list"}`, `rfi {action: "resolve"}`, `rfi {action: "delete"}` (the canvas's
   RFI register, reachable by an agent: when the drawings are the problem—a
   schedule row the plan never draws, a room the schedule has no row for—raise
   it as a numbered question instead of a sentence in a reply. Same store, same
@@ -392,14 +392,14 @@ New agent measurements, including `measure {kind: "area"}` and `measure {kind: "
 
 The [generated tool index](MCP_TOOL_INDEX.md) gives each tool's actions and required
 arguments directly from the running server's schemas. The default surface has
-<!--tool-count-->33<!--/tool-count--> tools; the gated tool is listed separately.
+<!--tool-count-->17<!--/tool-count--> tools; the gated tool is listed separately.
 
-Use `list_annotations` → `edit_annotation {annotation_id, text}` to shorten or clear
+Use `annotate {action: "list"}` → `annotate {action: "edit", annotation_id, text}` to shorten or clear
 a note. One `edit_takeoff {action: "undo"}` restores the text. Geometry, dimension length, links and
 human review are unchanged. RFI-linked notes refuse; inspect their question in
 the browser register. Verdicts are separate records, not editable annotations.
 
-`scope_duplicates` ignores machine-precision edge residue, but preserves real
+`conditions {action: "scope_duplicates"}` ignores machine-precision edge residue, but preserves real
 small overlaps with an explanation when SF rounds to zero. A material coverage
 row is not another finish polygon. For a physical opening, clip an explicit
 `measure {kind: "length"}` or `measure {kind: "surface"}` run with `derive {action: "deduct"}`; a derived base with numeric
