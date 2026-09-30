@@ -396,6 +396,9 @@ export type FloorCheck =
    * wall faces the drawn-walls check can read (a scan, single-line walls). */
   | { status: "unverified"; reason: "no_printed_areas_on_sheet" | "no_printed_area_inside" | "no_scale" | "no_wall_linework" };
 
+/** A room label the caller chose for detect_rooms: a text, or a text at a point (image px). */
+export type SeedLabel = string | { text: string; at: [number, number] };
+
 /** The one-line form tool replies carry: "printed_area", "drawn_walls" or "unverified: <reason>". */
 export const checkText = (check: FloorCheck | undefined): string | undefined =>
   !check ? undefined : check.status === "verified" ? check.by : `unverified: ${check.reason}`;
@@ -1923,7 +1926,28 @@ export class Session {
    *       broom closet is ~10 SF): a door swing or wall cavity. Only applied
    *       once a scale exists, since without one there is no real area to
    *       judge and nothing commits anyway. */
-  async detectRooms(name: string, opts: { condition?: string; role: "floor_area" | "deduct"; returnVerts: boolean; minAreaSf?: number; sensitivity?: number; layers?: { include?: string[]; exclude?: string[] }; assignFromSchedule?: boolean }) {
+  /** The sheet's text spans a caller named as room labels: a string names every
+   * span that reads it (or holds it as one word: "115" in "CONFERENCE 115"); a
+   * {text, at} names the one nearest `at` within LABEL_BLOCK_HEIGHTS text
+   * heights. Names that match no span are listed in `unmatched`. */
+  private static chosenLabels(spans: TextSpan[], chosen: SeedLabel[], unmatched: string[]): { str: string; bbox: LabelBBox }[] {
+    const reads = (sp: TextSpan, text: string) => { const t = (sp.str || "").trim(); return t === text || t.split(/\s+/).includes(text); };
+    const out = new Map<TextSpan, string>();
+    for (const c of chosen) {
+      const text = (typeof c === "string" ? c : c.text).trim();
+      let hits = spans.filter((sp) => reads(sp, text));
+      if (typeof c !== "string") {
+        const d = (sp: TextSpan) => Math.hypot((sp.x0 + sp.x1) / 2 - c.at[0], (sp.y0 + sp.y1) / 2 - c.at[1]);
+        const near = hits.filter((sp) => d(sp) <= LABEL_BLOCK_HEIGHTS * Math.max(1, sp.y1 - sp.y0)).sort((a, b) => d(a) - d(b));
+        hits = near.slice(0, 1);
+      }
+      if (!hits.length) unmatched.push(text);
+      for (const sp of hits) out.set(sp, text);
+    }
+    return [...out].map(([bbox, str]) => ({ str, bbox }));
+  }
+
+  async detectRooms(name: string, opts: { condition?: string; role: "floor_area" | "deduct"; returnVerts: boolean; minAreaSf?: number; sensitivity?: number; layers?: { include?: string[]; exclude?: string[] }; assignFromSchedule?: boolean; labels?: SeedLabel[] }) {
     const s = this.sheet(name);
     // assign-from-schedule (0.9.18): each detected room commits under the
     // FLOOR finish its OWN schedule row states, and rooms the schedule cannot
@@ -1983,6 +2007,10 @@ export class Session {
     const stamped = labels.filter((l) => printedAreaM2(l.str) != null);
     if (stamped.length >= 3) labels.splice(0, labels.length, ...stamped);
     else if (s.spans.some((sp) => NORDIC_TEXT_RE.test((sp.str || "").replace(DIAMETER_SIGN_RE, "")))) labels.splice(0, labels.length, ...stamped, ...names);
+    // The caller's own choice (a model that read the sheet's text): those texts
+    // seed the rooms instead of the engine's choice; the checks are the same.
+    const unmatched: string[] = [];
+    if (opts.labels) labels.splice(0, labels.length, ...Session.chosenLabels(s.spans, opts.labels, unmatched));
 
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
@@ -2306,6 +2334,7 @@ export class Session {
       ...(disagreements.length ? { area_disagrees: disagreements } : {}),
       // no printed area and no outline that follows the drawn walls: seed + why
       ...(offWalls.length ? { off_walls: offWalls } : {}),
+      ...(unmatched.length ? { labels_unmatched: unmatched } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
         ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }

@@ -173,6 +173,7 @@ export const detectRoomsOutput = {
     reason: z.string().describe("Which edge left the drawn walls and by how much, how much wall the outline holds inside, or how many rooms' labels"),
     seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — trace the room there on a close-up, or report it as not measured"),
   })).optional().describe("Present when any room with no printed area was withheld because no outline followed the drawn walls"),
+  labels_unmatched: z.array(z.string()).optional().describe("labels passed that the sheet does not print (or not near `at`) — nothing was seeded for them"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — rooms inside an enlarged viewport may be figured at the wrong scale"),
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable and what to do"),
