@@ -26,7 +26,7 @@ Default build: **17 tools**. Coordinates, where present, are full-sheet image pi
 | `set_scale` | — | Default | `sheet` |
 | `sheet_context` | `context`, `graph`, `vectors` | Default | None |
 | `summary` | — | Default | None |
-| `takeoff_rooms` | `detect`, `at` | One-Click gate lifted | `sheet` |
+| `takeoff_rooms` | `detect`, `at`, `cover` | One-Click gate lifted | `sheet` |
 | `view_sheet` | — | Default | `sheet` |
 
 Schema-required fields are only the first validation layer: the fields one action needs (such as `path` for `open_drawings` load, annotation coordinates by type, or exactly one calibration method) are explained by each tool and validated by its handler.

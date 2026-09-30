@@ -59,6 +59,15 @@ export const SF_STAMP_RE = /^(?:(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?\s*(?:
 
 const GROSS_SF_RE = /GSF/i;
 
+/** A printed area that is a total, not one room's own: an area-code prefix ("BRA 59,7 m²", "BTA: 120 m²")
+ *  or a US gross area ("12,400 GSF"). A US net-area tag ("NSF 705") is a room's own area. */
+export function isTotalStamp(label: string): boolean {
+  const t = label.trim();
+  const sf = t.match(SF_STAMP_RE);
+  if (sf) return GROSS_SF_RE.test(sf[0]);
+  return /^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i.test(t) && AREA_STAMP_RE.test(t);
+}
+
 /** The m² a room-area label prints ("A: 12,0 m²" → 12; "705 SF" → 65.5), or
  *  null for any other label (a room number carries no area). */
 export function printedAreaM2(label: string): number | null {
