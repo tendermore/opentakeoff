@@ -109,9 +109,15 @@ export const STANDARD_SCALES: Scale[] = [
   { label: "1:2000", upp: metric(2000) },
 ];
 
-// Pull the drawing's sheet number (e.g. A003, A-101, S1.1) from the title block —
-// the largest sheet-number-shaped token in the lower-right region of the page.
-const SHEET_NO_RE = /^[A-Z]{1,3}[-. ]?\d{1,3}(\.\d{1,2})?[A-Z]?$/;
+// Pull the drawing's sheet number (e.g. A003, A-101, S1.1, A-1111, A20-02) from the title block —
+// the largest sheet-number-shaped token in the lower-right region of the page, preferring one
+// drawn beside the title block's own sheet-number field label.
+const SHEET_NO_RE = /^[A-Z]{1,3}[-. ]?\d{1,5}(?:[-.]\d{1,4}){0,2}[A-Z]?$/;
+/** An ISO paper size ("A3") is printed in every title block and is shaped like a sheet number. */
+const PAPER_SIZE_TOKEN_RE = /^A[0-4]$/;
+/** The title-block field that names the sheet number, whitespace stripped, trailing ":" dropped:
+ *  "Tegn.nr.", "Tegningsnr", "TEGNING NR.", "SHEET", "SHEET NO.", "DWG NO", "DRAWING NUMBER". */
+const SHEET_NO_FIELD_RE = /^(?:TEGN(?:INGS?)?\.?NR\.?|TEGNINGSNUMMER|SHEET(?:NO\.?|NUMBER|#)?|DWG\.?NO\.?|DRAWING(?:NO\.?|NUMBER))$/;
 export function extractSheetNumber(textContent: TextContentLike, viewport: Viewport): string | null {
   const W = viewport.width, H = viewport.height;
 
@@ -123,6 +129,10 @@ export function extractSheetNumber(textContent: TextContentLike, viewport: Viewp
   // simply fails the regex, so joining can only add candidates, never hide one.
   type Placed = { raw: string; x: number; y: number; h: number; w: number };
   const placed: Placed[] = [];
+  const fields: Placed[] = [];
+  // a token repeated on the drawing outside the title block is a legend key or a
+  // type tag ("YV-3", "DI-101"), whatever its shape
+  const outside = new Map<string, number>();
   // pdf.js item.width is font-scaled user units — device width scales by the
   // viewport scale alone, not the glyph transform
   const vscale = Math.hypot(viewport.transform?.[0] ?? 1, viewport.transform?.[1] ?? 0) || 1;
@@ -132,16 +142,26 @@ export function extractSheetNumber(textContent: TextContentLike, viewport: Viewp
     const t = pdfjsLib.Util.transform(viewport.transform, it.transform);
     const x = t[4], y = t[5], h = Math.hypot(t[2], t[3]) || it.height || 0;
     // title block lives lower-right; require it there
-    if (x < W * 0.60 || y < H * 0.55) continue;
+    if (x < W * 0.60 || y < H * 0.55) { outside.set(raw, (outside.get(raw) ?? 0) + 1); continue; }
     const w = it.width != null ? it.width * vscale : raw.length * 0.62 * h; // gap math only
-    placed.push({ raw, x, y, h, w });
+    const p = { raw, x, y, h, w };
+    placed.push(p);
+    if (SHEET_NO_FIELD_RE.test(raw.replace(/:$/, ""))) fields.push(p);
   }
 
-  let best: string | null = null, bestScore = 0;
+  // beside a field label: on its row to the right, or in the rows under it
+  const besideField = (x: number, y: number) => fields.some((f) => {
+    const dy = y - f.y;
+    return dy >= -1.5 * f.h && dy <= 4.5 * f.h && x >= f.x - 2 * f.h && x <= f.x + f.w + 6 * f.h;
+  });
+  let best: string | null = null, bestScore = 0, bestField = false;
   const consider = (raw: string, x: number, y: number, h: number) => {
-    if (raw.length < 2 || raw.length > 8 || !SHEET_NO_RE.test(raw)) return;
+    if (raw.length < 2 || raw.length > 12 || !SHEET_NO_RE.test(raw)) return;
+    if (PAPER_SIZE_TOKEN_RE.test(raw) || (outside.get(raw) ?? 0) >= 2) return;
+    const field = besideField(x, y);
+    if (bestField && !field) return;
     const score = h + (x / W) * 4 + (y / H) * 4; // bigger + further to lower-right wins
-    if (score > bestScore) { bestScore = score; best = raw; }
+    if ((field && !bestField) || score > bestScore) { bestScore = score; best = raw; bestField = field; }
   };
 
   for (const p of placed) consider(p.raw, p.x, p.y, p.h);
