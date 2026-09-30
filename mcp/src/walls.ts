@@ -296,9 +296,11 @@ export function scheduleWidthMm(cells: Record<string, string>): number | undefin
 function annotatedSizes(text: TextSpan[], marks: Array<{ at: Point }>, pxPerM: number): Map<number, number> {
   const reach = 1.2 * pxPerM, out = new Map<number, { d: number; w: number }>();
   for (const sp of text) {
-    const m = sp.str.match(/(\d[\d\s]*?)\s*[x×]\s*(\d[\d\s]*)/i);
+    // a thousands gap is one space before three digits ("1 205x1 420"); no two
+    // whitespace runs sit side by side (linear-time matching)
+    const m = sp.str.match(/(\d+(?: \d{3})*) ?[x×] ?(\d+(?: \d{3})*)/i);
     if (!m) continue;
-    const w = scheduleWidthMm({ size: `${m[1].replace(/\s/g, "")}x${m[2].replace(/\s/g, "")}` });
+    const w = scheduleWidthMm({ size: `${m[1].replace(/ /g, "")}x${m[2].replace(/ /g, "")}` });
     if (!w) continue;
     const c: Point = [(sp.x0 + sp.x1) / 2, (sp.y0 + sp.y1) / 2];
     let bi = -1, bd = Infinity;

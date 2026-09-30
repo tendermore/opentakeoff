@@ -109,7 +109,7 @@ export function sheetDiscipline(spans: Span[], width: number, height: number, sh
     // "(LEVEL 2)" and similar qualifiers are stripped, not a reason to skip
     const t = up(s.str.replace(/\([^)]*\)/g, " "));
     // a field label ("Sprinkleranlegg:") or a note sentence names no drawing
-    if (!t || t.length > 60 || /:\s*$/.test(t) || /[,;]/.test(t) || t.split(" ").length > 6) continue;
+    if (!t || t.length > 60 || t.endsWith(":") || /[,;]/.test(t) || t.split(" ").length > 6) continue;
     // a notes or legend heading heads text, not a drawing
     if (/(NOTES?|NOTER|MERKNAD\w*|LEGEND|TEGNFORKLARING)\b|\bGENERAL\b/.test(t)) continue;
     const tr = tradeOf(t);
