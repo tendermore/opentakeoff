@@ -62,7 +62,7 @@ const en = {
   finishAssignment: (parts) => `Finish assignment: ${parts}`,
   creditShapes: (n) => `${n} shape${plural(n, "", "s")} pending human review`,
   creditRfis: (n) => `${n} agent-raised RFI${plural(n, "", "s")} pending acceptance`,
-  floorChecks: (checked, total) => `${checked} of ${total} floor area${plural(total, "", "s")} checked against a printed room area${checked < total ? `, ${total - checked} unverified` : ""}`,
+  floorChecks: (checked, total) => `${checked} of ${total} floor area${plural(total, "", "s")} checked against a printed room area or the drawn walls${checked < total ? `, ${total - checked} unverified` : ""}`,
   credit: (machine, parts) => `${machine ? "Machine-traced" : "Agent-raised"} via OpenTakeoff MCP — ${parts}`,
 };
 
@@ -121,7 +121,7 @@ const nb = {
   finishAssignment: (parts) => `Overflatetildeling: ${parts}`,
   creditShapes: (n) => `${n} ${plural(n, "figur", "figurer")} venter på gjennomgang`,
   creditRfis: (n) => `${n} RFI fra agent venter på godkjenning`,
-  floorChecks: (checked, total) => `${checked} av ${total} gulvarealer kontrollert mot påskrevet romareal${checked < total ? `, ${total - checked} ikke kontrollert` : ""}`,
+  floorChecks: (checked, total) => `${checked} av ${total} gulvarealer kontrollert mot påskrevet romareal eller tegnede vegger${checked < total ? `, ${total - checked} ikke kontrollert` : ""}`,
   credit: (machine, parts) => `${machine ? "Maskinsporet" : "Opprettet av agent"} via OpenTakeoff MCP — ${parts}`,
 };
 

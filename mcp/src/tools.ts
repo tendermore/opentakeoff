@@ -196,6 +196,8 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
         role: roleSchema(),
         return_verts: z.boolean().default(false).describe("Include each traced polygon's vertices"),
         min_area_sf: z.number().positive().default(5).describe("detect: enclosed regions smaller than this are withheld, not rooms"),
+        labels: z.array(z.union([z.string(), z.object({ text: z.string(), at: point().describe("Where the text is printed (image px), e.g. a find_text hit's center") })])).min(1).optional()
+          .describe("detect: seed from these room labels instead of the engine's own choice — a text (every place the sheet prints it) or {text, at} (the one printed there). Each room still has to pass the same checks; texts the sheet does not print return in labels_unmatched. At least one; leave it out for the engine's own choice"),
         sensitivity: z.number().min(0).max(1).optional().describe("Fill sensitivity 0 strict … 1 aggressive (default 0.5)"),
         layers: z.object({
           include: z.array(z.string()).optional().describe("Layer names or ids whose ink must bound the flood"),
@@ -214,7 +216,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       if (a.assign_from_schedule && a.condition !== undefined) {
         throw new UserError("Provide at most one of: condition (every room under one stated tag) or assign_from_schedule (each room's own schedule row decides).");
       }
-      return { action: "detect", ...(await session.detectRooms(a.sheet, { condition: a.condition, role: a.role, returnVerts: a.return_verts, minAreaSf: a.min_area_sf, sensitivity: a.sensitivity, layers: a.layers, assignFromSchedule: a.assign_from_schedule })) };
+      return { action: "detect", ...(await session.detectRooms(a.sheet, { condition: a.condition, role: a.role, returnVerts: a.return_verts, minAreaSf: a.min_area_sf, sensitivity: a.sensitivity, layers: a.layers, assignFromSchedule: a.assign_from_schedule, labels: a.labels })) };
     }));
   }
 
@@ -300,6 +302,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   }, run("measure", async (a) => {
     if (a.kind === "area") {
       needPoints("measure", "area", a.points, 3);
+      if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry
       return { kind: "area", ...(await session.measurePolygon(a.sheet, a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })) };
     }
     if (a.kind === "length") return { kind: "length", ...(await session.measureLine(a.sheet, a.points, { condition: a.condition, arc_through: a.arc_through, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
@@ -382,6 +385,8 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     if (a.action === "undo") return { action: "undo", ...(await session.undoLast(a.n)) };
     need("edit_takeoff", a.action, a, "shape_id");
     if (a.action === "delete") return { action: "delete", ...(await session.deleteShape(a.shape_id)) };
+    const edited = session.shapes.find((x) => x.id === a.shape_id);
+    if (edited) await session.prepareFloorCheck(edited.sheet_id);
     return { action: "edit", ...(await session.editShape(a.shape_id, { verts: a.points, condition: a.condition, role: a.role, label: a.label, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
   }));
 
@@ -544,6 +549,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       case "revise": {
         need("proposal", "revise", a, "proposal_id", "shapes");
         const shapes = a.shapes.map(({ points, ...rest }: any) => ({ ...rest, verts: points }));
+        for (const sh of shapes) if (sh.role === "floor_area") await session.prepareFloorCheck(sh.sheet);
         return { action: "revise", ...(await session.reviseProposal(a.proposal_id, shapes)) };
       }
       case "withdraw":

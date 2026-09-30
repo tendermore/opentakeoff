@@ -42,6 +42,9 @@ export const fail = (err: unknown): ToolReply => ({
 export const round2 = (n: number): number => +n.toFixed(2);
 export const round1 = (n: number): number => +n.toFixed(1);
 
+/** A metric ratio scale ("1:100"), as against an architectural or engineering one ("1/4\" = 1'-0\"", "1\" = 20'"). */
+export const isRatioScale = (label: string): boolean => /^1:\d+$/.test(label);
+
 /** The unit system the marked set, the report and the export print in (a display
  * conversion — stored quantities stay in feet, exactly as the canvas's metric
  * toggle). OPENTAKEOFF_UNITS: "metric", "imperial" (default), or "auto" = metric
@@ -50,7 +53,7 @@ export const round1 = (n: number): number => +n.toFixed(1);
 export function displayUnits(scaleLabels: (string | undefined)[] = []): "imperial" | "metric" {
   const pref = process.env.OPENTAKEOFF_UNITS;
   if (pref === "metric") return "metric";
-  if (pref === "auto") return scaleLabels.length > 0 && scaleLabels.every((l) => /^1:\d+$/.test(l ?? "")) ? "metric" : "imperial";
+  if (pref === "auto") return scaleLabels.length > 0 && scaleLabels.every((l) => isRatioScale(l ?? "")) ? "metric" : "imperial";
   return "imperial";
 }
 

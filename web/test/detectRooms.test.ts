@@ -1,7 +1,7 @@
 // Detect Rooms core tests — pure, DOM-free, pdfjs-free. Run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { roomLabelSeeds, detectRegions, sheetBounds, detectionReport, NO_TAG_CAVEAT, ROOM_LABEL_RE } from "../src/lib/detectRooms.ts";
+import { roomLabelSeeds, detectRegions, sheetBounds, detectionReport, NO_TAG_CAVEAT, ROOM_LABEL_RE, printedAreaM2 } from "../src/lib/detectRooms.ts";
 import type { DetectionTally } from "../src/lib/detectRooms.ts";
 import { buildMask, MASK_MAX_DIM } from "../src/lib/oneclick.ts";
 
@@ -299,4 +299,12 @@ test("detectionReport: a completed pass is unchanged, and a caller with no `trie
   const legacy = detectionReport({ ...cancelTally({ proposals: 8, regions: 8 }), tried: undefined });
   assert.deepEqual(legacy.limits, complete.limits, "absent `tried` means everything was tried");
   assert.equal(legacy.headline, complete.headline);
+});
+
+test("printedAreaM2 reads US net square-foot stamps as m², and leaves gross totals, notes and numbers alone", () => {
+  for (const t of ["705 SF", "705 S.F.", "NSF 705", "705 SQ FT"]) assert.equal(Math.round(printedAreaM2(t)! * 100) / 100, 65.5, t);
+  assert.equal(Math.round(printedAreaM2("1,250 NSF")! * 10) / 10, 116.1);
+  assert.equal(printedAreaM2("12,5 m²"), 12.5);
+  for (const t of ["705", "SF", "(APPROX. 720 SF)", "APPROX. 2400 SF NEW PARKING"]) assert.equal(printedAreaM2(t), null, t);
+  for (const t of ["705 GSF", "GSF 705"]) assert.equal(printedAreaM2(t), null, `${t}: a gross total is never a room's area`);
 });

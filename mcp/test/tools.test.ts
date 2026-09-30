@@ -2,6 +2,8 @@
 // schemas, error surfaces, and the scale gate as an MCP client sees them.
 import { TOOL_NAMES } from "../src/toolnames.ts";
 import { test } from "node:test";
+// pinned fixture results must not depend on how loaded the machine is
+process.env.OPENTAKEOFF_CALL_BUDGET_MS = "0";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, copyFile, readFile, writeFile } from "node:fs/promises";
@@ -925,13 +927,16 @@ test("detect_rooms assign_from_schedule: each room commits under its own row; un
     [["133", "EXIST"], ["136", "CPT-1"], ["149", "CPT-1"], ["153", "WSF-1"]],
     "each committed room carries its OWN row's floor finish",
   );
-  assert.equal(r.data.withheld.unowned, 12, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
+  // 12 -> 9 unowned and 31 -> 25 unresolved: the sheet prints its rooms'
+  // areas ("557 SF"); those are no longer read as room numbers ("557"), three
+  // of which flooded a neighbouring space and six a room no schedule row names
+  assert.equal(r.data.withheld.unowned, 9, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
   assert.ok([...tags].every((t: any) => !/[/,]/.test(t)), "no minted tag is a compound literal");
 
   // the never-guesses contract: withheld rooms are reported with their real
   // geometry and a reason, never committed and never dropped
-  assert.equal(r.data.withheld.unresolved, 31);
-  assert.equal(r.data.unresolved.length, 31);
+  assert.equal(r.data.withheld.unresolved, 25);
+  assert.equal(r.data.unresolved.length, 25);
   for (const u of r.data.unresolved) {
     assert.ok(u.reason.length > 0, "every withheld room says why");
     assert.ok(u.area_sf > 0 && u.perimeter_lf > 0, "withheld from committing, not from reporting");

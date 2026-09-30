@@ -15,6 +15,8 @@
 // returned vertex rings by point-in-polygon sampling, not by asking the engine
 // whether it thinks it overlapped.
 import { test } from "node:test";
+// pinned fixture results must not depend on how loaded the machine is
+process.env.OPENTAKEOFF_CALL_BUDGET_MS = "0";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

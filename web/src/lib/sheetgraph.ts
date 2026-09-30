@@ -21,7 +21,7 @@
 // serves (sheet_context.text.spans).
 
 import { ROOM_LABEL_RE } from "./detectRooms";
-import { EUROPEAN_ROLE_TERMS, NORDIC_TEXT_RE, NOT_A_ROLE_TITLE, REFERENCE_RE, TITLE_FIELD_LABEL_RE, DOOR_WORD_RE, WINDOW_WORD_RE, SCHEDULE_WORD_RE, CARD_KEY_LABEL_RE, openingField } from "./sheetvocab";
+import { EUROPEAN_ROLE_TERMS, readsNordic, NOT_A_ROLE_TITLE, REFERENCE_RE, TITLE_FIELD_LABEL_RE, DOOR_WORD_RE, WINDOW_WORD_RE, SCHEDULE_WORD_RE, CARD_KEY_LABEL_RE, openingField } from "./sheetvocab";
 
 /** rot: text rotation in degrees, clockwise in device space (y down). Absent
  * or 0 = horizontal; 90/270 = a quarter-turn — the rotated-header case. When
@@ -205,7 +205,7 @@ export function classifySheetRole(sheet: SheetSpans): RoleResult {
   const medH = hs.length ? hs[hs.length >> 1] : 0;
   type Hit = { role: SheetRole; conf: number; span: GraphSpan; size: number; mixed?: boolean };
   const title: Hit[] = [], view: Hit[] = [], body: Hit[] = [];
-  const nordic = spans.some((sp) => NORDIC_TEXT_RE.test(sp.str));
+  const nordic = spans.some((sp) => readsNordic(sp.str));
   for (const sp of joinTitleLines(spans, W, H)) {
     // Body text reads horizontally: rotated text there is dimensions, labels
     // and leaders drawn along the geometry. A title block printed along the

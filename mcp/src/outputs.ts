@@ -101,7 +101,7 @@ export const oneClickOutput = {
   area_sf: z.number().optional().describe("Scaled mode: traced area in SF"),
   perimeter_lf: z.number().optional().describe("Scaled mode: traced perimeter in LF"),
   shape_id: z.string().optional().describe("Scaled mode: id of the committed shape, when condition was passed"),
-  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "unverified: <reason>" = nothing checked it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale). Trace confidence is not a check'),
+  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check. A preview (no condition) says what its commit would record, or "would be refused: <why>"'),
   area_px2: z.number().optional().describe("Preview mode (no scale): raw area in px²"),
   perimeter_px: z.number().optional().describe("Preview mode (no scale): raw perimeter in px"),
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable — OR, in scaled mode, a mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region (enlarged plan/detail viewport likely)"),
@@ -112,7 +112,7 @@ export const oneClickOutput = {
  * didn't trace cleanly) and plus `label`, the room-number text it was seeded
  * from. */
 const detectedRoom = z.object({
-  label: z.string().describe("The room-number text the seed was read from (e.g. \"104\", \"139A\")"),
+  label: z.string().describe("The text the seed was read from: a room number (\"104\", \"139A\"), a printed area, or on a European sheet without printed areas a room name (\"Sov\")"),
   nverts: z.number().int().describe("Vertex count of the traced polygon"),
   merged_labels: z.array(z.string()).optional().describe("Other labels that flooded to this same region — the area is counted once, under `label`"),
   ...traceProvenance,
@@ -126,7 +126,8 @@ const detectedRoom = z.object({
   condition: z.string().optional().describe("The finish tag this room committed under — the passed condition, or in assign mode the FLOOR finish its own schedule row states. Present exactly when shape_id is"),
   method: z.enum(["one_click_v1", "net_v1", "drawn_v1"]).describe("Which candidate outline the room took: the ink flood, the walls-only net region, or the drawn region"),
   printed_m2: z.number().optional().describe("The room area printed in the room, m², when its label is a printed area — the trace agreed with it"),
-  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "unverified: <reason>" = nothing checked it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale). Trace confidence is not a check'),
+  wall_coverage: z.number().optional().describe("No printed area: the share of the outline's length along drawn wall faces or across an opening (check \"drawn_walls\")"),
+  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
   area_px2: z.number().optional().describe("Preview mode (no scale): raw area in px²"),
   perimeter_px: z.number().optional().describe("Preview mode (no scale): raw perimeter in px"),
 });
@@ -145,12 +146,15 @@ export const detectRoomsOutput = {
     duplicate: z.number().int().describe("Flooded to a region another label already claimed — counted once, never twice"),
     bubble: z.number().int().describe("Labels whose every clean flood was their own label BUBBLE (ring bbox ≈ label bbox — plans box their room numbers). Scale-free, so it guards unscaled previews too"),
     unowned: z.number().int().describe("Labels whose every clean, non-bubble flood did not SURROUND the label's box — a ladder rung stepped past the wall into a neighbouring space or a door-swing pocket. Withheld rather than committed under the tag (#373); takeoff_rooms {action: \"at\"} inside the room answers it"),
+    no_ring: z.number().int().describe("Labels with no clean flood at any probe (the flood leaked, or ran into dense linework) — no outline to report. Always present"),
+    over_budget: z.number().int().describe("Labels whose per-room time budget (OPENTAKEOFF_SEED_BUDGET_MS, default 10 s, shared by all the floods and checks one room tries) ran out before an outline was found or checked. Always present"),
     implausible: z.number().int().describe("Enclosed, clean, non-bubble, but smaller than min_area_sf — a door swing or wall cavity rather than a room"),
     unresolved: z.number().int().describe("Assign mode: rooms the schedule could not answer for (no row, no FLOOR cell, or a compound cell) — withheld into unresolved[], never committed under a guess. Always present; 0 outside assign mode"),
     area_disagrees: z.number().int().describe("Rooms labelled by a printed area whose trace disagrees with that area beyond rounding — withheld into area_disagrees[] rather than committed under a number the drawing contradicts. Always present"),
+    off_walls: z.number().int().describe("Rooms with no printed area to check against whose every candidate outline leaves the drawn walls (an edge along furniture, text or open floor) or holds a wall inside or two separate room labels (two rooms as one) — withheld into off_walls[]. Always present"),
     overlaps_measured: z.number().int().describe("Rooms whose trace would share floor with an outline of the same condition already measured — withheld rather than counted twice. Always present"),
     already_measured: z.number().int().describe("Labels skipped because they sit inside a floor shape this sheet already has — a repeat call continues, never re-measures. Always present"),
-    not_tried: z.number().int().describe("Labels not reached before the host's time budget (OPENTAKEOFF_CALL_BUDGET_MS) ran out — call takeoff_rooms again to continue. Always present; 0 without a budget"),
+    not_tried: z.number().int().describe("Labels not reached before the call's time budget (OPENTAKEOFF_CALL_BUDGET_MS, default 100 s) ran out — call takeoff_rooms again to continue. Always present"),
     min_area_sf: z.number().optional().describe("The plausibility floor applied (scaled mode only)"),
   }).describe("What detection skipped and why — a withheld room is a question the caller can ask; a silently dropped one is a hole in a bid"),
   unresolved: z.array(z.object({
@@ -166,6 +170,16 @@ export const detectRoomsOutput = {
     traced_m2: z.number().describe("What the trace measured, m²"),
     seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — fix the room there on a close-up, or report it as not measured"),
   })).optional().describe("Present when any printed-area room was withheld: both numbers and where"),
+  off_walls: z.array(z.object({
+    label: z.string().describe("The text the room was seeded from"),
+    reason: z.string().describe("Which edge left the drawn walls and by how much, how much wall the outline holds inside, or how many rooms' labels"),
+    seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — trace the room there on a close-up, or report it as not measured"),
+  })).optional().describe("Present when any room with no printed area was withheld because no outline followed the drawn walls"),
+  labels_unmatched: z.array(z.string()).optional().describe("labels passed that the sheet does not print (or not near `at`) — nothing was seeded for them"),
+  withheld_labels: z.array(z.object({
+    label: z.string().describe("The label that was withheld"),
+    reason: z.string().describe("The withheld count it falls under: bubble, unowned, degenerate, no_ring, over_budget, duplicate, implausible, not_tried, already_measured, off_walls, area_disagrees, overlaps_measured or unresolved"),
+  })).describe("Every withheld label by name — the rooms behind the counts in withheld. Always present"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — rooms inside an enlarged viewport may be figured at the wrong scale"),
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable and what to do"),
@@ -177,7 +191,7 @@ export const measurePolygonOutput = {
   nverts: z.number().int(),
   arcs: z.number().int().optional().describe("How many arc_through bows were laid — present only when the trace was bent; the vertices reported are the baked arc, not the three points you gave"),
   shape_id: z.string().optional().describe("Present when condition was passed and the shape committed"),
-  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "unverified: <reason>" = nothing checked it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale). Trace confidence is not a check'),
+  check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
   warning: z.string().optional().describe("Mixed-scale warning (#153): a scale note disagreeing with the sheet's sits in the measured region — verify before trusting these numbers"),
 };
 
@@ -635,7 +649,7 @@ export const listShapesOutput = {
     label: z.string().optional().describe("The room (or phase/area) this shape belongs to — takeoff_rooms stamps the room number it traced from; edit_takeoff {action: \"edit\"} sets or clears it. Absent when unlabeled"),
     nverts: z.number().int(),
     reviewed: z.boolean().describe("true = human-affirmed ink, refused by every agent mutation"),
-    check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "unverified: <reason>" = nothing checked it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale). Trace confidence is not a check'),
+    check: z.string().optional().describe('Floor shapes: "printed_area" = the outline agrees with the room area printed inside it; "drawn_walls" = no printed area to compare with, and the outline follows the drawn wall faces (edges along walls except across openings, no wall inside); "unverified: <reason>" = nothing could check it (no_printed_areas_on_sheet, no_printed_area_inside, no_scale, no_wall_linework, units_not_metric — the sheet is imperial or undecided, and the drawn-walls check applies to metric sheets only). Trace confidence is not a check'),
     assignment: z.enum(["schedule", "asserted"]).optional().describe('Where the finish tag came from: "schedule" = resolved from the room\'s own schedule row, "asserted" = the agent chose it. origin.assignment in export {action: "takeoff"} carries the citation. Absent on human canvas shapes'),
     agent_edits: z.number().int().optional().describe("Present when the agent has revised this shape"),
     proposal_id: z.string().optional().describe("The proposal {action: \"propose\"} batch this shape was committed under (#365) — present on shapes committed while a proposal was open; an accepted shape keeps it as history"),
