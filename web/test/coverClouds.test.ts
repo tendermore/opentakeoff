@@ -73,6 +73,49 @@ test('notes: inside the cloud where they fit, else outside with a leader; clear 
   for (const p of placed) assert.ok(p.box[0] >= 0 && p.box[1] >= 0 && p.box[2] <= 400 && p.box[3] <= 300, `on the page: ${p.box}`);
 });
 
+test('notes: off the sheet\'s own text and measured floor, never on the title block, and not inside another cloud', () => {
+  // a thin strip whose sides are: printed text left of it, measured floor below-left, the title block right
+  const strip = { w: 60, h: 12, rect: [300, 50, 310, 250], anchor: [305, 150] };   // too narrow to take the note even turned
+  const text = [[200, 60, 295, 250]];
+  const floor = [[[150, 255], [330, 255], [330, 400], [150, 400]]];
+  const titleBlock = [[330, 0, 500, 400]];
+  const other = { w: 40, h: 12, rect: [200, 260, 290, 300], anchor: [245, 280] };
+  const run = () => placeCloudNotes([strip, other], text, [500, 400], 4, { areas: floor, keepOut: titleBlock });
+  const [p] = run();
+  const inPoly = (b: number[]) => b[0] < 330 && b[2] > 150 && b[3] > 255;
+  assert.ok(!overlaps(p.box, titleBlock[0]), `never on the title block: ${p.box}`);
+  assert.ok(!overlaps(p.box, text[0]), `off the text: ${p.box}`);
+  assert.ok(!inPoly(p.box), `off the measured floor: ${p.box}`);
+  assert.ok(!overlaps(p.box, other.rect), `not inside another cloud: ${p.box}`);
+  assert.ok(p.leader, 'outside its cloud, with a leader');
+  assert.deepEqual(run(), run(), 'deterministic');
+});
+
+test('a tall narrow cloud takes its note turned a quarter inside; a wide note in a short cloud does not turn', () => {
+  const corridor = { w: 150, h: 12, rect: [100, 50, 130, 400], anchor: [115, 200] };
+  const [p] = placeCloudNotes([corridor], [], [600, 500]);
+  assert.equal(p.rotated, true);
+  assert.equal(p.leader, null);
+  const [bx0, by0, bx1, by1] = p.box;
+  assert.ok(bx1 - bx0 === 12 && by1 - by0 === 150 && bx0 >= 100 && bx1 <= 130 && by0 >= 50 && by1 <= 400, `turned inside: ${p.box}`);
+  // too short along its long side for the text: the note goes outside, as set
+  const [q] = placeCloudNotes([{ ...corridor, rect: [100, 50, 130, 150] }], [], [600, 500]);
+  assert.equal(q.rotated, false);
+  assert.ok(q.leader);
+});
+
+test('outside, a short leader over no measured floor wins over a nearer spot whose leader crosses a room', () => {
+  // a strip with a measured room right of it and blank paper left of it, further from the anchor
+  const strip = { w: 60, h: 12, rect: [200, 100, 210, 200], anchor: [209, 150] };
+  const room = [[[212, 0], [400, 0], [400, 400], [212, 400]]];
+  const run = (maxLeader: number) => placeCloudNotes([strip], [[212, 0, 400, 400]], [500, 400], 4, { areas: room, maxLeader });
+  const [p] = run(60);
+  assert.ok(p.box[2] <= 200, `left of the strip, off the room: ${p.box}`);
+  const len = Math.hypot(p.leader![1][0] - p.leader![0][0], p.leader![1][1] - p.leader![0][1]);
+  assert.ok(len <= 60, `a short leader: ${len}`);
+  assert.deepEqual(run(60), run(60), 'deterministic');
+});
+
 async function pageText(markups: unknown[], shapes: unknown[], rfis: unknown[] = []) {
   const source = await PDFDocument.create();
   source.addPage([400, 300]);

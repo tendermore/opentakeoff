@@ -196,6 +196,51 @@ function joinTitleLines(spans: GraphSpan[], W: number, H: number): GraphSpan[] {
   return [...spans, ...out.filter((j) => !spans.includes(j))];
 }
 
+/** A title block's frame is ruled at least this share of the sheet's height (a corner box on a US sheet runs a
+ *  quarter of it; a Nordic title column the full height). */
+const TITLE_FRAME_MIN_H = 0.2;
+
+/** The sheet's title block as a box [x0, y0, x1, y1] in the spans' px space, or null: the title the role reader
+ *  found there (classifySheetRole's evidence, in the title zone), widened left to the nearest long vertical rule
+ *  of the frame drawn beside it and to that rule's full height, out to the sheet's right edge. Without a rule the
+ *  title's own box stands in. Bounded: one pass over the segments. */
+export function titleBlockBox(sheet: SheetSpans): Bbox | null {
+  const spans = sheet.spans.filter((s) => (s.str || "").trim());
+  if (!spans.length) return null;
+  const W = sheet.width ?? Math.max(1, ...spans.map((s) => s.x + (s.w || 0)));
+  const H = sheet.height ?? Math.max(1, ...spans.map((s) => s.y + (s.h || 0)));
+  const ev = classifySheetRole(sheet).evidence?.bbox;
+  if (!ev || (ev[0] + ev[2]) / 2 < W * TITLE_ZONE.x || (ev[1] + ev[3]) / 2 < H * TITLE_ZONE.y) return null;
+  const cy = (ev[1] + ev[3]) / 2;
+  // vertical rules left of the title, in the title zone's columns: each as [x, top, bottom]; a rule drawn in
+  // pieces (broken at the block's rows) is joined where its pieces meet
+  const segs = sheet.segs ?? [];
+  const rules: [number, number, number][] = [];
+  for (let i = 0; i + 3 < segs.length; i += 4) {
+    const x0 = segs[i], y0 = segs[i + 1], x1 = segs[i + 2], y1 = segs[i + 3];
+    const x = (x0 + x1) / 2;
+    if (Math.abs(x1 - x0) > 1 || y0 === y1 || x > ev[0] || x < W * TITLE_ZONE.x * 0.9) continue;
+    rules.push([x, Math.min(y0, y1), Math.max(y0, y1)]);
+  }
+  rules.sort((a, b) => Math.round(b[0]) - Math.round(a[0]) || a[1] - b[1]);
+  let best: Bbox | null = null;
+  for (let k = 0; k < rules.length && !best;) {
+    const x = rules[k][0];
+    let j = k;
+    let top = rules[k][1], bottom = rules[k][2];
+    const runs: [number, number][] = [];
+    for (; j < rules.length && Math.round(rules[j][0]) === Math.round(x); j++) {
+      if (rules[j][1] > bottom + 2) { runs.push([top, bottom]); top = rules[j][1]; }
+      bottom = Math.max(bottom, rules[j][2]);
+    }
+    runs.push([top, bottom]);
+    const run = runs.find(([t, b]) => t <= cy && cy <= b && b - t >= TITLE_FRAME_MIN_H * H);
+    if (run) best = [x, run[0], W, run[1]];
+    k = j;
+  }
+  return best ?? ev;
+}
+
 export function classifySheetRole(sheet: SheetSpans): RoleResult {
   const spans = sheet.spans.filter((s) => (s.str || "").trim());
   const W = sheet.width ?? Math.max(1, ...spans.map((s) => s.x + (s.w || 0)));
