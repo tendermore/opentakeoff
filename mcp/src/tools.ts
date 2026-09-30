@@ -231,7 +231,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     if (a.action === "marks") return { action: "marks", ...(await session.countMarks({ marks: a.marks, commit: a.commit })) };
     if (a.action === "windows") {
       need("count", "windows", a, "sheet");
-      return { action: "windows", ...(await session.countWindows(a.sheet, { condition: a.condition, commit: a.commit })) };
+      return { action: "windows", ...(await session.countWindows(a.sheet, { condition: a.condition, commit: a.commit, region: a.region })) };
     }
     if (a.action === "doors") {
       need("count", "doors", a, "sheet");
@@ -272,6 +272,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       luminance_tolerance: z.number().int().min(0).max(254).optional().describe("sweep: only strokes of the seed's grey level (±this) match"),
       points: z.array(point()).optional().describe("place: marker positions, one count each"),
       marks: z.array(z.string().min(1)).optional().describe('marks: the marks to census, e.g. ["S1","R1"]; omit for the schedules\' row keys'),
+      region: region().optional().describe("windows: only this rect (image px) — one drawing of the sheet"),
     },
   }, async (a: any): Promise<ToolReply> => {
     const startedAt = process.hrtime.bigint();
@@ -299,6 +300,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       points: z.array(point()).min(2).optional().describe("area: the ring (≥3); length, surface: the run (≥2); walls: none"),
       condition: z.string().optional().describe("Finish tag to commit under (minted on first use); surface needs it; walls: the class-tag prefix (default WALL)"),
       commit: z.boolean().default(false).describe("walls: file every run under its class condition; default is a preview"),
+      region: region().optional().describe("walls: only this rect (image px) — one drawing on a sheet that carries several (details, legends, a key plan)"),
       role: roleSchema().describe("area: floor_area (default) or deduct"),
       arc_through: arcThrough(),
       rise_ft: z.number().min(0).optional().describe("length: this run's vertical leg up, feet"),
@@ -308,7 +310,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     },
     outputSchema: perAction("kind", ["area", "length", "surface", "walls"], measurePolygonOutput, measureLineOutput, measureSurfaceOutput, measureWallsOutput),
   }, run("measure", async (a) => {
-    if (a.kind === "walls") return { kind: "walls", ...(await session.measureWalls(a.sheet, { condition: a.condition, commit: a.commit, height_ft: a.height_ft })) };
+    if (a.kind === "walls") return { kind: "walls", ...(await session.measureWalls(a.sheet, { condition: a.condition, commit: a.commit, height_ft: a.height_ft, region: a.region })) };
     if (a.kind === "area") {
       needPoints("measure", "area", a.points, 3);
       if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry

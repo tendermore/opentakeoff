@@ -30,7 +30,7 @@ export interface WallHost {
   heightOf: (tag: string) => number | undefined;
 }
 
-export interface WallsOpts { condition?: string; commit?: boolean; height_ft?: number }
+export interface WallsOpts { condition?: string; commit?: boolean; height_ft?: number; region?: { x0: number; y0: number; x1: number; y1: number } }
 
 const pt = (p: Point): [number, number] => [round1(p[0]), round1(p[1])];
 /** Drafting tolerance between two drawings of one wall type's width. */
@@ -71,12 +71,13 @@ function tableRects(h: WallHost): Array<[number, number, number, number]> {
   return h.tables.filter((t) => t.sheet === h.sheet).map((t) => t.region as unknown as [number, number, number, number]);
 }
 
-function runTakeoff(h: WallHost) {
+function runTakeoff(h: WallHost, region?: WallsOpts["region"]) {
   const pxPerM = FT_PER_M / h.upp;
   return wallTakeoff(h.geo, pxPerM, h.width, h.height, {
     exclude: tableRects(h),
     text: h.text,
     doors: h.doors.map((d) => d.opening),
+    ...(region ? { region: [region.x0, region.y0, region.x1, region.y1] as [number, number, number, number] } : {}),
   });
 }
 
@@ -85,7 +86,7 @@ const side = (r: WallRun) => (r.exterior === true ? "EXT" : r.exterior === false
 /** measure {kind: "walls"}: every wall run on a sheet, by thickness class and side. */
 export function measureWalls(h: WallHost, opts: WallsOpts) {
   refuseScan(h, "the wall takeoff");
-  const res = runTakeoff(h);
+  const res = runTakeoff(h, opts.region);
   const prefix = (opts.condition ?? "WALL").trim() || "WALL";
   const cls = thicknessClasses(res.runs);
   const classOf = new Map(res.runs.map((r, i) => [r, cls[i]] as const));
@@ -168,20 +169,51 @@ export function measureWalls(h: WallHost, opts: WallsOpts) {
 
 // ── windows ──────────────────────────────────────────────────────────────
 
+/** A post between two glazed gaps of one window is at most this wide. */
+const MULLION_M = 0.3;
 const canon = (k: string) => (k || "").trim().toUpperCase().replace(/\s+/g, "");
 const center = (b: Bbox): Point => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 
 /** count {action: "windows"}: window openings in the sheet's walls, tied to the window schedule. */
-export function countWindows(h: WallHost, opts: { condition?: string; commit?: boolean }) {
+export function countWindows(h: WallHost, opts: { condition?: string; commit?: boolean; region?: WallsOpts["region"] }) {
   refuseScan(h, "the window count");
-  const res = runTakeoff(h);
+  const res = runTakeoff(h, opts.region);
   const pxPerM = FT_PER_M / h.upp;
-  type Win = { at: Point; widthM: number; exterior: boolean | null; wallMm: number };
-  const found: Win[] = [];
+  type Win = { at: Point; widthM: number; exterior: boolean | null; wallMm: number; span: [Point, Point] };
+  const all: Win[] = [];
   for (const r of res.runs) for (const o of r.openings) {
     if (o.kind !== "window") continue;
-    found.push({ at: [(o.span[0][0] + o.span[1][0]) / 2, (o.span[0][1] + o.span[1][1]) / 2], widthM: o.widthM, exterior: r.exterior, wallMm: Math.round(r.thicknessM * 1000) });
+    all.push({ at: [(o.span[0][0] + o.span[1][0]) / 2, (o.span[0][1] + o.span[1][1]) / 2], widthM: o.widthM, exterior: r.exterior, wallMm: Math.round(r.thicknessM * 1000), span: o.span });
   }
+  // one window seen from several parallel bands of one wall (a wall whose drawn
+  // layers change) is one window: the widest reading of each cluster stands
+  all.sort((a, b) => b.widthM - a.widthM);
+  const unique: Win[] = [];
+  for (const w of all) {
+    if (unique.some((u) => Math.hypot(u.at[0] - w.at[0], u.at[1] - w.at[1]) <= (Math.max(u.widthM, w.widthM) / 2) * pxPerM)) continue;
+    unique.push(w);
+  }
+  // one window divided by mullions reads as several glazed gaps a post apart
+  // on one wall line: they join into one window over the whole span
+  const joinReach = MULLION_M * pxPerM;
+  for (let merged = true; merged;) {
+    merged = false;
+    outer: for (let i = 0; i < unique.length; i++) for (let j = i + 1; j < unique.length; j++) {
+      const A = unique[i], B = unique[j];
+      const ends = [[A.span[0], B.span[0]], [A.span[0], B.span[1]], [A.span[1], B.span[0]], [A.span[1], B.span[1]]];
+      const near = ends.some(([p, q]) => Math.hypot(p[0] - q[0], p[1] - q[1]) <= joinReach);
+      if (!near) continue;
+      const pts = [A.span[0], A.span[1], B.span[0], B.span[1]];
+      let best: [Point, Point] = A.span, bd = 0;
+      for (const p of pts) for (const q of pts) { const d = Math.hypot(p[0] - q[0], p[1] - q[1]); if (d > bd) { bd = d; best = [p, q]; } }
+      unique[i] = { ...A, span: best, widthM: bd / pxPerM, at: [(best[0][0] + best[1][0]) / 2, (best[0][1] + best[1][1]) / 2], exterior: A.exterior ?? B.exterior };
+      unique.splice(j, 1); merged = true; break outer;
+    }
+  }
+  // a glazed opening in an interior wall is a window only by exception (an
+  // internal glazed screen); it is reported, not counted
+  const found = unique.filter((w) => w.exterior === true);
+  const interior = unique.filter((w) => w.exterior !== true).map((w) => ({ at: pt(w.at), width_mm: Math.round(w.widthM * 1000), wall_mm: w.wallMm, reason: w.exterior === false ? "glazing lines in an interior wall — an internal glazed screen, a sliding door or casework; view_sheet it" : "the host wall's side could not be told; view_sheet it" }));
 
   // the window schedule(s): row keys are the marks a plan tags windows with
   const tables = h.tables.filter((t) => t.kind === "window" || t.kind === "door-window");
@@ -236,9 +268,10 @@ export function countWindows(h: WallHost, opts: { condition?: string; commit?: b
     by_type: [...byType.values()].map((t) => ({ type: t.type, count: t.count, widths_mm: t.widths_mm, ...(t.row ? { schedule: t.row } : {}) })),
     schedule: tables.length ? { tables: tables.map((t) => ({ sheet: t.sheet, title: t.title?.text || "", rows: t.rows.length })) } : { status: "none", note: "No window schedule in the set: sizes are plan widths only; heights are unknown." },
     plan_without_row: planWithout,
+    withheld: interior,
     rows_without_window: rowsWithout,
     committed: committed ? committed.shape_ids.length : 0,
     ...(committed ? { shape_ids: committed.shape_ids, ea_total: committed.ea_total } : {}),
-    note: "A window is an opening in a wall band with glazing lines drawn inside the band and no door swing. Widths are the drawn opening (plan); height and type come only from a schedule row. Windows in a curtain wall or a wall this sheet's wall takeoff withheld are not found — check rows_without_window and view_sheet.",
+    note: "A window is an opening in an exterior wall band with glazing lines drawn inside the band and no door swing; glazed openings in interior or unsided walls are listed in withheld, not counted. Widths are the drawn opening (plan); height and type come only from a schedule row. Windows in a curtain wall or a wall this sheet's wall takeoff withheld are not found — check rows_without_window and view_sheet.",
   };
 }

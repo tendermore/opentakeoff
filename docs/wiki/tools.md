@@ -141,13 +141,14 @@ Fields:
 
 ### `action: "windows"`
 
-Window openings on one sheet, found in the wall takeoff (`measure {kind: "walls"}`): a gap in a wall band with at least two glazing lines drawn along the wall INSIDE the band and no door swing at it. Each window gives its centre `at`, the drawn opening width (plan — the only size a plan shows), the host wall's thickness and side. Where the set carries a window (or door/window) schedule, the nearest drawn row mark within 1.5 m (or 1.2 × the width) ties the window to its row, whose cells (type, width × height, …) ride along; `by_type` groups windows by mark, unmarked ones by width to the nearest 100 mm. `plan_without_row` lists windows no schedule mark sits next to; `rows_without_window` lists schedule rows no window on this sheet carries (with whether the mark is drawn here at all). Not found, by construction: windows in a curtain wall, in a wall the wall takeoff withheld, or drawn without glazing lines — check `rows_without_window` and view_sheet. commit (needs condition) files one EA marker per window. Needs scale and vector linework; a scan refuses.
+Window openings on one sheet, found in the wall takeoff (`measure {kind: "walls"}`): a gap in a wall band with at least two glazing lines drawn along the wall INSIDE the band and no door swing at it. Each window gives its centre `at`, the drawn opening width (plan — the only size a plan shows), the host wall's thickness and side. Where the set carries a window (or door/window) schedule, the nearest drawn row mark within 1.5 m (or 1.2 × the width) ties the window to its row, whose cells (type, width × height, …) ride along; `by_type` groups windows by mark, unmarked ones by width to the nearest 100 mm. `plan_without_row` lists windows no schedule mark sits next to; `rows_without_window` lists schedule rows no window on this sheet carries (with whether the mark is drawn here at all). Not found, by construction: windows in a curtain wall, in a wall the wall takeoff withheld, or drawn without glazing lines — check `rows_without_window` and view_sheet. commit (needs condition) files one EA marker per window. Glazed openings in interior or unsided walls come back in `withheld`, not counted; a window divided by mullions is one window. Needs scale and vector linework; a scan refuses.
 
 Fields:
 
 - `sheet`: The sheet
 - `condition`: Tag to file the windows under (commit)
 - `commit`: File the windows as EA markers; default is a preview
+- `region`: Only this rect (image px)
 
 ### `action: "symbol"` (was `count_symbol`)
 
@@ -218,7 +219,7 @@ Fields:
 
 ### `kind: "walls"`
 
-Every wall on one sheet, read from the linework alone — no points, no layers, no text vocabulary. A wall is a BAND: two outer faces a wall's thickness apart (60–700 mm) with its material between them — poché, a hatch or insulation symbol repeated along it, further layer lines, or nothing on sets that draw walls as empty pairs. Parallel pairs holding a fixture, text or casework are not walls; on a sheet that draws its walls with poché or hatch, an empty pair is withheld as casework. Table rows, stair treads and tile grids (regular-pitch families), the drawing border, and short bands meeting no wall at an angle (legend samples, symbols) are withheld with their reason.
+Every wall on one sheet, read from the linework alone — no points, no layers, no text vocabulary. A wall is a BAND: two outer faces a wall's thickness apart (60–700 mm) with its material between them — poché, a hatch or insulation symbol repeated along it, further layer lines, or nothing on sets that draw walls as empty pairs. Parallel pairs holding a fixture, text or casework are not walls; on a sheet that draws its walls with poché or hatch, an empty pair is withheld as casework. An empty pair counts only where it joins the wall network (held by walls at both ends, grown outward from the poché/hatch walls). Table rows, stair treads, tile grids and site hatch (regular-pitch families), the drawing border, short bands meeting no wall at an angle (legend samples, symbols), bands under 1 m not held at both ends, groups of joined bands under 8 m in total (details, diagrams), and bands open to the outside on both faces (railings, parapets) are withheld with their reason.
 
 Quantities follow the centreline convention (NRM2): an L corner runs both walls to the centreline intersection, a wall abutting another at a T stops at its face. `gross_m` runs through the openings bridged into a run — a door (a swing at the gap), a window (glazing lines inside the band) or an opening (one line across) — and `net_m` subtracts them; two walls that merely line up across a room are never bridged. Each run reports its centreline (image px), measured thickness, class (the sheet's widths clustered at 15 mm drafting tolerance, named to the nearest 10 mm), side and openings. Side: `ext` when rays cast from one face leave the drawing without crossing another wall and those from the other face do not, `int` when neither does, `unsided` otherwise.
 
@@ -229,6 +230,7 @@ Fields:
 - `condition`: Class-tag prefix (default WALL)
 - `commit`: File every counted run; default is a preview
 - `height_ft`: Wall height in feet from a stated source; enables wall area
+- `region`: Only this rect (image px) — one drawing of a sheet that also carries details, legends or a key plan drawn at other scales
 
 ## `derive`
 

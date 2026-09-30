@@ -51,6 +51,20 @@ export const HATCH_MIN_PER_M = 4;
 /** ...and present in this share of the wall's length bins. */
 export const HATCH_COVERAGE = 0.75;
 const HATCH_BIN_M = 0.15;
+/** A stroke along the wall at least this long is a layer line, not hatch. */
+const LAYER_LINE_M = 0.5;
+/** An empty slab this thin on a wall's face is a board layer of the wall. */
+export const BOARD_LAYER_M = 0.03;
+/** Growth passes admitting empty pairs that meet the wall network. */
+const NETWORK_ROUNDS = 5;
+/** An empty pair this long, meeting pairs at both ends, seeds the network. */
+export const OUTLINE_SEED_M = 3.0;
+/** ...and on an empty-pair sheet, a pair this long joined at one end grows it. */
+export const OUTLINE_SPUR_M = 1.0;
+/** A group of joined bands shorter than this in total is not a building's walls. */
+export const NETWORK_MIN_M = 8;
+/** Runs shorter than this count only as stubs held by walls at both ends. */
+export const SHORT_RUN_M = 1.0;
 /** A band shorter than this that touches no other wall is not counted. */
 export const ISOLATED_MAX_M = 3.0;
 /** Bands lying within this share of the sheet's short side from its edge are the border. */
@@ -101,6 +115,8 @@ export interface WallTakeoff {
 export interface WallOptions {
   /** Rects (image px) whose linework is not plan: schedule tables, title block. */
   exclude?: Array<[number, number, number, number]>;
+  /** Only this rect (image px): one drawing of a sheet that carries several. */
+  region?: [number, number, number, number];
   /** Door openings (closed-leaf chords, image px) from doors.ts: a gap with one is a door. */
   doors?: Array<[Point, Point]>;
   /** Text boxes (image px): a band carrying text is a table row or a label box, not a wall. */
@@ -119,7 +135,7 @@ interface Family { ux: number; uy: number; faces: Face[] }
 const deg = Math.PI / 180;
 
 /** Straight segments grouped into parallel families, rotated so the family runs along u. */
-function families(geo: VectorGeometry, pxPerM: number, excl: WallOptions["exclude"]): Family[] {
+function families(geo: VectorGeometry, pxPerM: number, excl: WallOptions["exclude"], region?: WallOptions["region"]): Family[] {
   const { segs, meta } = geo;
   const n = segs.length >> 2;
   const minLen = MIN_PIECE_M * pxPerM;
@@ -130,26 +146,39 @@ function families(geo: VectorGeometry, pxPerM: number, excl: WallOptions["exclud
     const dx = segs[4 * i + 2] - segs[4 * i], dy = segs[4 * i + 3] - segs[4 * i + 1];
     const len = Math.hypot(dx, dy);
     if (len < minLen) continue;
-    if (inExcl((segs[4 * i] + segs[4 * i + 2]) / 2, (segs[4 * i + 1] + segs[4 * i + 3]) / 2)) continue;
+    const mx = (segs[4 * i] + segs[4 * i + 2]) / 2, my = (segs[4 * i + 1] + segs[4 * i + 3]) / 2;
+    if (inExcl(mx, my)) continue;
+    if (region && (mx < region[0] || mx > region[2] || my < region[1] || my > region[3])) continue;
     let a = Math.atan2(dy, dx);
     if (a < 0) a += Math.PI;
     if (a >= Math.PI) a -= Math.PI;
     items.push({ a, i, len });
   }
-  items.sort((p, q) => p.a - q.a);
-  // cluster angles; the circle wraps at π (a line at 179.9° is parallel to 0°)
+  // parallel families by peaks of a length-weighted angle histogram: chaining
+  // neighbouring angles would run through a sheet full of tessellated curves
+  // and fuse every direction into one family
+  const BIN = ANGLE_TOL_DEG * deg / 2, nb = Math.ceil(Math.PI / BIN);
+  const hist = new Float64Array(nb);
+  const binOf = (a: number) => Math.min(nb - 1, Math.floor(a / BIN));
+  for (const it of items) hist[binOf(it.a)] += it.len;
+  const taken = new Uint8Array(items.length);
   const groups: { a: number; i: number; len: number }[][] = [];
-  for (const it of items) {
-    const g = groups[groups.length - 1];
-    if (g && it.a - g[g.length - 1].a <= ANGLE_TOL_DEG * deg) g.push(it);
-    else groups.push([it]);
-  }
-  if (groups.length > 1) {
-    const first = groups[0], last = groups[groups.length - 1];
-    if (first[0].a + Math.PI - last[last.length - 1].a <= ANGLE_TOL_DEG * deg) {
-      for (const it of last) first.push({ ...it, a: it.a - Math.PI });
-      groups.pop();
-    }
+  const minWeight = MIN_PIECE_M * pxPerM * 4;
+  for (;;) {
+    let pk = -1, best = 0;
+    for (let k = 0; k < nb; k++) { const w = hist[(k + nb - 1) % nb] + hist[k] + hist[(k + 1) % nb]; if (w > best) { best = w; pk = k; } }
+    if (pk < 0 || best < minWeight) break;
+    const center = (pk + 0.5) * BIN;
+    const g: { a: number; i: number; len: number }[] = [];
+    items.forEach((it, j) => {
+      if (taken[j]) return;
+      let d = it.a - center;
+      if (d > Math.PI / 2) d -= Math.PI; else if (d < -Math.PI / 2) d += Math.PI;
+      if (Math.abs(d) <= ANGLE_TOL_DEG * deg) { taken[j] = 1; g.push({ ...it, a: center + d }); hist[binOf(it.a)] -= it.len; }
+    });
+    for (const k of [pk - 1, pk, pk + 1]) hist[(k + nb) % nb] = Math.max(0, hist[(k + nb) % nb]);
+    if (!g.length) { hist[pk] = 0; continue; }
+    groups.push(g);
   }
   const out: Family[] = [];
   for (const g of groups) {
@@ -180,7 +209,13 @@ const LATTICE_PITCH_TOL = 0.25;
 const LATTICE_REGULAR = 0.7;
 function markLattice(F: Face[], pxPerM: number): void {
   const win = 2.5 * LATTICE_MAX_PITCH_M * pxPerM, minD = 0.005 * pxPerM;
-  const ov = (a: Face, b: Face) => Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo) >= Math.min(0.5 * Math.min(a.hi - a.lo, b.hi - b.lo), 0.3 * pxPerM);
+  // a member crosses the face's middle and is not much shorter: short hatch
+  // strokes beside a long wall face do not make the face part of their field,
+  // and hatch lines clipped at different lengths still read as one field
+  const ov = (a: Face, b: Face) => {
+    const mid = (a.lo + a.hi) / 2;
+    return b.lo <= mid && b.hi >= mid && b.hi - b.lo >= 0.5 * (a.hi - a.lo);
+  };
   for (let k = 0; k < F.length; k++) {
     const f = F[k], offs: number[] = [0];
     let up = 0, dn = 0;
@@ -189,11 +224,19 @@ function markLattice(F: Face[], pxPerM: number): void {
     if (up < LATTICE_MIN_SIDE || dn < LATTICE_MIN_SIDE) continue;
     offs.sort((a, b) => a - b);
     const uniq = offs.filter((o, i) => i === 0 || o - offs[i - 1] > minD);
-    const gaps = uniq.slice(1).map((o, i) => o - uniq[i]).sort((a, b) => a - b);
+    const seq = uniq.slice(1).map((o, i) => o - uniq[i]);
+    const gaps = seq.slice().sort((a, b) => a - b);
     const pitch = gaps[gaps.length >> 1];
-    if (!(pitch > 0) || pitch > LATTICE_MAX_PITCH_M * pxPerM) continue;
+    if (!(pitch > 0)) continue;
     const regular = gaps.filter((g) => Math.abs(g - pitch) <= LATTICE_PITCH_TOL * pitch).length / gaps.length;
-    if (regular >= LATTICE_REGULAR) f.lattice = true;
+    if (pitch <= LATTICE_MAX_PITCH_M * pxPerM && regular >= LATTICE_REGULAR) { f.lattice = true; continue; }
+    // a double-line hatch repeats two gaps in turn (narrow, wide, narrow, …)
+    if (seq.length >= 4) {
+      let same = 0;
+      for (let q = 0; q + 2 < seq.length; q++) if (Math.abs(seq[q] - seq[q + 2]) <= LATTICE_PITCH_TOL * Math.max(seq[q], seq[q + 2])) same++;
+      const period = seq[0] + seq[1];
+      if (same / (seq.length - 2) >= LATTICE_REGULAR && period <= 2 * LATTICE_MAX_PITCH_M * pxPerM) f.lattice = true;
+    }
   }
 }
 
@@ -263,7 +306,7 @@ function slabsOf(fam: Family, pxPerM: number): Slab[] {
       const cuts: Array<[number, number]> = [];
       for (let k = i + 1; k < j; k++) {
         const m = F[k];
-        if (m.c - a.c <= dup || b.c - m.c <= dup) continue;
+        if (m.lattice || m.c - a.c <= dup || b.c - m.c <= dup) continue;   // hatch strokes are content, not layers
         if (m.hi > lo && m.lo < hi) cuts.push([m.lo, m.hi]);
       }
       for (const [p, q] of subtract(lo, hi, cuts)) {
@@ -388,10 +431,12 @@ function judgeSlab(s: Slab, fam: Family, ev: Evidence, geo: VectorGeometry, pxPe
       if (mu <= s.lo + uEnd || mu >= s.hi - uEnd || mc <= s.c0 + inset || mc >= s.c1 - inset) continue;
       if (meta[i] & SEG_FILLONLY) continue;       // fill outlines were judged above
       const c0 = x0 * -fam.uy + y0 * fam.ux, c1 = x1 * -fam.uy + y1 * fam.ux;
-      if (Math.abs(c1 - c0) < 0.05 * t && !(meta[i] & SEG_CURVE)) continue; // a layer line along the slab
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      // a layer line runs along the wall; a short stroke along it is hatch
+      if (Math.abs(c1 - c0) < 0.05 * t && !(meta[i] & SEG_CURVE) && len >= Math.min(LAYER_LINE_M * pxPerM, 0.5 * L)) continue;
       n++;
       if (meta[i] & SEG_CURVE) curves++;
-      else if (Math.hypot(x1 - x0, y1 - y0) > 1.6 * t) long++;
+      else if (len > 1.6 * t && Math.abs(c1 - c0) >= 0.05 * t) long++;
       seen[Math.min(nBins - 1, Math.max(0, Math.floor((mu - s.lo) / binW)))] = 1;
     }
   }
@@ -407,9 +452,11 @@ function judgeSlab(s: Slab, fam: Family, ev: Evidence, geo: VectorGeometry, pxPe
  *  wall only as a cavity BETWEEN two material slabs; one hanging off the side of a
  *  wall is a room wash edge, a skirting line or casework, and is cut off. A stack
  *  of empty slabs alone stays whole (it is judged later, as a whole). */
-function splitStack(stack: Slab[], outlineOk: boolean): Slab[][] {
+function splitStack(stack: Slab[], outlineOk: boolean, pxPerM: number): Slab[][] {
   if (outlineOk || stack.every((s) => s.ev === "outline")) return [stack];
-  const keep = stack.map((s, k) => s.ev !== "outline" || (k > 0 && k < stack.length - 1 && stack[k - 1].ev !== "outline" && stack[k + 1].ev !== "outline"));
+  // board layers (gypsum, cladding boards) are thin empty slabs on a wall's faces
+  const thin = (s: Slab) => s.c1 - s.c0 <= BOARD_LAYER_M * pxPerM;
+  const keep = stack.map((s, k) => s.ev !== "outline" || thin(s) || (k > 0 && k < stack.length - 1 && stack[k - 1].ev !== "outline" && stack[k + 1].ev !== "outline"));
   const out: Slab[][] = [];
   let cur: Slab[] = [];
   stack.forEach((s, k) => { if (keep[k]) cur.push(s); else { if (cur.length) out.push(cur); cur = []; } });
@@ -438,7 +485,7 @@ function bandsOf(slabs: Slab[], pxPerM: number, outlineOk: boolean): Band[] {
     while (i < here.length) {
       let j = i;
       while (j + 1 < here.length && Math.abs(here[j + 1].c0 - here[j].c1) <= dup && here[j + 1].c1 - here[i].c0 <= maxT) j++;
-      for (const stack of splitStack(here.slice(i, j + 1), outlineOk)) {
+      for (const stack of splitStack(here.slice(i, j + 1), outlineOk, pxPerM)) {
         const ev: WallEvidence = stack.some((s) => s.ev === "poche") ? "poche" : stack.some((s) => s.ev === "hatch") ? "hatch" : "outline";
         const first = stack[0], last = stack[stack.length - 1];
         out.push({ c0: first.c0, c1: last.c1, lo: a, hi: b, ev, faces: [first.f0, last.f1] });
@@ -475,9 +522,10 @@ function runsOf(bands: Band[], famIdx: number, pxPerM: number): RawRun[] {
  *  (a cladding line that stops, a hatch that starts) yields overlapping bands
  *  of different widths; the longest band claims the stretch it covers and the
  *  others keep only what it does not. */
-function dedupe(runs: RawRun[], pxPerM: number): RawRun[] {
-  const order = runs.slice().sort((a, b) => (b.hi - b.lo) - (a.hi - a.lo));
-  const kept: RawRun[] = [];
+function dedupe<R extends RawRun & { gaps?: Array<[number, number, GapKind]> }>(runs: R[], pxPerM: number): R[] {
+  const drawn = (r: RawRun) => r.pieces.reduce((s, [a, b]) => s + b - a, 0);
+  const order = runs.slice().sort((a, b) => drawn(b) - drawn(a));
+  const kept: R[] = [];
   const minLen = MIN_PIECE_M * pxPerM;
   for (const r of order) {
     const cuts: Array<[number, number]> = [];
@@ -487,7 +535,11 @@ function dedupe(runs: RawRun[], pxPerM: number): RawRun[] {
     }
     for (const [lo, hi] of subtract(r.lo, r.hi, cuts)) {
       if (hi - lo < minLen) continue;
-      kept.push({ ...r, lo, hi, faces: new Set(r.faces), pieces: r.pieces.map(([a, b]) => [Math.max(a, lo), Math.min(b, hi)] as [number, number]).filter(([a, b]) => b > a) });
+      kept.push({
+        ...r, lo, hi, faces: new Set(r.faces),
+        pieces: r.pieces.map(([a, b]) => [Math.max(a, lo), Math.min(b, hi)] as [number, number]).filter(([a, b]) => b > a),
+        ...(r.gaps ? { gaps: r.gaps.filter(([a, b]) => a >= lo && b <= hi) } : {}),
+      });
     }
   }
   return kept;
@@ -548,24 +600,38 @@ function bridge(runs: RawRun[], fam: Family, geo: VectorGeometry, ev: Evidence, 
     const cur = { ...sorted[i], faces: new Set(sorted[i].faces), pieces: sorted[i].pieces.slice(), gaps: [] as Array<[number, number, GapKind]> };
     used[i] = true;
     let grew = true;
+    const refused = new Set<number>();
     while (grew) {
       grew = false;
       // nearest collinear piece on either side first, so a gap is judged between neighbours
       let best = -1, bestGap = Infinity;
       for (let j = 0; j < sorted.length; j++) {
-        if (used[j]) continue;
+        if (used[j] || refused.has(j)) continue;
         const r = sorted[j];
-        if (Math.abs(r.c0 - cur.c0) > tol || Math.abs(r.c1 - cur.c1) > tol) continue;
+        const same = Math.abs(r.c0 - cur.c0) <= tol && Math.abs(r.c1 - cur.c1) <= tol;
+        // a wall whose drawn width changes at an opening (a window reveal, a
+        // cladding line stopping at a door) still runs through it
+        const inline = Math.abs((r.c0 + r.c1) / 2 - (cur.c0 + cur.c1) / 2) <= Math.min(r.c1 - r.c0, cur.c1 - cur.c0) / 2;
+        if (!same && !inline) continue;
         const g = r.lo > cur.hi ? r.lo - cur.hi : r.hi < cur.lo ? cur.lo - r.hi : 0;
+        if (!same && g === 0) continue;
         if (g <= maxGap && g < bestGap) { best = j; bestGap = g; }
       }
       if (best < 0) break;
       const r = sorted[best];
       const [a, b] = r.lo > cur.hi ? [cur.hi, r.lo] : r.hi < cur.lo ? [r.hi, cur.lo] : [0, 0];
+      const sameBand = Math.abs(r.c0 - cur.c0) <= tol && Math.abs(r.c1 - cur.c1) <= tol;
       if (b > a) {
-        const kind = gapKind(fam, Math.min(cur.c0, r.c0), Math.max(cur.c1, r.c1), a, b, geo, ev, pxPerM);
-        if (!kind) { used[best] = true; out.push({ ...r, faces: new Set(r.faces), pieces: r.pieces.slice(), gaps: [] }); used[best] = false; break; }
+        const kind0 = gapKind(fam, Math.min(cur.c0, r.c0), Math.max(cur.c1, r.c1), a, b, geo, ev, pxPerM);
+        const kind = sameBand || kind0 === "door" || kind0 === "window" ? kind0 : null;
+        if (!kind) { refused.add(best); grew = true; continue; }
         cur.gaps.push([a, b, kind]);
+        if (!sameBand) {
+          // the opening belongs to this wall's gross length; the piece beyond it,
+          // drawn at another width, stays its own run with its own thickness
+          cur.lo = Math.min(cur.lo, a); cur.hi = Math.max(cur.hi, b);
+          refused.add(best); grew = true; continue;
+        }
       }
       cur.lo = Math.min(cur.lo, r.lo); cur.hi = Math.max(cur.hi, r.hi);
       used[best] = true; grew = true;
@@ -626,7 +692,9 @@ const RAY_OFFSETS = [0.2, 0.35, 0.5, 0.65, 0.8];
 export const EXTERIOR_ESCAPE = 0.6;   // share of a side's rays that must escape for "outside"
 export const INTERIOR_ESCAPE = 0.3;   // ...and at most this share for "inside"
 
-function classifySides(runs: WallRun[], pxPerM: number): void {
+/** Sides of every run; returns the runs with outside on BOTH faces (freestanding). */
+function classifySides(runs: WallRun[], pxPerM: number): Set<WallRun> {
+  const free = new Set<WallRun>();
   const L = runs.map((r) => r.line);
   const hits = (ox: number, oy: number, dx: number, dy: number, self: number): boolean => {
     for (let k = 0; k < L.length; k++) {
@@ -665,12 +733,14 @@ function classifySides(runs: WallRun[], pxPerM: number): void {
     if (out0 !== out1 && Math.min(e0, e1) <= INTERIOR_ESCAPE) r.exterior = true;
     else if (e0 <= INTERIOR_ESCAPE && e1 <= INTERIOR_ESCAPE) r.exterior = false;
     else r.exterior = null;
+    if (out0 && out1) free.add(r);
   });
+  return free;
 }
 
 /** The sheet's walls: runs with centreline, thickness, gross/net length and side. */
 export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, height: number, opts: WallOptions = {}): WallTakeoff {
-  const fams = families(geo, pxPerM, opts.exclude);
+  const fams = families(geo, pxPerM, opts.exclude, opts.region);
   const ev = buildEvidence(geo, pxPerM, opts.text);
   ev.doors = opts.doors;
   const minT = MIN_THICK_M * pxPerM, maxT = MAX_THICK_M * pxPerM;
@@ -691,25 +761,61 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   style.outline_counted = style.poche_m + style.hatch_m < MATERIAL_STYLE_SHARE * style.outline_m;
   const withheld: WithheldWall[] = [];
   fams.forEach((fam, fi) => {
-    const bands = bandsOf(famSlabs[fi], pxPerM, style.outline_counted).filter((b) => b.c1 - b.c0 >= minT && b.c1 - b.c0 <= maxT);
-    const pieces = runsOf(bands, fi, pxPerM).filter((r) => {
-      if (r.ev !== "outline" || style.outline_counted) return true;
-      const c = (r.c0 + r.c1) / 2;
-      if (r.hi - r.lo >= MIN_RUN_M * pxPerM) {
-        withheld.push({ line: [toXY(fam, r.lo, c), toXY(fam, r.hi, c)], thicknessM: (r.c1 - r.c0) / pxPerM, lengthM: (r.hi - r.lo) / pxPerM, reason: "outline_on_poche_sheet: two parallel lines with nothing between them, on a sheet that draws its walls with poché or hatch — casework or a symbol, not counted" });
-      }
-      return false;
-    });
+    const bands = bandsOf(famSlabs[fi], pxPerM, false).filter((b) => b.c1 - b.c0 >= minT && b.c1 - b.c0 <= maxT);
+    const pieces = runsOf(bands, fi, pxPerM);
     // openings are bridged only between pieces that are walls themselves
-    for (const r of bridge(dedupe(pieces, pxPerM), fam, geo, ev, pxPerM)) cands.push({ fam, famIdx: fi, r });
+    for (const r of dedupe(bridge(dedupe(pieces, pxPerM), fam, geo, ev, pxPerM), pxPerM)) cands.push({ fam, famIdx: fi, r });
   });
   const kept: Array<{ fam: Family; c: number; lo: number; hi: number; t: number; r: Cand }> = [];
   for (const { fam, r } of cands) {
     if ((r.hi - r.lo) < MIN_RUN_M * pxPerM) continue;
     kept.push({ fam, c: (r.c0 + r.c1) / 2, lo: r.lo, hi: r.hi, t: r.c1 - r.c0, r });
   }
+  // an empty pair is a wall only where it spans between walls: both ends
+  // against a wall already counted, at an angle — grown outward from the
+  // poché/hatch walls like a wall network. On a sheet that draws every wall
+  // as an empty pair, long pairs meeting other pairs at both ends seed it.
+  const accepted = kept.map((k) => k.r.ev !== "outline");
+  const endHits = (i: number, onlyAccepted: boolean): number => {
+    const A = kept[i];
+    let ends = 0;
+    for (const u of [A.lo, A.hi]) {
+      const p = toXY(A.fam, u, A.c);
+      const hit = kept.some((B, j) => {
+        if (j === i || (onlyAccepted && !accepted[j])) return false;
+        const seg: [Point, Point] = [toXY(B.fam, B.lo, B.c), toXY(B.fam, B.hi, B.c)];
+        if (Math.abs(A.fam.ux * B.fam.uy - A.fam.uy * B.fam.ux) < Math.sin(20 * deg)) {
+          // the same wall line continuing past a junction break or an opening
+          if (!style.outline_counted || B.fam !== A.fam || Math.abs(B.c - A.c) > Math.min(A.t, B.t) / 2) return false;
+          return ptSeg(p, seg) <= MAX_OPENING_M * pxPerM;
+        }
+        return ptSeg(p, seg) <= (A.t + B.t) / 2 + JOIN_REACH_M * pxPerM;
+      });
+      if (hit) ends++;
+    }
+    return ends;
+  };
+  for (let round = 0; round < NETWORK_ROUNDS; round++) {
+    let grew = false;
+    kept.forEach((k, i) => {
+      if (accepted[i]) return;
+      const ok = endHits(i, true) === 2 || (k.hi - k.lo >= OUTLINE_SEED_M * pxPerM && endHits(i, false) >= (style.outline_counted ? 1 : 2))
+        // on a sheet that draws its walls as empty pairs, a pair joined to the
+        // network at one end is a partition like the rest
+        || (style.outline_counted && endHits(i, true) >= 1 && k.hi - k.lo >= OUTLINE_SPUR_M * pxPerM);
+      if (ok) { accepted[i] = true; grew = true; }
+    });
+    if (!grew) break;
+  }
+  const outlineKept = kept.filter((k, i) => {
+    if (accepted[i]) return true;
+    const c = k.c;
+    withheld.push({ line: [toXY(k.fam, k.lo, c), toXY(k.fam, k.hi, c)], thicknessM: k.t / pxPerM, lengthM: (k.hi - k.lo) / pxPerM, reason: "outline_unconnected: two parallel lines with nothing between them that do not meet the wall network — casework, furniture or a symbol, not counted" });
+    return false;
+  });
+  kept.length = 0; kept.push(...outlineKept);
   extendCorners(kept, pxPerM);
-  const runs: WallRun[] = kept.map(({ fam, c, lo, hi, t, r }) => {
+  let runs: WallRun[] = kept.map(({ fam, c, lo, hi, t, r }) => {
     const gaps = r.gaps.filter((g) => g[2] !== "junction").map(([a, b, kind]) => ({ span: [toXY(fam, a, c), toXY(fam, b, c)] as [Point, Point], widthM: (b - a) / pxPerM, kind: kind as OpeningKind }));
     const gross = (hi - lo) / pxPerM;
     return {
@@ -729,6 +835,17 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   // angle counts as meeting the building
   const dir = (r: WallRun) => Math.atan2(r.line[1][1] - r.line[0][1], r.line[1][0] - r.line[0][0]);
   const angled = (a: WallRun, b: WallRun) => Math.abs(Math.sin(dir(a) - dir(b))) >= Math.sin(20 * deg);
+  // a short band lying across another wall's band is that wall's hatch or a
+  // jamb line; a short band is a wall stub only when walls hold both its ends
+  const inside = (r: WallRun, q: WallRun) => r.line.every((p) => ptSeg(p, q.line) <= (q.thicknessM / 2) * pxPerM + 1);
+  const held = (r: WallRun, i: number) => r.line.every((p) => runs.some((q, j) => j !== i && angled(r, q) && q.grossM > r.grossM &&
+    ptSeg(p, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM));
+  const stray = runs.map((r, i) => r.grossM < SHORT_RUN_M && (runs.some((q, j) => j !== i && q.grossM > r.grossM && inside(r, q)) || !held(r, i)));
+  runs = runs.filter((r, i) => {
+    if (!stray[i]) return true;
+    withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "short_unanchored: a band under 1 m not held by walls at both ends, or lying inside another wall — hatch, a jamb line or casework" });
+    return false;
+  });
   const lonely = runs.map((r, i) => r.grossM < ISOLATED_MAX_M && !runs.some((q, j) => j !== i && angled(r, q) &&
     segDist(r.line, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM));
   // the drawing frame: double border lines a wall's width apart
@@ -743,7 +860,38 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
     withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "isolated: a short band that meets no wall at an angle — a legend sample, a symbol or casework" });
     return false;
   });
-  classifySides(connected, pxPerM);
-  return { runs: connected, withheld, style };
+  // a small closed cluster of bands (a level marker, a column symbol, a
+  // north arrow) meets only itself
+  const comp = connected.map((_, i) => i);
+  const find = (i: number): number => (comp[i] === i ? i : (comp[i] = find(comp[i])));
+  connected.forEach((r, i) => connected.forEach((q, j) => {
+    if (j > i && segDist(r.line, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM) comp[find(i)] = find(j);
+  }));
+  const box = new Map<number, [number, number, number, number]>();
+  connected.forEach((r, i) => {
+    const k = find(i), b = box.get(k) ?? [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [x, y] of r.line) { b[0] = Math.min(b[0], x); b[1] = Math.min(b[1], y); b[2] = Math.max(b[2], x); b[3] = Math.max(b[3], y); }
+    box.set(k, b);
+  });
+  const small = (i: number) => { const b = box.get(find(i))!; return Math.hypot(b[2] - b[0], b[3] - b[1]) < ISOLATED_MAX_M * pxPerM; };
+  const compLen = new Map<number, number>();
+  connected.forEach((r, i) => compLen.set(find(i), (compLen.get(find(i)) ?? 0) + r.grossM));
+  const building = connected.filter((r, i) => {
+    if (small(i)) {
+      withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "symbol: part of a small cluster of bands that meets no other wall — a marker, a column or a symbol" });
+      return false;
+    }
+    if ((compLen.get(find(i)) ?? 0) < NETWORK_MIN_M) {
+      withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "fragment: part of a few bands joined to no wall network (under 8 m together) — a detail, a diagram or casework" });
+      return false;
+    }
+    return true;
+  });
+  const free = classifySides(building, pxPerM);
+  const counted = building.filter((r) => {
+    if (!free.has(r)) return true;
+    withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "freestanding: open to the outside on both faces — a railing, a parapet, a balcony edge or a site wall, not a building wall" });
+    return false;
+  });
+  return { runs: counted, withheld, style };
 }
-export const __test = { families, slabsOf, judgeSlab, buildEvidence, bandsOf };

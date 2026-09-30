@@ -3861,7 +3861,7 @@ export class Session {
   }
 
   /** count {action: "windows"} — mcp/src/walls.ts. */
-  async countWindows(name: string, opts: { condition?: string; commit?: boolean } = {}) {
+  async countWindows(name: string, opts: { condition?: string; commit?: boolean; region?: WallsOpts["region"] } = {}) {
     return countWindows(await this.wallHost(name, "count_windows"), opts);
   }
 
