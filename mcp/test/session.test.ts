@@ -430,3 +430,60 @@ test("detectRooms: withheld.total counts every reason, already_measured and over
   const { total, min_area_sf: _m, ...counts } = again.withheld;
   assert.equal(total, Object.values(counts).reduce((a, n) => a + n, 0));
 });
+
+// The flattened walls-only masks (ensureWallMasks) stay available on a layered sheet unless a visible
+// layer classified as a room boundary carries wall-like ink: layers that are all unknown or annotation
+// state nothing about the walls, and switching the path off for them lost the rooms furniture cut short.
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+/** A one-page PDF (612 × 612 pt) with one Optional Content layer per entry: the layer's name, its
+ *  default visibility and the content drawn on it. Same raw form as scripts/make-layered-fixture.mjs. */
+function layeredPdf(layers: { name: string; on?: boolean; content: string }[]): string {
+  const props = layers.map((_, k) => `/oc${k + 1} ${5 + k} 0 R`).join(" ");
+  const ocgs = layers.map((_, k) => `${5 + k} 0 R`).join(" ");
+  const off = layers.map((l, k) => (l.on === false ? `${5 + k} 0 R` : "")).filter(Boolean).join(" ");
+  const content = layers.map((l, k) => `/OC /oc${k + 1} BDC\n${l.content}\nEMC`).join("\n");
+  const objects = [
+    `<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [${ocgs}] /D << /Order [${ocgs}] /OFF [${off}] >> >> >>`,
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 612] /Contents 4 0 R /Resources << /Properties << ${props} >> >> >>`,
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ...layers.map((l) => `<< /Type /OCG /Name (${l.name}) >>`),
+  ];
+  let pdf = "%PDF-1.5\n";
+  const offsets: number[] = [];
+  objects.forEach((body, i) => { offsets.push(pdf.length); pdf += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xrefAt = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const o of offsets) pdf += `${String(o).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+  const path = join(mkdtempSync(join(tmpdir(), "otk-layers-")), "layered.pdf");
+  writeFileSync(path, pdf, "latin1");
+  return path;
+}
+// a 300 × 300 pt room drawn as paired wall lines 6 pt apart (0.2 m at 1:100): the flattened form
+const PAIRED_WALLS = ["100 100 400 300 re S", "106 106 388 288 re S"].join("\n");
+
+test("flattened walls-only masks: built when no boundary layer carries wall ink, not when one does; hidden ink never pairs", async () => {
+  const masksOn = async (layers: Parameters<typeof layeredPdf>[0]) => {
+    const s = new Session();
+    await s.loadPlan(layeredPdf(layers));
+    s.setScale("layered.pdf", { label: "1:100" });
+    return s.ensureWallMasks("layered.pdf");
+  };
+  // walls on a layer that states nothing (a bare "0" is unknown; annotation is not a boundary)
+  assert.ok((await masksOn([{ name: "0", content: PAIRED_WALLS }])).length >= 1, "unknown layer: the sheet is flattened in every way that matters");
+  assert.ok((await masksOn([{ name: "A-ANNO-TEXT", content: PAIRED_WALLS }, { name: "A-FLOR-PATT", content: "150 150 m 350 350 l S" }])).length >= 1, "annotation and pattern layers: still no stated walls");
+  // the same walls on a boundary layer: the layer path bounds the rooms, the flattened masks stay off
+  assert.equal((await masksOn([{ name: "A-WALL-FULL", content: PAIRED_WALLS }])).length, 0);
+  // a boundary layer that carries no wall-like ink (one lone line) does not switch the path off
+  assert.ok((await masksOn([{ name: "A-WALL-FULL", content: "100 500 m 500 500 l S" }, { name: "0", content: PAIRED_WALLS }])).length >= 1);
+  // the walls hidden (default OFF): nothing pairs, so there is nothing to build
+  assert.equal((await masksOn([{ name: "0", on: false, content: PAIRED_WALLS }])).length, 0);
+  // an unlayered sheet is as before (the finish plan draws paired walls; the sample plan's are single lines)
+  const plain = new Session();
+  await plain.loadPlan(fileURLToPath(new URL("../../demo/sample-finish-plan.pdf", import.meta.url)));
+  plain.setScale("sample-finish-plan.pdf", { use_detected: true });
+  assert.equal((await plain.ensureWallMasks("sample-finish-plan.pdf")).length, 2);
+});

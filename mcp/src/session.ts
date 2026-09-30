@@ -7,7 +7,7 @@
 import path from "node:path";
 import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHandle, type PageHandle, type TextSpan, type OcgEntry } from "./pdf.ts";
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
-import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
+import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo, ROLE_HIDDEN, ROLE_CODE } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, titleBlockBox, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
 import { UserError, round1, round2, displayUnits, displayLocale, isRatioScale } from "./format.ts";
 import { outlinedWords, textStatusOf, type TextStatus } from "../../web/src/lib/textstatus.ts";
@@ -18,7 +18,7 @@ import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPat
 import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, DIMTEXT_RE, type DetectedScale } from "../../web/src/lib/sheets.ts";
 import { buildSheetDxf, type DxfBuild } from "../../web/src/lib/dxf.ts";
 import {
-  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodBudget, floodWorkDone, FloodBudget,
+  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, SEG_CLIP, setFloodBudget, floodWorkDone, FloodBudget,
   hatchFamilies, MASK_MAX_DIM, SENS_BALANCED, type FloodResult, type MaskObj, type VectorGeometry, type Point, type HatchFamily,
 } from "../../web/src/lib/oneclick.ts";
 // The trace-confidence module (RFC #60 item D) — the engine's own account of a
@@ -1344,8 +1344,13 @@ export class Session {
   /** A flattened export draws furniture in the wall pen, so the ink mask stops
    * a flood at the first desk. These masks keep only paired wall faces and
    * filled wall poché (wallpairs.ts) and seal doorways at their swings, so
-   * a flood fills the room to its walls. Unlayered vector sheets with a
-   * scale only; empty otherwise. Cached like `mask`; set_scale evicts them.
+   * a flood fills the room to its walls. Vector sheets with a scale whose
+   * walls are NOT stated by a layer: an unlayered sheet, or a layered one none
+   * of whose classified boundary layers (layers.ts) carries wall-like ink — a
+   * sheet whose layers are all unknown or annotation is flattened in every way
+   * that matters here. Where a boundary layer does carry paired wall lines the
+   * layer path bounds the rooms and these stay empty. Hidden and demolition
+   * ink never pairs. Cached like `mask`; set_scale evicts them.
    *
    * The first mask counts every fill as poché. Where the sheet has white fills
    * there is a second one without them: a white fill often masks what lies under
@@ -1360,8 +1365,17 @@ export class Session {
       const geo = await this.ensureGeometry(s);
       const ink = await this.ensureMask(name);
       const pxPerFt = s.upp ? 1 / s.upp : 0;
-      if (!ink || !pxPerFt || s.layers?.length) return s.wallMasks;
-      const wall = wallSegIndices(geo.segs, geo.meta, pxPerFt / 0.3048);
+      if (!ink || !pxPerFt) return s.wallMasks;
+      // ink not drawn on this plan (a hidden or demolition layer) pairs with nothing: it is marked as
+      // clip-only for the pairing, which wallpairs.ts never reads as a face or a partner
+      const roles = this.rolesFor(s, geo);
+      let meta = geo.meta;
+      if (roles) {
+        meta = Uint8Array.from(geo.meta);
+        for (let i = 0; i < roles.length; i++) if (roles[i] === ROLE_HIDDEN || roles[i] === ROLE_CODE.demolition) meta[i] |= SEG_CLIP;
+      }
+      const wall = wallSegIndices(geo.segs, meta, pxPerFt / 0.3048);
+      if (this.layerStatesWalls(s, geo, wall)) return s.wallMasks;
       const white = new Uint8Array(wall.length);
       for (const sp of geo.subpaths ?? []) if (sp.flags & SEG_FILLONLY && sp.fillLum >= WHITE_FILL_LUM) white.fill(1, sp.i0, sp.i1);
       const seals = findDoorSeals(geo.segs, geo.meta, ink, pxPerFt);
@@ -1381,6 +1395,20 @@ export class Session {
       }
     }
     return s.wallMasks;
+  }
+
+  /** Does a visible layer classified as a room boundary carry wall-like ink (paired wall lines)? Then
+   * the sheet states its walls and the layer path bounds its rooms; the flattened walls-only masks are
+   * for sheets that do not. */
+  private layerStatesWalls(s: SheetState, geo: VectorGeometry, wall: Uint8Array): boolean {
+    const infos = s.layers ?? [], lo = geo.layerOf;
+    if (!infos.length || !lo) return false;
+    for (let i = 0; i < wall.length; i++) {
+      if (!wall[i]) continue;
+      const l = infos[lo[i]];
+      if (l && l.visible && l.role === "boundary") return true;
+    }
+    return false;
   }
 
   /** The canvas's wall-network and drawn-figure room engines for one sheet,
