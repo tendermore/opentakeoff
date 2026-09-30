@@ -73,6 +73,24 @@ test('notes: inside the cloud where they fit, else outside with a leader; clear 
   for (const p of placed) assert.ok(p.box[0] >= 0 && p.box[1] >= 0 && p.box[2] <= 400 && p.box[3] <= 300, `on the page: ${p.box}`);
 });
 
+test('notes: off the sheet\'s own text and measured floor, never on the title block, and not inside another cloud', () => {
+  // a thin strip whose sides are: printed text left of it, measured floor below-left, the title block right
+  const strip = { w: 60, h: 12, rect: [300, 50, 320, 250], anchor: [310, 150] };
+  const text = [[200, 60, 295, 250]];
+  const floor = [[[150, 255], [330, 255], [330, 400], [150, 400]]];
+  const titleBlock = [[330, 0, 500, 400]];
+  const other = { w: 40, h: 12, rect: [200, 260, 290, 300], anchor: [245, 280] };
+  const run = () => placeCloudNotes([strip, other], text, [500, 400], 4, { areas: floor, keepOut: titleBlock });
+  const [p] = run();
+  const inPoly = (b: number[]) => b[0] < 330 && b[2] > 150 && b[3] > 255;
+  assert.ok(!overlaps(p.box, titleBlock[0]), `never on the title block: ${p.box}`);
+  assert.ok(!overlaps(p.box, text[0]), `off the text: ${p.box}`);
+  assert.ok(!inPoly(p.box), `off the measured floor: ${p.box}`);
+  assert.ok(!overlaps(p.box, other.rect), `not inside another cloud: ${p.box}`);
+  assert.ok(p.leader, 'outside its cloud, with a leader');
+  assert.deepEqual(run(), run(), 'deterministic');
+});
+
 async function pageText(markups: unknown[], shapes: unknown[], rfis: unknown[] = []) {
   const source = await PDFDocument.create();
   source.addPage([400, 300]);

@@ -8,7 +8,7 @@ import path from "node:path";
 import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHandle, type PageHandle, type TextSpan, type OcgEntry } from "./pdf.ts";
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
-import { buildSheetGraph, resolveTag, classifySheetRole, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
+import { buildSheetGraph, resolveTag, classifySheetRole, titleBlockBox, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
 import { UserError, round1, round2, displayUnits, displayLocale, isRatioScale } from "./format.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
@@ -2526,6 +2526,19 @@ export class Session {
       }
     }
     return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
+  }
+
+  /** What a cover note is placed clear of on a sheet (normalized boxes): the text the sheet prints, and its
+   * title block (sheetgraph.ts titleBlockBox), which a note never covers. */
+  async noteAvoidance(name: string): Promise<{ text: [number, number, number, number][]; keepOut: [number, number, number, number][] }> {
+    const s = this.sheet(name);
+    if (!s.spans) s.spans = textSpans(s.page);
+    const geo = await this.ensureGeometry(s);
+    const n = (b: number[]): [number, number, number, number] => [b[0] / s.widthPx, b[1] / s.heightPx, b[2] / s.widthPx, b[3] / s.heightPx];
+    const text = s.spans.filter((sp) => (sp.str || "").trim()).map((sp) => n([sp.x0, sp.y0, sp.x1, sp.y1]));
+    const spans = s.spans.map((t) => ({ str: t.str, x: t.x0, y: t.y0, w: t.x1 - t.x0, h: t.y1 - t.y0, ...(t.rot ? { rot: t.rot } : {}) }));
+    const tb = titleBlockBox({ key: s.key, sheet_number: s.sheetNumber, spans, segs: geo.segs, width: s.widthPx, height: s.heightPx });
+    return { text, keepOut: tb ? [n(tb)] : [] };
   }
 
   /** Bend a trace the way the canvas's Curve mode does (#284): `arcThrough`

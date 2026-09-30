@@ -87,12 +87,16 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   const sheetStates = session.sheetList();
   // #152: the working set can span documents — pages resolve per (file, page)
   const byFilePage = new Map(sheetStates.map((s) => [`${session.fileFor(s.key)}#${s.pageNum}`, s.page]));
-  const sheets = sheetStates.map((s) => ({
+  // a sheet carrying cover clouds also hands the builder its printed text and title block, which the cover
+  // notes are placed clear of
+  const covered = new Set(session.markups.filter((m) => m.source === "cover").map((m) => m.sheet_id));
+  const sheets = await Promise.all(sheetStates.map(async (s) => ({
     key: s.key,
     file: session.fileFor(s.key),
     page: s.pageNum,
     label: s.sheetNumber ? T.sheetPageLabel(s.sheetNumber, s.pageNum) : s.key,
-  }));
+    ...(covered.has(s.key) ? { avoid: await session.noteAvoidance(s.key).catch(() => undefined) } : {}),
+  })));
 
   // markedset.js speaks pdf.js pages; serve it a shim over the PageHandle. The
   // stored viewport is at RENDER_SCALE and every entry of a pdf.js viewport

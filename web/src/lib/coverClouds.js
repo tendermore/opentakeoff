@@ -98,17 +98,23 @@ const area = (r) => (r[2] - r[0]) * (r[3] - r[1]);
 const dist = (b, [x, y]) => Math.hypot((b[0] + b[2]) / 2 - x, (b[1] + b[3]) / 2 - y);
 
 /** Where each cloud's note goes. `notes`: { w, h, rect: the cloud [x0,y0,x1,y1], anchor: [x, y] the printed
- *  label it is about }. `obstacles`: boxes a note should not cover (quantity chips, printed labels).
- *  `bounds`: [W, H]; a note always stays on the page. Small clouds are placed first. A note goes inside its
- *  cloud nearest its anchor where it covers nothing; else just outside the cloud where it covers nothing,
- *  nearest its anchor, with a leader to the cloud's edge; else where it covers least. Returns, per note, its
- *  box [x0, y0, x1, y1] and the leader (or null). */
-export function placeCloudNotes(notes, obstacles, bounds, gap = 4) {
+ *  label it is about }. `obstacles`: boxes a note should not cover (quantity chips, printed labels, the sheet's
+ *  own text) — and every other cloud's inside. `bounds`: [W, H]; a note always stays on the page. `opts.areas`: polygons it should not cover
+ *  (measured floor); `opts.keepOut`: boxes it never covers (the title block). Small clouds are placed first. A
+ *  note goes inside its cloud nearest its anchor where it covers nothing; else outside the cloud where it covers
+ *  nothing, nearest its anchor, with a leader to the cloud's edge; else where it covers least — never in a
+ *  keep-out box while any spot outside one is left. Deterministic, and bounded: at most MAX_INSIDE spots inside
+ *  and OUTSIDE_STEPS rings outside per note, each costed once against the obstacles near it. Returns, per note,
+ *  its box [x0, y0, x1, y1] and the leader (or null). */
+const MAX_INSIDE = 1600, OUTSIDE_STEPS = 10;
+export function placeCloudNotes(notes, obstacles, bounds, gap = 4, opts = {}) {
   const [W, H] = bounds;
+  const areas = (opts.areas || []).filter((p) => Array.isArray(p) && p.length >= 3).map((p) => ({ p, b: boxOf(p) }));
+  const keepOut = opts.keepOut || [];
   const taken = obstacles.map((b) => [b[0] - gap / 2, b[1] - gap / 2, b[2] + gap / 2, b[3] + gap / 2]);
-  const order = notes.map((_, k) => k).sort((a, b) => area(notes[a].rect) - area(notes[b].rect));
+  const order = notes.map((_, k) => k).sort((a, b) => area(notes[a].rect) - area(notes[b].rect) || a - b);
   const out = new Array(notes.length);
-  const onPage = (b) => b[0] >= 0 && b[1] >= 0 && b[2] <= W && b[3] <= H;
+  const allowed = (b) => b[0] >= 0 && b[1] >= 0 && b[2] <= W && b[3] <= H && !keepOut.some((k) => overlap(b, k) > 0);
   const clamp = ([x0, y0, x1, y1]) => {
     const w = x1 - x0, h = y1 - y0, x = Math.min(Math.max(0, x0), Math.max(0, W - w)), y = Math.min(Math.max(0, y0), Math.max(0, H - h));
     return [x, y, x + w, y + h];
@@ -116,33 +122,52 @@ export function placeCloudNotes(notes, obstacles, bounds, gap = 4) {
   for (const k of order) {
     const { w, h, rect, anchor } = notes[k];
     const [x0, y0, x1, y1] = rect;
-    const cost = (b) => taken.reduce((s, t) => s + overlap(b, t), 0);
+    const reach = gap * 2 + OUTSIDE_STEPS * (Math.max(w, h) + gap);
+    const zone = [x0 - reach, y0 - reach, x1 + reach, y1 + reach];
+    // another cloud's inside is its own note's place: a note there reads as about the wrong cloud
+    const others = notes.filter((_, j) => j !== k).map((o) => o.rect);
+    const near = [...taken, ...others].filter((t) => overlap(t, zone) > 0);
+    const nearAreas = areas.filter((a) => overlap(a.b, zone) > 0);
+    // what a box covers: other notes, chips and text by area, measured floor by a 3 × 3 sample of the box
+    const cost = (b) => {
+      let c = 0;
+      for (const t of near) c += overlap(b, t);
+      if (nearAreas.length) {
+        let hits = 0;
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+          const px = b[0] + ((i + 0.5) / 3) * (b[2] - b[0]), py = b[1] + ((j + 0.5) / 3) * (b[3] - b[1]);
+          if (nearAreas.some((a) => px >= a.b[0] && px <= a.b[2] && py >= a.b[1] && py <= a.b[3] && pointInPoly(px, py, a.p))) hits++;
+        }
+        c += (hits / 9) * area(b);
+      }
+      return c;
+    };
     // inside: a grid over the cloud, nearest the anchor first
     const inside = [];
     if (x1 - x0 >= w + 2 * gap && y1 - y0 >= h + 2 * gap) {
-      const step = Math.max(2, h / 2);
+      const cells = ((x1 - x0 - w) * (y1 - y0 - h)) / MAX_INSIDE;
+      const step = Math.max(2, h / 2, Math.sqrt(Math.max(0, cells)));
       for (let y = y0 + gap; y + h <= y1 - gap; y += step) for (let x = x0 + gap; x + w <= x1 - gap; x += step) {
         const b = [x, y, x + w, y + h];
-        if (onPage(b)) inside.push({ b, d: dist(b, anchor) });
+        if (allowed(b)) inside.push({ b, d: dist(b, anchor) });
       }
     }
-    // outside: above, below, left, right of the cloud, stepping away
+    // outside: above, below, left, right of the cloud, stepping away ring by ring
     const cx = Math.min(Math.max(anchor[0] - w / 2, x0), x1 - w);
     const cy = Math.min(Math.max(anchor[1] - h / 2, y0), y1 - h);
     const outside = [];
-    for (let s = 1; s <= 6; s++) {
-      const o = gap * 2 + (s - 1) * (h + gap);
+    for (let s = 1; s <= OUTSIDE_STEPS; s++) {
+      const oy = gap * 2 + (s - 1) * (h + gap), ox = gap * 2 + (s - 1) * (Math.min(w, 4 * h) + gap);
       const at = [];
-      for (const x of [cx, x0, x1 - w]) { at.push([x, y0 - o - h]); at.push([x, y1 + o]); }
-      for (const y of [cy, y0, y1 - h]) { at.push([x0 - o - w, y]); at.push([x1 + o, y]); }
-      for (const [x, y] of at) { const b = [x, y, x + w, y + h]; if (onPage(b)) outside.push({ b, d: dist(b, anchor) }); }
+      for (const x of [cx, x0, x1 - w]) { at.push([x, y0 - oy - h]); at.push([x, y1 + oy]); }
+      for (const y of [cy, y0, y1 - h]) { at.push([x0 - ox - w, y]); at.push([x1 + ox, y]); }
+      for (const [x, y] of at) { const b = [x, y, x + w, y + h]; if (allowed(b)) outside.push({ b, d: dist(b, anchor) }); }
     }
-    // each candidate's cost once, then the nearest free one, inside first
     for (const c of inside) c.cost = cost(c.b);
     for (const c of outside) c.cost = cost(c.b);
-    const byDist = (a, b) => a.d - b.d;
+    const byDist = (a, b) => a.d - b.d || a.b[1] - b.b[1] || a.b[0] - b.b[0];
     const free = (list) => list.filter((c) => c.cost === 0).sort(byDist)[0];
-    const pick = free(inside) ?? free(outside) ?? [...inside, ...outside].sort((a, b) => a.cost - b.cost || a.d - b.d)[0];
+    const pick = free(inside) ?? free(outside) ?? [...inside, ...outside].sort((a, b) => a.cost - b.cost || byDist(a, b))[0];
     const box = pick ? pick.b : clamp([x0, y0 - h - gap, x0 + w, y0 - gap]);
     let leader = null;
     if (!(box[0] >= x0 && box[2] <= x1 && box[1] >= y0 && box[3] <= y1)) {
@@ -154,3 +179,8 @@ export function placeCloudNotes(notes, obstacles, bounds, gap = 4) {
   }
   return out;
 }
+const boxOf = (p) => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of p) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+  return [x0, y0, x1, y1];
+};

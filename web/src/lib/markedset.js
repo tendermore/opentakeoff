@@ -739,7 +739,14 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
           const w = Math.max(...lines.map((t) => bold.widthOfTextAtSize(t, size))) / ptScale + 2 * pad;
           notes.push({ id: m.id, lines, w, h: lines.length * lh, rect, anchor });
         }
-        const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale);
+        // the sheet's own printed text and title block, when the caller read them (sheets[].avoid, normalized),
+        // and the measured floor: a note is placed off all of them where it can be, and never on the title block
+        const px = (b) => [b[0] * W, b[1] * H, b[2] * W, b[3] * H];
+        const avoid = sh.avoid || {};
+        for (const b of Array.isArray(avoid.text) ? avoid.text : []) if (Array.isArray(b) && b.length === 4) obstacles.push(px(b));
+        const keepOut = (Array.isArray(avoid.keepOut) ? avoid.keepOut : []).filter((b) => Array.isArray(b) && b.length === 4).map(px);
+        const areas = here.filter((s) => s.measure_role === "floor_area" && (s.verts_norm || []).length >= 3).map((s) => s.verts_norm.map(([nx, ny]) => [nx * W, ny * H]));
+        const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale, { areas, keepOut });
         notes.forEach((n, k) => coverNotes.set(n.id, { lines: n.lines, size, pad, lh, ...placed[k] }));
       }
     } catch { coverNotes.clear(); }

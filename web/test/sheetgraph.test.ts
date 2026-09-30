@@ -1479,3 +1479,17 @@ test("readsNordic: a lone ø is a diameter sign, an ø inside a word is Nordic t
   for (const t of ["ø 5'-0\"", "Ø100", "2 x ø 32", "TURNING CIRCLE ø"]) assert.equal(readsNordic(t), false, t);
   for (const t of ["Kjøkken", "Stue/kjøkken", "ØSTRE FASADE", "PLANTEGNING 1. ETASJE"]) assert.equal(readsNordic(t), true, t);
 });
+
+import { titleBlockBox } from "../src/lib/sheetgraph.ts";
+test("titleBlockBox: the title's frame column, found from the rule drawn beside the title; null without a title-block title", () => {
+  const W = 1000, H = 700;
+  const spans = [sp("Plan 2. etasje", 820, 560), sp("Kontor", 300, 300), sp("12,0 m²", 300, 320)];
+  // the title column's left rule, drawn in two pieces (broken at a row line), and a room wall further left
+  const segs = [800, 0, 800, 350, 800, 350, 800, 700, 600, 100, 600, 400];
+  const tb = titleBlockBox({ key: "p", spans, segs, width: W, height: H });
+  assert.deepEqual(tb, [800, 0, 1000, 700]);
+  // no rule: the title's own box
+  assert.deepEqual(titleBlockBox({ key: "p", spans, segs: [], width: W, height: H }), [820, 560, 820 + 14 * 5, 568]);
+  // a sheet whose title is not in the title-block corner has no title block to keep out
+  assert.equal(titleBlockBox({ key: "p", spans: [sp("PLAN 2. ETASJE", 100, 50)], segs, width: W, height: H }), null);
+});
