@@ -10,6 +10,7 @@ import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
 import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, titleBlockBox, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
 import { UserError, round1, round2, displayUnits, displayLocale, isRatioScale } from "./format.ts";
+import { outlinedWords, textStatusOf, type TextStatus } from "../../web/src/lib/textstatus.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
 import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPatch, propagateRowRemove,
@@ -620,6 +621,9 @@ interface SheetState {
   /** the sheet's Optional Content layers (#85), classified — built with geo;
    * [] = no layers survived export (the silent, invisible fallback) */
   layers?: LayerInfo[];
+  /** where the sheet's words are (textstatus.ts): in its text layer, drawn as linework or stencil
+   * masks (outlined), both (partial), or nowhere (none) — built with geo and the spans */
+  textStatus?: { status: TextStatus; outlined_words: number };
 }
 
 /** sheet_context decimation defaults (issue #29) — declared and stable, never
@@ -1130,12 +1134,15 @@ export class Session {
         segments_in_region: memberIdx.reduce((acc, i) => acc + (keptIdx.has(i) ? 1 : 0), 0),
       }));
 
+    const text = await this.textStatus(name);
     return {
       sheet: s.key,
       page: s.pageNum,
       sheet_px: [s.widthPx, s.heightPx],
       region: [round1(r.x0), round1(r.y0), round1(r.x1), round1(r.y1)],
       has_vector_linework: hasVectors,
+      text_status: text.status,
+      ...(text.outlined_words ? { outlined_words: text.outlined_words } : {}),
       vectors: {
         segments, meta: metaOut, family,
         kept: kept.length,
@@ -1442,13 +1449,47 @@ export class Session {
     }
   }
 
+  /** Where the sheet's words are: its text layer, its linework (outlined), both (partial), or nowhere. */
+  async textStatus(name: string): Promise<{ status: TextStatus; outlined_words: number }> {
+    const s = this.sheet(name);
+    if (!s.textStatus) {
+      const geo = await this.ensureGeometry(s);
+      if (!s.spans) s.spans = textSpans(s.page);
+      const words = outlinedWords(geo).length;
+      s.textStatus = { status: textStatusOf(s.spans.length, words), outlined_words: words };
+    }
+    return s.textStatus;
+  }
+
+  /** Readers of the text layer (labels, find_text) never answer "nothing here" about a sheet whose words
+   * are not in it. A sheet that DRAWS its words (outlined) is refused with the reason: the words are
+   * there and unreadable, and an empty sweep of it would pass for a sheet with no rooms. A sheet with
+   * no words anywhere (none: a pure scan) sweeps honestly to nothing, and its reply says why. Both
+   * need OCR, or the caller's own reading — view_sheet, then labels or points. */
+  private async requireTextLayer(name: string, tool: string): Promise<{ status: TextStatus; outlined_words: number }> {
+    const t = await this.textStatus(name);
+    const s = this.sheet(name);
+    if (t.status === "outlined") throw new UserError(`text is drawn as outlines; OCR needed — ${s.key} has no text layer: its ${t.outlined_words} word(s) are drawn as linework or stencil masks (text_status: outlined), which ${tool} cannot read. Look at the sheet with view_sheet and pass what you read (labels, points), or OCR it first.`);
+    return t;
+  }
+
+  /** What a text-layer reader's reply says of the sheet's text when it is not all in the text layer. */
+  private static textFields(t: { status: TextStatus; outlined_words: number }): { text_status?: "partial" | "none"; outlined_words?: number; reason?: string } {
+    if (t.status === "partial") return { text_status: "partial", outlined_words: t.outlined_words };
+    if (t.status === "none") return { text_status: "none", reason: "no text layer; OCR needed" };
+    return {};
+  }
+
   async sheetInfo(name: string) {
     const s = this.sheet(name);
     const geo = await this.ensureGeometry(s);
+    const text = await this.textStatus(name);
     return {
       ...sheetSummary(s),
       seg_count: geo.segs.length >> 2,
       has_vector_linework: geo.segs.length > 0,
+      text_status: text.status,
+      ...(text.outlined_words ? { outlined_words: text.outlined_words } : {}),
       scale_set: s.upp != null,
       ...(s.upp != null ? { upp: s.upp } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
@@ -2072,6 +2113,9 @@ export class Session {
       raster = true;
     }
     const minAreaSf = opts.minAreaSf ?? 5;
+    // the labels come from the text layer: a sheet whose words are drawn is refused with the reason,
+    // never swept to an empty result
+    const text = await this.requireTextLayer(name, "detect");
     if (!s.spans) s.spans = textSpans(s.page);
     // labels with BBOXES: same tokenization as roomLabelSeeds, but the ladder
     // and the bubble test need the label's box, not just its anchor
@@ -2461,6 +2505,7 @@ export class Session {
       // every withheld label by name: the room behind each count above
       withheld_labels: withheldLabels,
       work_cells: callWork,
+      ...Session.textFields(text),
       ...(wallclockHit ? { budget_wallclock: true as const } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
@@ -2487,6 +2532,7 @@ export class Session {
       this.refuseLayersOnRaster(opts.layers);
       mask = await this.ensureRasterMask(s);
     }
+    const text = await this.requireTextLayer(name, "cover");
     if (!s.spans) s.spans = textSpans(s.page);
     // metric sheets: a zone with no printed area answers to the drawn-walls check like every floor outline there
     const drawnWalls = !raster && this.drawnWallsApply(s);
@@ -2548,7 +2594,7 @@ export class Session {
           : [{ at: norm(c.piece!.at), m2: c.piece!.m2 }]);
       }
     }
-    return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
+    return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}), ...Session.textFields(text) };
   }
 
   /** What a cover note is placed clear of on a sheet (normalized boxes): the text the sheet prints, and its
@@ -6454,10 +6500,11 @@ export class Session {
    * whole thing at once — this tool doesn't merge runs into lines. Reuses the
    * bbox spans sheet_context lazily builds (same cache, same textSpans()
    * call), so calling both on one sheet costs the extraction once. */
-  findText(name: string, q: string, opts: { region?: { x0: number; y0: number; x1: number; y1: number }; limit?: number } = {}) {
+  async findText(name: string, q: string, opts: { region?: { x0: number; y0: number; x1: number; y1: number }; limit?: number } = {}) {
     const query = q.trim();
     if (!query) throw new UserError("q must be a non-empty string.");
     const s = this.sheet(name);
+    const text = await this.requireTextLayer(name, "find_text");
     if (!s.spans) s.spans = textSpans(s.page);
     const r = opts.region;
     const needle = query.toLowerCase();
@@ -6469,6 +6516,6 @@ export class Session {
       bbox: [sp.x0, sp.y0, sp.x1, sp.y1] as [number, number, number, number],
       center: [round1((sp.x0 + sp.x1) / 2), round1((sp.y0 + sp.y1) / 2)] as [number, number],
     }));
-    return { sheet: s.key, q: query, count: all.length, truncated: all.length > hits.length, hits };
+    return { sheet: s.key, q: query, count: all.length, truncated: all.length > hits.length, hits, ...Session.textFields(text) };
   }
 }

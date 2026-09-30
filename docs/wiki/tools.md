@@ -14,7 +14,7 @@ y down) everywhere.
 
 ## `open_drawings`
 
-Open plan PDFs and see what is loaded. load: open path, replacing the session; merge:true adds the file to the working set instead (plans + schedules + addenda as one takeoff). info: without sheet, every loaded sheet with its scale status and shape count; with sheet, that sheet's dims, vector linework, detected scale and PDF layer table.
+Open plan PDFs and see what is loaded. load: open path, replacing the session; merge:true adds the file to the working set instead (plans + schedules + addenda as one takeoff). info: without sheet, every loaded sheet with its scale status and shape count; with sheet, that sheet's dims, vector linework, detected scale, PDF layer table and text_status — where its words are: in the text layer (text_layer), drawn as linework or stencil masks with no text layer (outlined: a plotter that rasterised its fonts, text converted to curves — OCR or your own reading of view_sheet is needed, and detect, cover and find_text refuse with that reason), both (partial, with outlined_words: a logo's few, or room tags you cannot search), or none (no words anywhere: those readers answer empty and say "no text layer; OCR needed").
 
 ### `action: "load"` (was `load_plan`)
 
@@ -26,7 +26,7 @@ Fields:
 
 ### `action: "info"` (was `sheet_info`)
 
-Sheet detail: dims (px and pt), vector segment count, whether the sheet has vector linework (takeoff_rooms {action: "at"} floods it when present; a scanned sheet falls back to rendered pixels, disclosed as raster_traced), scale status, the detected scale suggestion, and this sheet's committed shape count.
+Sheet detail: dims (px and pt), vector segment count, whether the sheet has vector linework (takeoff_rooms {action: "at"} floods it when present; a scanned sheet falls back to rendered pixels, disclosed as raster_traced), scale status, the detected scale suggestion, text_status (text_layer / outlined / partial / none — where the sheet's words are, with outlined_words when any are drawn rather than written), and this sheet's committed shape count.
 
 ## `set_scale`
 

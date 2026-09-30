@@ -63,6 +63,8 @@ export const sheetInfoOutput = {
   ...sheetSummary,
   seg_count: z.number().int().describe("Vector segment count"),
   has_vector_linework: z.boolean().describe("takeoff_rooms floods vector linework"),
+  text_status: z.enum(["text_layer", "outlined", "partial", "none"]).describe("Where the sheet's words are: text_layer = in the text layer, what find_text and the room labels read; outlined = the sheet has no text layer and draws its words as linework or stencil masks (a plotter that rasterised its fonts, text converted to curves) — OCR or your own reading of view_sheet is needed, and detect, cover and find_text refuse with that reason; partial = a text layer AND drawn words (a logo's few, or room tags you cannot search — outlined_words says how many); none = no text and no drawn words"),
+  outlined_words: z.number().int().optional().describe("Words drawn as linework or stencil masks (glyph-sized stroke clusters in rows, type-sized masks) — present when any"),
   scale_set: z.boolean(),
   upp: z.number().optional().describe("Real feet per image px at render scale 2.0 — present once the scale is set"),
   shape_count: z.number().int().describe("Committed shapes on this sheet"),
@@ -182,6 +184,9 @@ export const detectRoomsOutput = {
     reason: z.string().describe("The withheld count it falls under: bubble, unowned, degenerate, no_ring, over_budget, duplicate, implausible, not_tried, budget_wallclock, already_measured, off_walls, area_disagrees, overlaps_measured or unresolved"),
   })).describe("Every withheld label by name — the rooms behind the counts in withheld. Always present"),
   work_cells: z.number().int().describe("Mask cells the call's floods filled — the unit the work budgets are in; deterministic for a sheet"),
+  text_status: z.enum(["partial", "none"]).optional().describe("Present when the sheet's words are not all in its text layer (open_drawings info text_status): partial = it also draws words, which were never seeds (outlined_words says how many); none = it has no words at all, so there was nothing to seed from (reason says so). A sheet whose words are ALL drawn (outlined) is refused with that reason instead"),
+  outlined_words: z.number().int().optional(),
+  reason: z.string().optional().describe("text_status none: \"no text layer; OCR needed\""),
   budget_wallclock: z.literal(true).optional().describe("Present when the wall-clock safety cap stopped the sweep: the rooms after it are withheld as budget_wallclock, never silently dropped"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — rooms inside an enlarged viewport may be figured at the wrong scale"),
@@ -798,6 +803,9 @@ export const findTextOutput = {
     bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).describe("[x0, y0, x1, y1] image px"),
     center: z.tuple([z.number(), z.number()]).describe("Bbox center, image px — feed straight into takeoff_rooms {action: \"at\"}'s seed"),
   })),
+  text_status: z.enum(["partial", "none"]).optional().describe("Present when the sheet's words are not all in its text layer (open_drawings info text_status): partial = it also draws words, which are never found (outlined_words says how many); none = it has no words at all (reason says so). A sheet whose words are ALL drawn (outlined) is refused with that reason instead"),
+  outlined_words: z.number().int().optional(),
+  reason: z.string().optional().describe("text_status none: \"no text layer; OCR needed\""),
 };
 
 /** editMaterials — session.ts's MaterialRow, verbatim. */
@@ -1098,6 +1106,8 @@ export const sheetContextOutput = {
   sheet_px: z.array(z.number()).length(2),
   region: z.array(z.number()).length(4).describe("The region actually resolved, post-clamp — pass this same rect to view_sheet and the render is in the same frame by construction"),
   has_vector_linework: z.boolean().describe("false = a scan: vectors and hatch are empty because there are none, not because the region is blank"),
+  text_status: z.enum(["text_layer", "outlined", "partial", "none"]).describe("Where the sheet's words are: text_layer = in the text layer, what find_text and the room labels read; outlined = the sheet has no text layer and draws its words as linework or stencil masks (a plotter that rasterised its fonts, text converted to curves) — OCR or your own reading of view_sheet is needed, and detect, cover and find_text refuse with that reason; partial = a text layer AND drawn words (a logo's few, or room tags you cannot search — outlined_words says how many); none = no text and no drawn words"),
+  outlined_words: z.number().int().optional().describe("Words drawn as linework or stencil masks (glyph-sized stroke clusters in rows, type-sized masks) — present when any"),
   vectors: z.object({
     segments: z.array(z.array(z.number()).length(4)).describe("[x0, y0, x1, y1] per segment, image px, endpoints exactly as drawn — clipped by KEEPING whole intersecting segments, never by rewriting them"),
     meta: z.array(z.number().int()).describe("One byte per segment, aligned with segments: bit 1 = curve chord, bit 2 = clip-only, bit 4 = filled-not-stroked; high nibble = device pen width"),

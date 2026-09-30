@@ -37,6 +37,8 @@ export interface OpList { fnArray: number[]; argsArray: any[]; }  // per-op args
 export type OpsTable = Record<string, number>;
 /** meta: one byte per segment — SEG_* bits + device line width in the high nibble.
  *  imageArea: total placed image area in device px² (scan/photo underlay detection).
+ *  imageMasks: the placed box (image px) of every stencil mask painted — a plotter that
+ *  rasterises its fonts stamps each word as one (textstatus.ts reads them).
  *  layerOf/layerIds (#85): per-segment index into layerIds (−1 = outside any
  *  Optional Content Group); layerIds carries pdf.js OCG ids in first-seen
  *  order. The id→name/visibility mapping is the CALLER's (pdf.js API side) —
@@ -88,7 +90,7 @@ export interface TextMark { x: number; y: number; w: number; h: number }
  *  keeps hand-built geometry (rastermask, tests) and stitched composites
  *  working unchanged. */
 export interface InkContext { subpaths?: SubPath[] | null; texts?: TextMark[] | null; dimTexts?: DimTextMark[] | null }
-export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; }
+export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; imageMasks?: [number, number, number, number][]; }
 export interface MaskObj { mask: Uint8Array; mw: number; mh: number; ws: number; softCount: number; mppf?: number; }  // mppf: mask px per foot (0/absent = scale unknown)
 export interface RegionResult { region: Uint8Array; mw: number; mh: number; ws: number; count?: number; }
 export type FloodResult =
@@ -433,6 +435,12 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
     if (b[1] < sp.y0) sp.y0 = b[1]; if (b[1] > sp.y1) sp.y1 = b[1];
   };
   let imageArea = 0;
+  const imageMasks: [number, number, number, number][] = [];
+  // the placed box of an image's unit square under transform t (image px)
+  const placedBox = (t: number[]): [number, number, number, number] => {
+    const xs = [t[4], t[0] + t[4], t[2] + t[4], t[0] + t[2] + t[4]], ys = [t[5], t[1] + t[5], t[3] + t[5], t[1] + t[3] + t[5]];
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
   let m = transform.slice();
   let lw = 1;                          // graphics-state line width (user space)
   // graphics-state STROKE luminance (#260). PDF's initial stroke color is
@@ -523,6 +531,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       // flags scan wrappers / photo underlays (a plan-area scan covers most of
       // the sheet; logos and stamps are ≪ 2%).
       imageArea += Math.abs(m[0] * m[3] - m[1] * m[2]);
+      if (fn === OPS.paintImageMaskXObject) imageMasks.push(placedBox(m));
     }
     else if (fn === OPS.paintImageXObjectRepeat) {
       // pdf.js FOLDS a run of identical placements into one op — no per-instance
@@ -540,6 +549,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       const [, ra, rb, rc, rd, positions] = args;
       const count = positions ? positions.length >> 1 : 0;
       imageArea += Math.abs(m[0] * m[3] - m[1] * m[2]) * Math.abs(ra * rd - rb * rc) * count;
+      for (let k = 0; k < count; k++) imageMasks.push(placedBox(mul(m, [ra, rb, rc, rd, positions[2 * k], positions[2 * k + 1]])));
     }
     else if (fn === OPS.paintImageMaskXObjectGroup) {
       // args: [images] — each images[k].transform is that instance's own local
@@ -548,7 +558,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       const ctmDet = Math.abs(m[0] * m[3] - m[1] * m[2]);
       for (const im of args[0] || []) {
         const t = im && im.transform;
-        if (t) imageArea += ctmDet * Math.abs(t[0] * t[3] - t[1] * t[2]);
+        if (t) { imageArea += ctmDet * Math.abs(t[0] * t[3] - t[1] * t[2]); imageMasks.push(placedBox(mul(m, t))); }
       }
     }
     else if (fn === OPS.paintInlineImageXObjectGroup) {
@@ -612,7 +622,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
   sealSub();
   const meta = Uint8Array.from(metaArr);
   markPolylineArcs(segs, meta);
-  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths };
+  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths, imageMasks };
 }
 
 // ── 1b. polyline arc detection ─────────────────────────────────────────────

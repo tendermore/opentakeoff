@@ -18,8 +18,8 @@ async function load() {
   await s.loadPlan(PLAN_PDF);
   return s;
 }
-const exact = (s: Session, q: string) =>
-  ((s.findText(PLAN, q, { limit: 500 }) as { hits?: { str: string }[] }).hits ?? []).filter((h) => h.str.trim() === q).length;
+const exact = async (s: Session, q: string) =>
+  (((await s.findText(PLAN, q, { limit: 500 })) as { hits?: { str: string }[] }).hits ?? []).filter((h) => h.str.trim() === q).length;
 
 test("the real sheet really is split: no VCT-1 or P-1 arrives as one pdf.js item", async () => {
   const s = await load();
@@ -32,14 +32,14 @@ test("the real sheet really is split: no VCT-1 or P-1 arrives as one pdf.js item
 test("find_text reads every split finish tag on the plan (independent census)", async () => {
   const s = await load();
   const census: Record<string, number> = { "CPT-1": 26, "CPT-2": 3, "VCT-1": 11, "P-1": 31, "P-2": 17, "P-3": 14, "WSF-1": 1 };
-  for (const [tag, n] of Object.entries(census)) assert.equal(exact(s, tag), n, tag);
+  for (const [tag, n] of Object.entries(census)) assert.equal(await exact(s, tag), n, tag);
 });
 
 test("a tag never swallows the room number its label overlaps (VCT-1 | 170)", async () => {
   const s = await load();
   // on this sheet the "VCT-1" label runs 1.6 px into room number "170"
-  assert.equal(exact(s, "170"), 1);
-  assert.equal((s.findText(PLAN, "VCT-1170") as { count: number }).count, 0);
+  assert.equal(await exact(s, "170"), 1);
+  assert.equal(((await s.findText(PLAN, "VCT-1170")) as { count: number }).count, 0);
 });
 
 test("both schedules still read off the joined text", async () => {
