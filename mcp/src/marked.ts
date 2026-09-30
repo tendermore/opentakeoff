@@ -130,8 +130,13 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   // estimator accepts them in the register. The row prints like any other;
   // the credit line says how many are still pencil.
   const pendingRfis = rfis.filter((r) => r.origin?.actor === "agent" && r.origin.reviewed !== true).length;
+  // what checked the floor numbers (session.ts FloorCheck): a room area printed
+  // inside the outline, or nothing — unverified floors are named, never implied
+  const floors = session.shapes.filter((s) => s.measure_role === "floor_area" && s.check);
+  const checked = floors.filter((s) => s.check?.status === "verified").length;
   const creditParts = [
     ...(machine ? [T.creditShapes(machine)] : []),
+    ...(floors.length ? [T.floorChecks(checked, floors.length)] : []),
     ...(pendingRfis ? [T.creditRfis(pendingRfis)] : []),
   ];
   const credit = creditParts.length

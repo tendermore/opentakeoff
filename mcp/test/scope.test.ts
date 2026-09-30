@@ -25,7 +25,11 @@ test("scope_duplicates: a deliberate 100% overlap between two conditions is caug
   const b = s.measurePolygon(KEY, SQ(0, 0), { condition: "LVT-2", role: "floor_area" }).shape_id!;
   const c = s.measurePolygon(KEY, SQ(1000, 0), { condition: "CPT-1", role: "floor_area" }).shape_id!;
   const d = s.measurePolygon(KEY, SQ(1180, 0), { condition: "TILE-1", role: "floor_area" }).shape_id!;   // right half of c
-  const e = s.measurePolygon(KEY, SQ(1000, 0), { condition: "CPT-1", role: "floor_area" }).shape_id!;   // c traced twice
+  // c traced twice is refused at commit (OVERLAPS_MEASURED); a double trace can
+  // still arrive by import, which is what scope_duplicates is there to find
+  assert.throws(() => s.measurePolygon(KEY, SQ(1000, 0), { condition: "CPT-1", role: "floor_area" }), /OVERLAPS_MEASURED/);
+  const e = "shp-imported-double";
+  s.shapes.push({ ...structuredClone(s.shapes.find((x) => x.id === c)!), id: e });
   s.measurePolygon(KEY, SQ(0, 0), { condition: "LVT-2", role: "deduct" });                            // deducts are not claims
   const r = s.scopeDuplicates();
   const key = (p: any) => [p.a.shape_id, p.b.shape_id].sort().join("|");
