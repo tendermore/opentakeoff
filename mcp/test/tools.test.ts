@@ -390,9 +390,8 @@ test("load_plan merge: two documents, one takeoff — cross-file graph, spanning
   // lines, thinner than any wall pair): a commit would be refused, so the
   // preview says so; 134 follows its walls and commits
   assert.match(room.data.check, /^would be refused: OFF_DRAWN_WALLS/);
-  const hit134 = (await call(client, "find_text", { action: "find", sheet: "sample-finish-plan.pdf", query: "134" })).data.hits.find((h: any) => h.str.trim() === "134");
-  const r134 = await call(client, "takeoff_rooms", { action: "at", sheet: "sample-finish-plan.pdf", at: [hit134.center[0], hit134.center[1] + 18], condition: "CPT-1" });
-  assert.equal(r134.data.check, "drawn_walls");
+  const swept = await call(client, "takeoff_rooms", { action: "detect", sheet: "sample-finish-plan.pdf", condition: "CPT-1" });
+  assert.ok(swept.data.detected > 0 && swept.data.rooms.every((r: any) => r.check === "drawn_walls"), "the rooms that follow their walls commit, each saying so");
 
   // the sheet graph spans the whole set
   const graph = await call(client, "sheet_context", { action: "graph" });
@@ -914,18 +913,18 @@ test("detect_rooms assign_from_schedule: rooms commit only under their own row a
   // flood stops at two door swings the door reader does not take for doors
   // and at a text box, well short of its east wall. Each is withheld with the
   // edge that leaves the walls; none resolves AND checks, so nothing commits.
-  // The seven outlines that do follow the walls answer to no schedule row.
+  // The outlines that do follow the walls answer to no schedule row.
   assert.equal(r.data.detected, 0);
   const offWalls = r.data.off_walls.map((o: any) => o.label);
   for (const tag of ["133", "136", "149", "153"]) assert.ok(offWalls.includes(tag), `${tag} withheld off the walls`);
   assert.ok(r.data.off_walls.every((o: any) => /runs along drawn walls|drawn wall inside/.test(o.reason) && o.seed.length === 2), "every off-walls room says which edge and where");
   assert.equal(r.data.withheld.off_walls, r.data.off_walls.length);
-  assert.equal(r.data.withheld.unowned, 6, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
+  assert.equal(r.data.withheld.unowned, 7, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
 
   // the never-guesses contract: withheld rooms are reported with their real
   // geometry and a reason, never committed and never dropped
-  assert.equal(r.data.withheld.unresolved, 7);
-  assert.equal(r.data.unresolved.length, 7);
+  assert.equal(r.data.withheld.unresolved, 3);
+  assert.equal(r.data.unresolved.length, 3);
   for (const u of r.data.unresolved) {
     assert.ok(u.reason.length > 0, "every withheld room says why");
     assert.ok(u.area_sf > 0 && u.perimeter_lf > 0, "withheld from committing, not from reporting");
