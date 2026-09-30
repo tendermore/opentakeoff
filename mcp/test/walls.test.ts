@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/session.ts";
-import { thicknessClasses } from "../src/walls.ts";
+import { thicknessClasses, scheduleWidthMm } from "../src/walls.ts";
+import { sheetDiscipline, scaleLabels } from "../../web/src/lib/sheetscope.ts";
 
 const W = 1190, H = 842;                  // A3 landscape, pt
 const PT_PER_M = 1000 / 100 / 25.4 * 72;  // 1:100
@@ -117,7 +118,7 @@ test("windows: the glazed opening is found with its width; no schedule means no 
   const { s, key } = await open(pdf(building()));
   const w = await s.countWindows(key, {});
   assert.equal(w.found, 1);
-  near(w.windows[0].width_mm, 1200, 30, "window width");
+  near(w.windows[0].width_mm!, 1200, 30, "window width");
   assert.equal(w.windows[0].side, "exterior");
   assert.equal((w.schedule as any).status, "none");
   assert.equal(w.plan_without_row.length, 1);
@@ -141,4 +142,34 @@ test("walls: single-line walls have no bands; a scan refuses rather than guess",
 test("thickness classes: one partition type read as 95, 100 and 106 mm is one class", () => {
   const cls = thicknessClasses([{ thicknessM: 0.095, grossM: 2 }, { thicknessM: 0.1, grossM: 5 }, { thicknessM: 0.106, grossM: 3 }, { thicknessM: 0.3, grossM: 10 }]);
   assert.deepEqual(cls, [100, 100, 100, 300]);
+});
+
+test("sheet discipline: a ventilation plan refuses with the title's words; the architectural plan does not", async () => {
+  const vent = pdf(building(), ["1000 60 Td (VENTILASJON PLAN 2) Tj"]);
+  const { s, key } = await open(vent);
+  await assert.rejects(s.measureWalls(key, {}), /mechanical sheet \(title block: "VENTILASJON PLAN 2"\)/);
+  await assert.rejects(s.countWindows(key, {}), /mechanical sheet/);
+  const arch = pdf(building(), ["1000 60 Td (PLANTEGNING 1. ETASJE) Tj"]);
+  const a = await open(arch);
+  assert.ok((await a.s.measureWalls(a.key, {})).runs.length > 0);
+  // a note sentence that mentions a trade names no drawing; a revision index is no sheet number
+  const W2 = 2000, H2 = 1400, sp = (str: string, x: number, y: number, h = 10) => ({ str, x0: x, y0: y, x1: x + str.length * h * 0.5, y1: y + h });
+  assert.equal(sheetDiscipline([sp("SEE CASEWORK, PLUMBING FIXTURE AND", 1700, 1200)], W2, H2).discipline, "unknown");
+  assert.equal(sheetDiscipline([], W2, H2, "E02").discipline, "unknown");
+  assert.equal(sheetDiscipline([], W2, H2, "M-101").discipline, "mechanical");
+});
+
+test("scale notes: a drawing title's scale counts; a bare slope ratio inside a plan does not", () => {
+  const W2 = 2000, H2 = 1400;
+  const sp = (str: string, x: number, y: number, h = 10) => ({ str, x0: x, y0: y, x1: x + str.length * h * 0.5, y1: y + h });
+  const notes = scaleLabels([sp("DETALJ A", 200, 900, 20), sp("1:20", 400, 905), sp("fall 1:50", 600, 400), sp("x", 0, 0), sp("y", 0, 0)], W2, H2);
+  assert.deepEqual(notes.map((n) => n.label), ["1:20"]);
+});
+
+test("schedule widths: millimetres, Nordic decimetre modules and thousands gaps read alike", () => {
+  assert.equal(scheduleWidthMm({ WIDTH: "1 345" }), 1345);
+  assert.equal(scheduleWidthMm({ BxH: "12x21" }), 1200);
+  assert.equal(scheduleWidthMm({ Dim: "1205x1420" }), 1205);
+  assert.equal(scheduleWidthMm({ B: "1,2" }), 1200);
+  assert.equal(scheduleWidthMm({ NOTE: "see facade" }), undefined);
 });

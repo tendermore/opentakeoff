@@ -3843,7 +3843,7 @@ export class Session {
       return shape.id;
     };
     return {
-      sheet: s.key, geo, upp: s.upp, width: s.widthPx, height: s.heightPx, text: s.spans,
+      sheet: s.key, geo, upp: s.upp, width: s.widthPx, height: s.heightPx, text: s.spans, sheetNumber: s.sheetNumber,
       doors: (await this.ensureDoors(name))?.doors ?? [],
       tables: graph.available ? graph.tables : [],
       scan: this.rasterPolicy(s, geo).rasterEligible && !this.rasterPolicy(s, geo).vectorViable,

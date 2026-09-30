@@ -51,6 +51,8 @@ export const HATCH_MIN_PER_M = 4;
 /** ...and present in this share of the wall's length bins. */
 export const HATCH_COVERAGE = 0.75;
 const HATCH_BIN_M = 0.15;
+/** A slab whose strokes are this share square rungs is a ladder, not material. */
+const LADDER_SHARE = 0.8;
 /** A stroke along the wall at least this long is a layer line, not hatch. */
 const LAYER_LINE_M = 0.5;
 /** An empty slab this thin on a wall's face is a board layer of the wall. */
@@ -110,6 +112,10 @@ export interface WallTakeoff {
   withheld: WithheldWall[];
   /** What the sheet draws its walls with, by measured length. */
   style: { poche_m: number; hatch_m: number; outline_m: number; outline_counted: boolean };
+  /** Gaps between two collinear pieces of one wall that carried no door or
+   *  window evidence (never bridged): where a window mark points at one, it
+   *  is the window's opening. Image px along the wall centreline. */
+  gaps: Array<{ span: [Point, Point]; widthM: number }>;
 }
 
 export interface WallOptions {
@@ -117,6 +123,9 @@ export interface WallOptions {
   exclude?: Array<[number, number, number, number]>;
   /** Only this rect (image px): one drawing of a sheet that carries several. */
   region?: [number, number, number, number];
+  /** Drawing-scale notes on the sheet (sheetscope.scaleLabels) as px per metre:
+   *  a group of walls whose own title states another scale is not measured. */
+  scaleNotes?: Array<{ at: Point; label: string; pxPerM: number }>;
   /** Door openings (closed-leaf chords, image px) from doors.ts: a gap with one is a door. */
   doors?: Array<[Point, Point]>;
   /** Text boxes (image px): a band carrying text is a table row or a label box, not a wall. */
@@ -328,6 +337,7 @@ interface Evidence {
   cell: number;
   text: WallOptions["text"];
   doors?: Array<[Point, Point]>;
+  gapLog?: Array<{ span: [Point, Point]; widthM: number }>;
 }
 
 const gkey = (gx: number, gy: number) => gx * 100003 + gy;
@@ -420,7 +430,7 @@ function judgeSlab(s: Slab, fam: Family, ev: Evidence, geo: VectorGeometry, pxPe
   const binW = Math.max(HATCH_BIN_M * pxPerM, 0.5 * t);
   const nBins = Math.max(1, Math.floor(L / binW));
   const seen = new Uint8Array(nBins);
-  let n = 0, curves = 0, long = 0;
+  let n = 0, curves = 0, long = 0, rungs = 0;
   for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
     const b = ev.segGrid.get(gkey(gx, gy));
     if (!b) continue;
@@ -437,12 +447,18 @@ function judgeSlab(s: Slab, fam: Family, ev: Evidence, geo: VectorGeometry, pxPe
       n++;
       if (meta[i] & SEG_CURVE) curves++;
       else if (len > 1.6 * t && Math.abs(c1 - c0) >= 0.05 * t) long++;
+      // a stroke square across the band, face to face, is a rung
+      if (!(meta[i] & SEG_CURVE) && Math.abs(c1 - c0) >= 0.8 * t && len <= 1.1 * Math.abs(c1 - c0)) rungs++;
       seen[Math.min(nBins - 1, Math.max(0, Math.floor((mu - s.lo) / binW)))] = 1;
     }
   }
   const perM = n / (L / pxPerM);
   if (n === 0 || (perM < 0.5 && curves === 0)) return "outline";   // a stray tick is not casework
   const coverage = seen.reduce((a, b) => a + b, 0) / nBins;
+  // square rungs at a pitch are a ladder — stair treads, a rack, a grating, a
+  // run of mullions — never wall material, which is hatched on the bias,
+  // dotted or batted
+  if (rungs >= LADDER_SHARE * n) return null;
   if (perM >= HATCH_MIN_PER_M && coverage >= HATCH_COVERAGE && long <= 0.1 * n) return "hatch";
   return null;
 }
@@ -624,7 +640,13 @@ function bridge(runs: RawRun[], fam: Family, geo: VectorGeometry, ev: Evidence, 
       if (b > a) {
         const kind0 = gapKind(fam, Math.min(cur.c0, r.c0), Math.max(cur.c1, r.c1), a, b, geo, ev, pxPerM);
         const kind = sameBand || kind0 === "door" || kind0 === "window" ? kind0 : null;
-        if (!kind) { refused.add(best); grew = true; continue; }
+        if (!kind) {
+          if (b - a >= MIN_OPENING_M * pxPerM) {
+            const cc = (Math.min(cur.c0, r.c0) + Math.max(cur.c1, r.c1)) / 2;
+            ev.gapLog?.push({ span: [toXY(fam, a, cc), toXY(fam, b, cc)], widthM: (b - a) / pxPerM });
+          }
+          refused.add(best); grew = true; continue;
+        }
         cur.gaps.push([a, b, kind]);
         if (!sameBand) {
           // the opening belongs to this wall's gross length; the piece beyond it,
@@ -743,6 +765,7 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   const fams = families(geo, pxPerM, opts.exclude, opts.region);
   const ev = buildEvidence(geo, pxPerM, opts.text);
   ev.doors = opts.doors;
+  ev.gapLog = [];
   const minT = MIN_THICK_M * pxPerM, maxT = MAX_THICK_M * pxPerM;
   type Cand = RawRun & { gaps: Array<[number, number, GapKind]> };
   const cands: Array<{ fam: Family; famIdx: number; r: Cand }> = [];
@@ -874,11 +897,32 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
     box.set(k, b);
   });
   const small = (i: number) => { const b = box.get(find(i))!; return Math.hypot(b[2] - b[0], b[3] - b[1]) < ISOLATED_MAX_M * pxPerM; };
+  // the scale note nearest each group of walls (inside it or just beside it)
+  // is that drawing's own scale; one that disagrees with the sheet's marks a
+  // detail, a section or a key plan
+  const foreignScale = new Map<number, string>();
+  if (opts.scaleNotes?.length) {
+    for (const [k, b] of box) {
+      const reach = 0.25 * Math.hypot(b[2] - b[0], b[3] - b[1]) + 0.5 * pxPerM;
+      let best: { d: number; n: { label: string; pxPerM: number } } | undefined;
+      for (const n of opts.scaleNotes) {
+        const dx = Math.max(b[0] - n.at[0], 0, n.at[0] - b[2]), dy = Math.max(b[1] - n.at[1], 0, n.at[1] - b[3]);
+        const d = Math.hypot(dx, dy);
+        if (d <= reach && (!best || d < best.d)) best = { d, n };
+      }
+      if (best && Math.abs(best.n.pxPerM / pxPerM - 1) > 0.05) foreignScale.set(k, best.n.label);
+    }
+  }
   const compLen = new Map<number, number>();
   connected.forEach((r, i) => compLen.set(find(i), (compLen.get(find(i)) ?? 0) + r.grossM));
   const building = connected.filter((r, i) => {
     if (small(i)) {
       withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "symbol: part of a small cluster of bands that meets no other wall — a marker, a column or a symbol" });
+      return false;
+    }
+    const foreign = foreignScale.get(find(i));
+    if (foreign) {
+      withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: `other_scale: this drawing's own title says ${foreign} — a detail or section beside the plan, not measurable at the sheet's scale` });
       return false;
     }
     if ((compLen.get(find(i)) ?? 0) < NETWORK_MIN_M) {
@@ -893,5 +937,5 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
     withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "freestanding: open to the outside on both faces — a railing, a parapet, a balcony edge or a site wall, not a building wall" });
     return false;
   });
-  return { runs: counted, withheld, style };
+  return { runs: counted, withheld, style, gaps: ev.gapLog };
 }
