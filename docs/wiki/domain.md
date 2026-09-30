@@ -7,7 +7,7 @@
 | Wall SF | Measured run LF × that shape's height | Applying one elevation width to every wall or treating floor deducts as wall openings |
 | Wall length | Centreline LF per drawn thickness class and side; L corners to the centreline intersection, T abutments to the face; gross through openings, net without | Reading a height off a plan, or merging walls that only line up across a room |
 | Window count | Glazed openings drawn in walls; type and size only from a schedule row | Counting a schedule row as installed work, or giving a plan width as the window size |
-| Base/transition LF | Installed run length or a disclosed derived allowance | Treating a numeric opening allowance as a located gap |
+| Base/transition LF | Installed run length along wall faces (net of doors, doorless openings and open sides), or a disclosed derived allowance | Counting base across an open side or a cased opening; treating a numeric opening allowance as a located gap |
 | Count | Located instances with count semantics | Counting a note's bare mention as a drawn device |
 | Order quantity | Net quantity with the condition's stated multiplier/waste rules | Increasing the traced geometry to carry waste |
 | Material coverage | A material row derived from measured finish quantities | Drawing duplicate finish polygons for membrane/protection coverage |
@@ -20,7 +20,10 @@ only affected heights are clipped. Existing records have no elevation-plane
 coordinate or vertical band offset. Preserve that limitation rather than
 inventing a new meaning for `deduct`.
 
-`derive {action: "base"}` retains a whole perimeter and may subtract stated LF numerically.
+`derive {action: "base"}` walks each room's ring along the drawn walls and commits the installed runs:
+a door comes off at its leaf width, a doorless opening (0.6–2 m) and an open side at their length, while
+windows and breaks under 0.4 m keep the base. A ring off the walls is flagged, not measured. With openings
+stated for a room it keeps the whole perimeter and subtracts the stated LF numerically.
 Explicit `measure {kind: "length"}` runs and located cuts show installation gaps. Inspect
 open finish splits, jamb returns and columns; apparent openings need source
 evidence. `derive {action: "transitions"}` can withhold a wall-separated boundary: a returned

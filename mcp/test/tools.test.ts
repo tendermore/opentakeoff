@@ -740,8 +740,9 @@ test("cut_out on an open run: clips the stretch, splits at a middle cut, refuses
   assert.equal(session.shapes.length, 1, "every refusal committed nothing");
 });
 
-// #148 — perimeter − stated openings → committed base runs, all-or-nothing.
-test("derive_base: nets stated openings per room, refuses bad claims whole, one undo step", async () => {
+// #148 — skirting from committed rooms: measured along drawn walls, or the
+// perimeter less what the caller states; flagged where the walls cannot be read.
+test("derive_base: unreadable walls flag, stated openings net per room, a repeat files nothing, bad claims refuse whole", async () => {
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
@@ -749,30 +750,39 @@ test("derive_base: nets stated openings per room, refuses bad claims whole, one 
   const inv = await call(client, "edit_takeoff", { action: "list", condition: "CPT-1" });
   const [room0, room1] = inv.data.shapes;
 
-  // gross perimeters, no openings
-  const gross = await call(client, "derive", { action: "base", source_condition: "CPT-1", condition: "RB-1" });
-  assert.equal(gross.isError, false);
-  assert.equal(gross.data.committed, 4);
-  assert.ok(gross.data.rooms.every((r: any) => r.openings_lf === 0 && r.net_lf === r.gross_lf));
-  assert.equal(gross.data.total_lf, +gross.data.rooms.reduce((n: number, r: any) => n + r.net_lf, 0).toFixed(2));
-  const summary = await call(client, "summary");
-  const rb = summary.data.conditions.find((c: any) => c.finish_tag === "RB-1");
-  assert.equal(rb.lf, gross.data.total_lf);
-  await call(client, "edit_takeoff", { action: "undo", n: 1 }); // the whole derivation is one step
+  // the demo plan draws its walls as single lines: no wall faces to run the base along, so nothing is guessed
+  const unread = await call(client, "derive", { action: "base", source_condition: "CPT-1", condition: "RB-1" });
+  assert.equal(unread.isError, false);
+  assert.equal(unread.data.committed, 0);
+  assert.equal(unread.data.flagged, 4);
+  assert.ok(unread.data.rooms.every((r: any) => r.status === "flagged" && r.flags[0].reason === "unread"));
+  assert.equal(unread.data.total_lf, 0);
 
-  // stated openings net out, stacking per room; provenance carries the claim
-  const withOpen = await call(client, "derive", { action: "base",
-    source_condition: "CPT-1", condition: "RB-1",
-    openings: [{ shape_id: room0.id, lf: 3 }, { shape_id: room0.id, lf: 3 }, { shape_id: room1.id, lf: 6 }],
-  });
+  // stated openings net out, stacking per room; lf 0 states "nothing to deduct"; provenance carries the claim
+  const openings = [{ shape_id: room0.id, lf: 3 }, { shape_id: room0.id, lf: 3 }, { shape_id: room1.id, lf: 6 },
+    ...inv.data.shapes.slice(2).map((x: any) => ({ shape_id: x.id, lf: 0 }))];
+  const withOpen = await call(client, "derive", { action: "base", source_condition: "CPT-1", condition: "RB-1", openings });
   assert.equal(withOpen.isError, false);
+  assert.equal(withOpen.data.committed, 4);
   const r0 = withOpen.data.rooms.find((r: any) => r.source_shape_id === room0.id);
+  assert.equal(r0.status, "stated");
   assert.equal(r0.openings_lf, 6);
   assert.equal(r0.net_lf, +(r0.gross_lf - 6).toFixed(2));
+  assert.equal(withOpen.data.sheets[0].net_lf, withOpen.data.total_lf);
+  const summary = await call(client, "summary");
+  assert.equal(summary.data.conditions.find((c: any) => c.finish_tag === "RB-1").lf, withOpen.data.total_lf);
   const payload = await call(client, "export", { action: "takeoff" });
-  const base = payload.data.shapes.find((s: any) => s.id === r0.base_shape_id);
+  const base = payload.data.shapes.find((s: any) => s.id === r0.base_shape_ids[0]);
   assert.equal(base.origin.derived.from_shape_id, room0.id);
   assert.equal(base.origin.derived.openings_lf, 6);
+
+  // idempotent: a repeat files nothing and reports what is already there
+  const again = await call(client, "derive", { action: "base", source_condition: "CPT-1", condition: "RB-1", openings });
+  assert.equal(again.data.committed, 0);
+  assert.equal(again.data.already_derived, 4);
+  assert.equal(again.data.total_lf, withOpen.data.total_lf);
+  await call(client, "edit_takeoff", { action: "undo", n: 1 }); // the derivation was one step
+  assert.equal((await call(client, "summary")).data.conditions.find((c: any) => c.finish_tag === "RB-1")?.lf ?? 0, 0);
 
   // refusals: all-or-nothing, and base never lands on its source tag
   const badId = await call(client, "derive", { action: "base", source_condition: "CPT-1", condition: "RB-2", openings: [{ shape_id: "shp-nope", lf: 3 }] });

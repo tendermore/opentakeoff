@@ -106,8 +106,9 @@ numbers report.**
    `measure {kind: "area"}` / `measure {kind: "length"}` with `condition`. When the set carries a room-finish
    schedule, prefer `takeoff_rooms { assign_from_schedule: true }` so each room commits under its
    *own* row instead of one tag you picked for all of them.
-3. **Derive what follows from the rooms.** `derive {action: "base"}` for base LF (each room's perimeter minus
-   the door openings *you state*—the tool never guesses a door), `derive {action: "transitions"}` for the
+3. **Derive what follows from the rooms.** `derive {action: "base"}` for base LF (each room's ring read
+   along the drawn walls: doors, openings and open sides come off, rooms whose ring leaves the walls are
+   flagged, never guessed), `derive {action: "transitions"}` for the
    line where two finishes meet. Both read committed floor shapes, so they come after step 2, and
    you audit their output in step 4 like anything else.
 4. **Look at what landed.** `view_sheet { overlay: true }` and fix misses with `edit_takeoff {action: "edit"}` before
@@ -288,9 +289,10 @@ The [geometry workflow](GEOMETRY_WORKFLOW.md) is the source-to-handoff route.
 - A positive overlap below 0.01 SF remains flagged with a note; machine-precision
   residue alone does not request a geometry correction. Inspect meaningful
   overlaps, and use material coverage rows for supporting materials.
-- Locate base and wall openings with explicit runs and `derive {action: "deduct"}`. Numeric
-  `derive {action: "base"}` allowances have no opening locations; clipping such a derived
-  perimeter refuses. Trace the installed runs with `measure {kind: "length"}` instead.
+- Locate base and wall openings with explicit runs and `derive {action: "deduct"}`. A measured
+  `derive {action: "base"}` commits the installed runs with its deductions cut out, so a run can
+  be clipped further; a base from openings you *stated* is numeric (no locations) and clipping it
+  refuses. Trace such runs with `measure {kind: "length"}` instead.
 
 ## Packaged knowledge
 

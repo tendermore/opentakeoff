@@ -33,10 +33,10 @@ test("propose_takeoff: every commit path that follows attaches to the open batch
   const c = s.placeCount(KEY, [[50, 50], [60, 60]], { condition: "TH-1" }).shape_ids;
   const cutRes = s.cutOut({ parent_shape_id: a, verts: SQ(220, 20, 20) });
   const cut = "deduct_shape_id" in cutRes ? cutRes.deduct_shape_id : "";
-  const base = await s.deriveBase({ source_condition: "CPT-1", condition: "RB-2" });
+  const base = await s.deriveBase({ source_condition: "CPT-1", condition: "RB-2", openings: [{ shape_id: loose, lf: 0 }, { shape_id: a, lf: 0 }] });
   const byId = new Map(s.shapes.map((x) => [x.id, x]));
   assert.equal(byId.get(loose)!.origin?.proposal_id, undefined, "a commit before the proposal is not in it");
-  for (const id of [a, b, ...c, cut, ...base.rooms.map((r) => r.base_shape_id)]) assert.equal(byId.get(id)!.origin?.proposal_id, p.proposal_id, `${id} attached centrally`);
+  for (const id of [a, b, ...c, cut, ...base.rooms.flatMap((r) => r.base_shape_ids)]) assert.equal(byId.get(id)!.origin?.proposal_id, p.proposal_id, `${id} attached centrally`);
   assert.equal(pending(s, p.proposal_id).length, 1 + 1 + 2 + 1 + 2, "polygon, line, two counts, the cut receipt, two base runs (one per CPT-1 floor)");
   const q = s.proposeTakeoff("Level 2", "sheet A-102");
   const d = s.measurePolygon(KEY, SQ(400, 0), { condition: "CPT-1", role: "floor_area" }).shape_id!;
