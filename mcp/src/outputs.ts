@@ -46,16 +46,29 @@ export const loadPlanOutput = {
   note: z.string(),
 };
 
+/** open_drawings info without a sheet: the takeoff://sheets index. */
+export const sheetIndexOutput = {
+  file: z.string().describe("The document loaded last (basename)"),
+  files: z.array(z.string()).describe("Every document in the working set, load order"),
+  page_count: z.number().int(),
+  sheets: z.array(z.object({
+    ...sheetSummary,
+    ord: z.number().int().describe("1-based position across the working set"),
+    scale_set: z.boolean(),
+    shape_count: z.number().int().describe("Committed shapes on this sheet"),
+  })),
+};
+
 export const sheetInfoOutput = {
   ...sheetSummary,
   seg_count: z.number().int().describe("Vector segment count"),
-  has_vector_linework: z.boolean().describe("one_click needs vector linework"),
+  has_vector_linework: z.boolean().describe("takeoff_rooms floods vector linework"),
   scale_set: z.boolean(),
   upp: z.number().optional().describe("Real feet per image px at render scale 2.0 — present once the scale is set"),
   shape_count: z.number().int().describe("Committed shapes on this sheet"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — enlarged plans/details likely"),
   layers: z.array(z.object({
-    id: z.string().describe("Optional Content Group id — pass to one_click/detect_rooms layers.include/exclude"),
+    id: z.string().describe("Optional Content Group id — pass to takeoff_rooms layers.include/exclude"),
     name: z.string().describe("The CAD layer name as exported (e.g. A-WALL-FULL)"),
     role: z.enum(["boundary", "finish-pattern", "annotation", "structure", "demolition", "unknown"]).describe("What this layer's linework IS to a takeoff (lib/layers.ts) — boundary/structure plot hard, pattern/annotation/demolition are excluded, unknown falls back to the hatch heuristics"),
     confidence: z.number().describe("0..1 — how sure the name classifier is"),
@@ -78,6 +91,7 @@ export const setScaleOutput = {
  * preview (area_px2/perimeter_px + warning) that commits nothing. */
 export const oneClickOutput = {
   status: z.literal("ok"),
+  method: z.literal("one_click_v1").optional().describe("The flood that traced it (takeoff_rooms at)"),
   nverts: z.number().int().describe("Vertex count of the traced polygon"),
   ...traceProvenance,
   hatch_filtered: z.literal(true).optional().describe("Present when hatch/pattern linework was classified out of the boundary"),
@@ -109,6 +123,8 @@ const detectedRoom = z.object({
   perimeter_lf: z.number().optional().describe("Scaled mode: traced perimeter in LF"),
   shape_id: z.string().optional().describe("Scaled mode: id of the committed shape, when condition was passed"),
   condition: z.string().optional().describe("The finish tag this room committed under — the passed condition, or in assign mode the FLOOR finish its own schedule row states. Present exactly when shape_id is"),
+  method: z.enum(["one_click_v1", "net_v1", "drawn_v1"]).describe("Which candidate outline the room took: the ink flood, the walls-only net region, or the drawn region"),
+  printed_m2: z.number().optional().describe("The room area printed in the room, m², when its label is a printed area — the trace agreed with it"),
   area_px2: z.number().optional().describe("Preview mode (no scale): raw area in px²"),
   perimeter_px: z.number().optional().describe("Preview mode (no scale): raw perimeter in px"),
 });
@@ -126,12 +142,12 @@ export const detectRoomsOutput = {
     degenerate: z.number().int().describe("Traced to fewer than 3 vertices"),
     duplicate: z.number().int().describe("Flooded to a region another label already claimed — counted once, never twice"),
     bubble: z.number().int().describe("Labels whose every clean flood was their own label BUBBLE (ring bbox ≈ label bbox — plans box their room numbers). Scale-free, so it guards unscaled previews too"),
-    unowned: z.number().int().describe("Labels whose every clean, non-bubble flood did not SURROUND the label's box — a ladder rung stepped past the wall into a neighbouring space or a door-swing pocket. Withheld rather than committed under the tag (#373); one_click inside the room answers it"),
+    unowned: z.number().int().describe("Labels whose every clean, non-bubble flood did not SURROUND the label's box — a ladder rung stepped past the wall into a neighbouring space or a door-swing pocket. Withheld rather than committed under the tag (#373); takeoff_rooms {action: \"at\"} inside the room answers it"),
     implausible: z.number().int().describe("Enclosed, clean, non-bubble, but smaller than min_area_sf — a door swing or wall cavity rather than a room"),
     unresolved: z.number().int().describe("Assign mode: rooms the schedule could not answer for (no row, no FLOOR cell, or a compound cell) — withheld into unresolved[], never committed under a guess. Always present; 0 outside assign mode"),
     area_disagrees: z.number().int().describe("Rooms labelled by a printed area whose trace disagrees with that area beyond rounding — withheld into area_disagrees[] rather than committed under a number the drawing contradicts. Always present"),
     already_measured: z.number().int().describe("Labels skipped because they sit inside a floor shape this sheet already has — a repeat call continues, never re-measures. Always present"),
-    not_tried: z.number().int().describe("Labels not reached before the host's time budget (OPENTAKEOFF_CALL_BUDGET_MS) ran out — call detect_rooms again to continue. Always present; 0 without a budget"),
+    not_tried: z.number().int().describe("Labels not reached before the host's time budget (OPENTAKEOFF_CALL_BUDGET_MS) ran out — call takeoff_rooms again to continue. Always present; 0 without a budget"),
     min_area_sf: z.number().optional().describe("The plausibility floor applied (scaled mode only)"),
   }).describe("What detection skipped and why — a withheld room is a question the caller can ask; a silently dropped one is a hole in a bid"),
   unresolved: z.array(z.object({
@@ -139,7 +155,7 @@ export const detectRoomsOutput = {
     reason: z.string().describe("WHY the schedule could not answer — resolveTag's own reason, \"states no FLOOR finish\", or \"ambiguous: …\" for a compound cell"),
     area_sf: z.number().describe("The room's real traced area — withheld from committing, not from reporting"),
     perimeter_lf: z.number(),
-    seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — once the estimator answers, one_click here with the stated condition commits it"),
+    seed: z.tuple([z.number(), z.number()]).describe("The flood seed (image px) — once the estimator answers, takeoff_rooms {action: \"at\"} here with the stated condition commits it"),
   })).optional().describe("Assign mode only, empty array included: [] is the positive claim that every detected room resolved against its own schedule row"),
   area_disagrees: z.array(z.object({
     label: z.string().describe("The printed-area label the room was traced from"),
@@ -212,7 +228,7 @@ const sweepLumGate = z.object({
   tol: z.number().describe("The luminance tolerance that was applied, 0–254"),
   seed_lum: z.array(z.number()).describe("The seed's own stroke luminances, deduplicated — the band candidates were held to"),
   rejected: z.number().int().describe("Placements the geometry alone would have COMMITTED and the gate did not — one entry per physical spot"),
-  at: z.array(z.tuple([z.number(), z.number()])).describe("Where each of them is, image px — view_sheet and look before trusting the gate; place_count reinstates one you disagree with"),
+  at: z.array(z.tuple([z.number(), z.number()])).describe("Where each of them is, image px — view_sheet and look before trusting the gate; count {action: \"place\"} reinstates one you disagree with"),
 });
 
 const sweepCandidates = z.object({
@@ -282,7 +298,7 @@ export const symbolSweepOutput = {
     label: z.string().optional().describe("The drawing's own tag for the seed instance (#308) — the family's identity, e.g. seeding a drain the sheet labels \"P-7\""),
     label_via: z.enum(["adjacent", "leader"]).optional(),
   }),
-  rejected: z.array(sweepRejected).optional().describe("Sheet scope only. Placements the geometry accepted and a counter-example refused (#259) — NEVER counted in found, and never silent: each says which negative did it and what it saw. Reinstate one by hand with place_count at its `at` if you disagree"),
+  rejected: z.array(sweepRejected).optional().describe("Sheet scope only. Placements the geometry accepted and a counter-example refused (#259) — NEVER counted in found, and never silent: each says which negative did it and what it saw. Reinstate one by hand with count {action: \"place\"} at its `at` if you disagree"),
   negatives: sweepNegatives.optional().describe("What each `exclude` rect was read as, in the order you passed them (#259)"),
   rejected_total: z.number().int().optional().describe("Set scope: placements counter-examples rejected across every swept sheet"),
   seed_committed: z.boolean().optional().describe("Present when commit_seed: true minted the seed instance into the batch (#296) — ea_total then includes it"),
@@ -499,7 +515,7 @@ export const importTakeoffOutput = {
   conditions_added: z.number().int(),
   scales_adopted: z.number().int().describe("Sheets whose calibration came from the file (this session's own always wins)"),
   unknown_files: z.array(z.string()).describe("Files referenced by imported shapes that this document doesn't have — they count in totals but can't be viewed here"),
-  rules_imported: z.number().int().describe("Correction rules (#88) that arrived with the file — apply_rules re-runs them"),
+  rules_imported: z.number().int().describe("Correction rules (#88) that arrived with the file — schedule {action: \"apply_rules\"} re-runs them"),
   shapes_total: z.number().int(),
   note: z.string(),
 };
@@ -609,10 +625,10 @@ export const listShapesOutput = {
     perimeter_lf: z.number().optional(),
     count: z.number().optional(),
     height_ft: z.number().optional().describe("surface_area shapes — the height they were quantified at"),
-    label: z.string().optional().describe("The room (or phase/area) this shape belongs to — detect_rooms stamps the room number it traced from; edit_shape sets or clears it. Absent when unlabeled"),
+    label: z.string().optional().describe("The room (or phase/area) this shape belongs to — takeoff_rooms stamps the room number it traced from; edit_takeoff {action: \"edit\"} sets or clears it. Absent when unlabeled"),
     nverts: z.number().int(),
     reviewed: z.boolean().describe("true = human-affirmed ink, refused by every agent mutation"),
-    assignment: z.enum(["schedule", "asserted"]).optional().describe('Where the finish tag came from: "schedule" = resolved from the room\'s own schedule row, "asserted" = the agent chose it. origin.assignment in export_takeoff carries the citation. Absent on human canvas shapes'),
+    assignment: z.enum(["schedule", "asserted"]).optional().describe('Where the finish tag came from: "schedule" = resolved from the room\'s own schedule row, "asserted" = the agent chose it. origin.assignment in export {action: "takeoff"} carries the citation. Absent on human canvas shapes'),
     agent_edits: z.number().int().optional().describe("Present when the agent has revised this shape"),
     proposal_id: z.string().optional().describe("The propose_takeoff batch this shape was committed under (#365) — present on shapes committed while a proposal was open; an accepted shape keeps it as history"),
   })),
@@ -671,7 +687,7 @@ export const findTextOutput = {
   hits: z.array(z.object({
     str: z.string().describe("The matched pdf.js text run, verbatim (may be shorter than the full label — runs aren't merged into lines)"),
     bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).describe("[x0, y0, x1, y1] image px"),
-    center: z.tuple([z.number(), z.number()]).describe("Bbox center, image px — feed straight into one_click's seed"),
+    center: z.tuple([z.number(), z.number()]).describe("Bbox center, image px — feed straight into takeoff_rooms {action: \"at\"}'s seed"),
   })),
 };
 
@@ -777,7 +793,7 @@ export const editConditionOutput = {
   condition_id: z.string(),
   waste_pct: z.number().describe("The condition's waste % after this write"),
   multiplier: z.number().describe("The condition's quantity multiplier after this write"),
-  height_ft: z.number().optional().describe("The condition's wall height after this write — present once set (measure_surface multiplies traced LF by it)"),
+  height_ft: z.number().optional().describe("The condition's wall height after this write — present once set (measure {kind: \"surface\"} multiplies traced LF by it)"),
   rise_ft: z.number().optional().describe("The condition's default rise for its linear runs after this write — present once set (#441)"),
   drop_ft: z.number().optional().describe("The condition's default drop for its linear runs after this write — present once set (#441)"),
   roll_setup: z.object({}).passthrough().optional().describe("The condition's roll-goods setup after this write — present while opted in"),
@@ -788,7 +804,7 @@ export const editConditionOutput = {
     order_lf: z.number().describe("Full-width roll footage to order, ×N applied, rounded up to the inch"),
     rolls: z.number(), order_qty: z.number(), order_unit: z.string(),
     oversize: z.boolean().describe("true when a cut exceeds the physical roll length (roll_length_ft binds)"),
-  }).passthrough().optional().describe("The figured order (same row export_report's roll_goods carries) — present when the roll-goods condition has floor shapes on scaled sheets"),
+  }).passthrough().optional().describe("The figured order (same row export {action: \"report\"}'s roll_goods carries) — present when the roll-goods condition has floor shapes on scaled sheets"),
 };
 
 export const readSheetTextOutput = {
@@ -826,7 +842,7 @@ export const sheetGraphOutput = {
     building: z.string().optional().describe("The sheet's building context, when it names exactly one (BUILDING A / BLDG 2)"),
     schedules: z.array(z.object({
       kind: z.string(), title: z.string(), rows: z.number().int(), region: wireBox,
-      continues: z.string().optional().describe("Present on a continuation fragment ('… SCHEDULE — CONT'D'): the sheet carrying the table's base fragment. The fragments read as ONE table — resolve_tag and find_schedule already see the union"),
+      continues: z.string().optional().describe("Present on a continuation fragment ('… SCHEDULE — CONT'D'): the sheet carrying the table's base fragment. The fragments read as ONE table — find_text {action: \"resolve_tag\"} and schedule {action: \"find\"} already see the union"),
       rotated_headers: z.boolean().optional().describe("true when the column headers were read at a quarter-turn"),
     })),
   })),
@@ -840,7 +856,7 @@ export const sheetGraphOutput = {
   callouts: z.array(z.object({ detail: z.string(), target_sheet: z.string(), sheet: z.string(), bbox: wireBox })).describe("Detail callouts (3/A-601) — edges to their target sheets"),
   buildings: z.array(z.string()).optional().describe("Every building designator the set names (sorted) — present only on multi-building-aware sets. Room numbers reused across these need qualified tags ('A-134')"),
   revisions: z.array(z.object({ rev: z.string(), sheet: z.string(), bbox: wireBox, drawn: z.boolean().optional() })).optional()
-    .describe("Every delta-triangle / REV-tag marker the set carries — text markers ('Δ2', 'REV 2') and DRAWN deltas (a bare digit inside a triangle of linework, drawn: true) — where one sits, the ink changed under that revision. Markers on a schedule row or room bubble also attach there (and ride resolve_tag). A revision CLOUD is arc-chain linework these detectors do not read — absence here is not absence of revisions"),
+    .describe("Every delta-triangle / REV-tag marker the set carries — text markers ('Δ2', 'REV 2') and DRAWN deltas (a bare digit inside a triangle of linework, drawn: true) — where one sits, the ink changed under that revision. Markers on a schedule row or room bubble also attach there (and ride find_text {action: \"resolve_tag\"}). A revision CLOUD is arc-chain linework these detectors do not read — absence here is not absence of revisions"),
   notes: z.array(z.string()).optional().describe("Named gaps found while indexing (e.g. a continuation whose rows could not be aligned) — the graph refuses silently dropping anything"),
   counts: z.object({ rooms: z.number().int(), unmatched_tags: z.number().int().optional(), schedules: z.number().int().describe("LOGICAL tables — a schedule continued across sheets counts once"), callouts: z.number().int() }),
 };
@@ -991,7 +1007,7 @@ export const getSheetVectorsOutput = {
   lum: z.array(z.number().int()).describe("Aligned with points: stroke luminance 0 (black) – 255 (white), Rec. 709 over the stroke colour in force when the path was built. Empty only when the geometry carries no luminance channel"),
   subpath: z.array(z.number().int()).describe("Aligned with points: ordinal of the drawn FIGURE each segment belongs to (each moveTo starts one, each rectangle is one) — segments sharing a value are one path; −1 = outside every figure"),
   image_area: z.number().describe("Total placed-image area on the sheet, image px² — a value near the sheet area means a scan or photo underlay sits under whatever linework there is"),
-  layer_ids: z.array(z.string()).describe("The sheet's PDF Optional Content Group ids in first-seen order — the same ids sheet_info.layers reports (with names and roles); [] on an unlayered sheet"),
+  layer_ids: z.array(z.string()).describe("The sheet's PDF Optional Content Group ids in first-seen order — the same ids open_drawings {action: \"info\"}.layers reports (with names and roles); [] on an unlayered sheet"),
   layer_of: z.array(z.number().int()).describe("Aligned with points: index into layer_ids, or −1 for a segment outside every layer. Empty only when the geometry carries no layer channel"),
   total: z.number().int().describe("Segments on the sheet intersecting the region — the whole set, before paging"),
   offset: z.number().int().describe("Matching segments BEFORE this page (skipped by cursor)"),
@@ -1160,3 +1176,23 @@ export const countMarksOutput = {
   skipped: z.array(z.object({ sheet: z.string(), role: z.string(), reason: z.string() })),
   complete: z.boolean(),
 };
+
+/** The output of a multi-action tool, stated honestly as ONE object: the
+ * answering `action` (or `kind`) plus every action's own fields, each
+ * optional. A field two actions share with different shapes accepts either. */
+export function perAction(key: "action" | "kind", actions: [string, ...string[]], ...shapes: z.ZodRawShape[]): z.ZodRawShape {
+  const byField = new Map<string, z.ZodTypeAny[]>();
+  for (const shape of shapes) {
+    for (const [field, t] of Object.entries(shape)) {
+      const inner = t instanceof z.ZodOptional ? t.unwrap() : t;
+      const seen = byField.get(field) ?? [];
+      if (!seen.includes(inner)) seen.push(inner);
+      byField.set(field, seen);
+    }
+  }
+  const out: z.ZodRawShape = { [key]: z.enum(actions).describe(`The ${key} that answered`) };
+  for (const [field, ts] of byField) {
+    out[field] = (ts.length === 1 ? ts[0] : z.union(ts as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])).optional();
+  }
+  return out;
+}

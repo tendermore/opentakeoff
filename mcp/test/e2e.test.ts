@@ -36,7 +36,7 @@ test("e2e: load → set_scale(detected) → one_click × 4 rooms → summary →
     return data;
   };
 
-  const loaded = await call("load_plan", { path: PLAN });
+  const loaded = await call("open_drawings", { action: "load", path: PLAN });
   assert.equal(loaded.sheets[0].detected_scale, '1/4" = 1\'-0"');
 
   await call("set_scale", { sheet: KEY, use_detected: true });
@@ -44,7 +44,7 @@ test("e2e: load → set_scale(detected) → one_click × 4 rooms → summary →
   let total = 0;
   const shapeIds: string[] = [];
   for (const [room, x, y] of ROOMS) {
-    const r = await call("one_click", { sheet: KEY, x, y, condition: "CPT-1" });
+    const r = await call("takeoff_rooms", { action: "at", sheet: KEY, at: [x, y], condition: "CPT-1" });
     assert.ok(r.shape_id, `${room} committed`);
     assert.ok(approx(r.area_sf, 438.6, 0.05), `${room} ≈ 438.6 SF, got ${r.area_sf}`);
     total += r.area_sf;
@@ -58,7 +58,7 @@ test("e2e: load → set_scale(detected) → one_click × 4 rooms → summary →
   assert.equal(verdict.actor, "agent");
   assert.equal(verdict.condition, "CPT-1");
 
-  const summary = await call("takeoff_summary");
+  const summary = await call("summary");
   assert.equal(summary.conditions.length, 1);
   const row = summary.conditions[0];
   assert.equal(row.finish_tag, "CPT-1");
@@ -70,9 +70,10 @@ test("e2e: load → set_scale(detected) → one_click × 4 rooms → summary →
 
   const out = path.join(tmpdir(), `opentakeoff-mcp-e2e-${process.pid}.json`);
   try {
-    const exported = await call("export_takeoff", { path: out });
+    const { action, ...exported } = await call("export", { action: "takeoff", path: out });
+    assert.equal(action, "takeoff", "the reply names its action");
     const onDisk = JSON.parse(await readFile(out, "utf8"));
-    assert.deepEqual(onDisk, exported, "disk copy = inline copy");
+    assert.deepEqual(onDisk, exported, "disk copy = inline copy (the file carries no action echo)");
     assert.equal(exported.schema, "opentakeoff.takeoff_canvas.v1");
     assert.equal(exported.shapes.length, 4);
     assert.equal(exported.conditions.length, 1);

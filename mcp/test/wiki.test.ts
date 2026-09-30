@@ -11,14 +11,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildServer } from "../server.ts";
 import { Session } from "../src/session.ts";
 import { WIKI_PAGES, WIKI_VERSION } from "../src/wiki.generated.ts";
-import { TOOL_NAMES } from "../src/staging.ts";
+import { TOOL_NAMES } from "../src/toolnames.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
-test("wiki resources route to packaged pages before load, preserve the session and honor tool staging", async () => {
-  for (const stagedTools of [false, true]) {
+test("wiki resources route to packaged pages before load and preserve the session", async () => {
+  {
     const session = new Session();
-    const server = buildServer(session, { stagedTools, oneClick: false });
+    const server = buildServer(session, { oneClick: false });
     const client = new Client({ name: "wiki-test", version: "1" });
     const [ct, st] = InMemoryTransport.createLinkedPair();
     await server.connect(st);
@@ -28,7 +28,7 @@ test("wiki resources route to packaged pages before load, preserve the session a
       const before = snapshot();
       const listed = await client.listResources();
       const wikiUris = listed.resources.filter(r => r.uri.startsWith("takeoff://wiki")).map(r => r.uri).sort();
-      assert.equal(wikiUris.length, 9);
+      assert.equal(wikiUris.length, 10);
       for (const page of WIKI_PAGES) {
         assert.ok(wikiUris.includes(page.uri));
         const content = (await client.readResource({ uri: page.uri })).contents[0];
@@ -47,13 +47,8 @@ test("wiki resources route to packaged pages before load, preserve the session a
       for (const uri of unknown) await assert.rejects(client.readResource({ uri }));
       assert.deepEqual(snapshot(), before);
       const tools = (await client.listTools()).tools.map(t => t.name).sort();
-      assert.ok(!tools.includes("one_click"));
-      assert.ok(!tools.includes("detect_rooms"));
-      if (!stagedTools) assert.deepEqual(tools, [...TOOL_NAMES]);
-      else {
-        assert.ok(tools.includes("open_tool_stage"));
-        assert.ok(!tools.includes("measure_polygon"));
-      }
+      assert.ok(!tools.includes("takeoff_rooms"));
+      assert.deepEqual(tools, [...TOOL_NAMES]);
     } finally { await client.close(); await server.close(); }
   }
 });

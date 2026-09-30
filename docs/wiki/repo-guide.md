@@ -126,9 +126,10 @@ generated references:
    pages and run the wiki/resource checks when their guidance changes.
 6. `mcp/README.md` (the tool table) and `docs/MCP.md` (the reach-for-it ordering,
    the example session, and the tool count in its opening line). A new tool also
-   needs a row in `mcp/src/staging.ts`'s `TOOL_STAGES`—the four lists must
-   partition the tool set exactly, and a test fails CI if one doesn't.
-   `npm run check:tool-count --prefix mcp` checks default, gated and setup counts across the current entry points,
+   needs its name in `mcp/src/toolnames.ts`—the single list every count and
+   inventory reads, and a test fails CI if the runtime disagrees with it. A new
+   action belongs in the [tool reference](tools.md).
+   `npm run check:tool-count --prefix mcp` checks default and gated counts across the current entry points,
    reference-table coverage, and [`docs/MCP_TOOL_INDEX.md`](../../docs/MCP_TOOL_INDEX.md)
    against runtime schemas. Add `-- --write` to regenerate counts and the index. If the
    change alters *doctrine* rather than adding a verb—what withholds, what
@@ -164,7 +165,7 @@ answer an estimator's question in the agent manual or vice versa:
 |---|---|---|
 | [`README.md`](../../README.md) | everyone, ~60 seconds | what this is, the three doors, what's in the box |
 | [`docs/USER_GUIDE.md`](../../docs/USER_GUIDE.md) | the estimator at the canvas | every shipped UI behavior, the working order on a real bid, the glossary |
-| [`docs/AGENT_GUIDE.md`](../../docs/AGENT_GUIDE.md) | an agent driving the engine | the operating model, the standard finish, withheld doctrine, staging, refusal→next-move |
+| [`docs/AGENT_GUIDE.md`](../../docs/AGENT_GUIDE.md) | an agent driving the engine | the operating model, the standard finish, withheld doctrine, refusal→next-move |
 | [`mcp/README.md`](../../mcp/README.md) | an agent's integrator | tool-by-tool reference, resources, coordinate contract, limits |
 
 All of them follow one house style—the Apple Style Guide, with the rules that

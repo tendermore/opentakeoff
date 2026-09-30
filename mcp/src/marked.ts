@@ -67,13 +67,13 @@ export interface MarkedPdfOpts {
 
 export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   const { file, filePath } = session;
-  if (!file || !filePath) throw new UserError("No plan loaded — call load_plan first.");
+  if (!file || !filePath) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
   // a sheet carrying only an approval mark still exports (markedset.js's own
   // rule — a seal is work on paper), so verdicts count toward "anything to mark";
   // so does a live RFI (the builder's RFI-only rule: cover + schedule)
   const rfis = session.liveRfis();
   if (!session.shapes.length && !session.markups.length && !session.approvals.length && !rfis.length) {
-    throw new UserError("Nothing to mark yet — commit shapes (one_click / detect_rooms / measure_polygon / measure_line with a condition) or annotate before exporting the marked set.");
+    throw new UserError("Nothing to mark yet — commit shapes (takeoff_rooms / measure with a condition) or annotate before exporting the marked set.");
   }
 
   const base = file.replace(/\.pdf$/i, "");
@@ -174,6 +174,6 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
     annotations_drawn: session.markups.length,
     approvals_drawn: session.approvals.length,
     rfis_printed: rfis.length,
-    note: "The takeoff burned into the plan sheets, with a legend cover — hand this to the user to review. To revise in the app, import the export_takeoff payload; agent shapes arrive as pencil proposals there until accepted.",
+    note: "The takeoff burned into the plan sheets, with a legend cover — hand this to the user to review. To revise in the app, import the export {action: \"takeoff\"} payload; agent shapes arrive as pencil proposals there until accepted.",
   };
 }

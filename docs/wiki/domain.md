@@ -12,16 +12,16 @@
 | Confidence | A signal for prioritizing inspection | Treating it as human approval or an accuracy guarantee |
 | Agent verdict | The agent's own recorded check | Creating or claiming an estimator's approval seal |
 
-Use `measure_surface` bands for stepped faces. `cut_out` removes the full height
+Use `measure {kind: "surface"}` bands for stepped faces. `derive {action: "deduct"}` removes the full height
 of the particular wall run it clips; a partial-height opening needs bands so
 only affected heights are clipped. Existing records have no elevation-plane
 coordinate or vertical band offset. Preserve that limitation rather than
 inventing a new meaning for `deduct`.
 
-`derive_base` retains a whole perimeter and may subtract stated LF numerically.
-Explicit `measure_line` runs and located cuts show installation gaps. Inspect
+`derive {action: "base"}` retains a whole perimeter and may subtract stated LF numerically.
+Explicit `measure {kind: "length"}` runs and located cuts show installation gaps. Inspect
 open finish splits, jamb returns and columns; apparent openings need source
-evidence. `derive_transitions` can withhold a wall-separated boundary: a returned
+evidence. `derive {action: "transitions"}` can withhold a wall-separated boundary: a returned
 candidate is still something to inspect.
 
 MCP work stays pending; correction does not approve it. A human's correction

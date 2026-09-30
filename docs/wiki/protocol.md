@@ -12,7 +12,7 @@ MCP 0.9.82 packages the allowlisted draft schemas as read-only resources. Start
 at `takeoff://protocol` for the compact index, then read an individual schema at
 `takeoff://protocol/{path}` (for example,
 `takeoff://protocol/v1/measurement.schema.json`). These resources are available
-before a plan is loaded and in staged mode. They are discovery and contract
+before a plan is loaded. They are discovery and contract
 material; they do not add a validator tool, change a writer, or make a session a
 complete `TakeoffDocument`.
 

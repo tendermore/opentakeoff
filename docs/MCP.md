@@ -12,10 +12,10 @@ shorter reads sit either side of it: [`AGENT_GUIDE.md`](AGENT_GUIDE.md) is the
 operating manual—how a takeoff is run, what withholds, what refuses—and
 [`mcp/README.md`](../mcp/README.md) is the tool-by-tool reference.
 
-> **One-Click is temporarily gated.** `one_click` and `detect_rooms` are not registered on a
+> **One-Click is temporarily gated.** `takeoff_rooms` is not registered on a
 > default build while the flood engine is re-validated against a wider plan corpus; the server
-> says so in its initialize instructions and points at `measure_polygon`. Set
-> `OPENTAKEOFF_ONE_CLICK=1` to register them. The passages below that use the two verbs describe
+> says so in its initialize instructions and points at `measure {kind: "area"}`. Set
+> `OPENTAKEOFF_ONE_CLICK=1` to register it. The passages below that use `takeoff_rooms` describe
 > that lifted build. See [`design/ONE_CLICK_GATE.md`](design/ONE_CLICK_GATE.md).
 
 ## Setup
@@ -44,34 +44,31 @@ Register the server with your MCP client (any stdio client):
 Never point a client config at `npm start`—npm's banner goes to stdout,
 which is the MCP wire. `node --import tsx` is the whole invocation.
 
-By default the server hands every client every tool schema at once. Set
-`OPENTAKEOFF_MCP_STAGED_TOOLS=1` in the server's environment to stage the
-surface instead: only the setup tools start enabled, and the agent opens the
-`measure` / `revise` / `handoff` groups on demand with `open_tool_stage` as
-the takeoff reaches them—details in
-[`mcp/README.md`](../mcp/README.md#staged-tool-exposure-opt-in). Needs a
-client that honors `tools/list_changed`; leave it unset otherwise.
+The server hands every client every tool schema at once. The task tools are
+few and short—one flat input each, an `action` (or `kind`) enum picking what
+it does—and the engine detail behind them lives in the
+[tool reference](wiki/tools.md) (`takeoff://wiki/tools`).
 
 ## What the agent gets
 
-Fifty-two tools, in the order an agent tends to reach for them:
+The tools and their actions, in the order an agent tends to reach for them:
 
-- **Open and orient**—`load_plan`, `sheet_info` (including the sheet's PDF
+- **Open and orient**—`open_drawings {action: "load"}`, `open_drawings {action: "info"}` (including the sheet's PDF
   layer table—Optional Content Groups with a classified role, confidence,
   and default visibility per layer), `set_scale`, `sheet_context`,
-  `get_sheet_vectors` (the sheet's vector layer exactly as the engine is fed
+  `sheet_context {action: "vectors"}` (the sheet's vector layer exactly as the engine is fed
   it—flat points, meta byte, luminance, subpath and layer index per segment,
   paged with an exact `dropped` count—so a reader can run its own geometry
   against what the app sees; refuses on a scan, #367)
-- **Load the set**—`load_plan` (default replaces; `merge: true` adds—plans +
+- **Load the set**—`open_drawings {action: "load"}` (default replaces; `merge: true` adds—plans +
   schedule + addenda as one working set, #152)
-- **Navigate the set**—`sheet_graph` (the plan-set index: sheet roles with
+- **Navigate the set**—`sheet_context {action: "graph"}` (the plan-set index: sheet roles with
   evidence, schedule tables found, every room tag with its name, detail
   callouts—how an agent decides *what* to measure without a human
-  enumerating the rooms), `resolve_tag` (one room tag → its room-finish
+  enumerating the rooms), `find_text {action: "resolve_tag"}` (one room tag → its room-finish
   schedule row → each code's finish/material definition, every edge carrying
   a citation; unresolved comes back *with a reason*, never as silence),
-  `find_schedule` (kind → sheet + title + headers + a `view_sheet`-ready
+  `schedule {action: "find"}` (kind → sheet + title + headers + a `view_sheet`-ready
   region; kinds are `room finish`, `finish`/`material`, and `equipment` —
   the device schedules of any trade, fans and pumps and heaters and light
   fixtures and plumbing fixtures and diffusers alike, keyed by mark and
@@ -79,7 +76,7 @@ Fifty-two tools, in the order an agent tends to reach for them:
   stacked schedule on a sheet is read, top to bottom). Real-set shapes are handled natively (#87 phases 2–3): a
   schedule **continued across sheets** ("… SCHEDULE — CONT'D") reads as ONE
   table—rows resolve regardless of which sheet carries them, each citing
-  the sheet the ink is on, and `find_schedule` returns one match whose
+  the sheet the ink is on, and `schedule {action: "find"}` returns one match whose
   `parts` list every fragment; **rotated column headers** (a quarter-turn
   header band) anchor the table and are flagged `rotated_headers`; and on a
   **multi-building set** the room key is (building, number), not the number
@@ -91,10 +88,10 @@ Fifty-two tools, in the order an agent tends to reach for them:
   common CAD convention, proven from the sheet's vector geometry and
   flagged `drawn: true`) beside a schedule row or a room bubble attaches
   there and rides
-  `resolve_tag` as `revisions` (the codes returned are the post-revision
+  `find_text {action: "resolve_tag"}` as `revisions` (the codes returned are the post-revision
   answer, but the ink changed under that delta—view the marker and check
-  the addendum before pricing), the set-wide list is `sheet_graph.revisions`,
-  `find_schedule` counts `revised_rows` per table, and a marker never bands
+  the addendum before pricing), the set-wide list is `sheet_context {action: "graph"}.revisions`,
+  `schedule {action: "find"}` counts `revised_rows` per table, and a marker never bands
   into a cell or mints a room key. A revision **cloud** with no text marker
   is linework—invisible to this text-layer pass, and stated as such rather
   than guessed at. Real-set column shapes are read too (#87 phase 3b, every
@@ -108,19 +105,21 @@ Fifty-two tools, in the order an agent tends to reach for them:
   MARK column too, and a finish code chaining to a door mark is a confidently
     wrong product—with the refusal named in `notes`. How this is measured, what
   it scores, and what it still cannot read: [docs/SHEET-GRAPH-EVAL.md](SHEET-GRAPH-EVAL.md)
-- **Measure**—`one_click`, `detect_rooms` (both take `layers {include,
+- **Measure**—`takeoff_rooms` (takes `layers {include,
   exclude}` to override the sheet's stated layer roles for a call),
-  `measure_polygon`, `measure_line`, `measure_surface` (wall SF: an open run
-  × the condition's height—the H knob), `place_count` (EA markers, no scale
-  required)—all five of the engine's measure roles—plus `symbol_sweep`
-  (marquee ONE example of a repeated plan symbol—a drain, a threshold
+  `measure {kind: "area"}`, `measure {kind: "length"}`, `measure {kind: "surface"}` (wall SF: an open run
+  × the condition's height—the H knob), `count {action: "place"}` (EA markers, no scale
+  required)—all five of the engine's measure roles—plus `count {action: "symbol"}`
+  (a point on ONE example of a repeated symbol: the tool finds the seed itself, searches the
+  plan's wing angles too, and returns a numbered picture to check before committing),
+  `count {action: "sweep"}` (marquee ONE example of a repeated plan symbol—a drain, a threshold
   marker—and every placement is found deterministically from the vector
   linework, under rotation and mirroring, scored against a commit bar with
   near-misses *withheld with reasons*; `commit: true` places the matches as
   EA count markers in one undo step; `scope: "set"` sweeps the whole working
   set counting on plan-role sheets only, so the seed can be the assembly on a
   detail or legend sheet—the fingerprint source, itself never counted, its
-  exclusion disclosed) and `sweep_schedule_row` (take a mark off from its
+  exclusion disclosed) and `schedule {action: "sweep_row"}` (take a mark off from its
   schedule row: the row is read as the condition's cited source, the marker
   the tag is drawn as is fingerprinted at a drawn occurrence—corroborated
   at a second one where the set allows—and every plan sheet is swept, a
@@ -130,16 +129,15 @@ Fifty-two tools, in the order an agent tends to reach for them:
   geometrically anchored is *refused with the reason*—a fingerprint is
   never guessed from text alone). Scanned sheets work
   (#154): where vectors can't bound the room—an image-only scan, or a scan
-  wrapper whose only linework is the title block—`one_click` and
-  `detect_rooms` fall back automatically to flooding the sheet's rendered
+  wrapper whose only linework is the title block—`takeoff_rooms` falls back automatically to flooding the sheet's rendered
   pixels with the same raster engine the canvas uses, disclosed as
   `raster_traced` on the reply and on the shape's origin; vector always wins
   where it works, and a raster ring's corners are unsnapped (a scan has no
   true endpoints)
 - **Derive**—the quantities that follow from rooms already committed, instead
-  of measuring them a second time. `derive_base` mints base LF per room
+  of measuring them a second time. `derive {action: "base"}` mints base LF per room
   (perimeter *minus the door openings you state*—your claim, recorded on
-  `origin.derived`; the tool never guesses a door). `derive_transitions` mints
+  `origin.derived`; the tool never guesses a door). `derive {action: "transitions"}` mints
   the line where two finishes meet, and is built around a fact worth knowing
   before you call it: **flood-traced rooms do not share edges.** A trace fills
   to the wall linework, so two rooms across a partition sit four to eight inches
@@ -152,16 +150,16 @@ Fifty-two tools, in the order an agent tends to reach for them:
   `withheld` with their length, their gap in inches, and an `at` point to
   `view_sheet`—questions to answer by looking, and `withheld_lf` is never
   folded into `total_lf`. Both refuse all-or-nothing and land as one undo step.
-  `apply_rules` re-runs the **correction rules** an estimator taught the canvas
+  `schedule {action: "apply_rules"}` re-runs the **correction rules** an estimator taught the canvas
   (#88)—"every room like this loses the mechanical chase"—which arrive with
-  `import_takeoff` and are never minted over the wire (a rule *is* an
+  `export {action: "import"}` and are never minted over the wire (a rule *is* an
   estimator's correction; minting stays behind the canvas's human
   Preview→Apply gate). Evaluation is the same pure `rules.ts` engine the
   canvas Preview runs, the commit is the one batch its Apply makes
   (`reviewed: false`, one undo step), the per-rule disclosure in the reply is
   the preview an agent gets, and re-running is idempotent by construction—anything
   an existing deduct covers is dropped by the engine
-- **Cut**—`cut_out` puts a real hole in a committed floor shape, the way the
+- **Cut**—`derive {action: "deduct"}` puts a real hole in a committed floor shape, the way the
   canvas's Eraser does (#137): the same `cutout.js` boolean subtract, so the
   parent's net is set subtraction (overlapping cuts never double-deduct) and a
   hole *adds* perimeter. The ring must sit fully inside the parent—an
@@ -170,10 +168,10 @@ Fifty-two tools, in the order an agent tends to reach for them:
   parent and hole together, and deleting the deduct later reverts the cut
   (multi-cut parents rebuild from the pristine snapshot minus survivors—the
   canvas's own delete semantics, ported as the spec)
-- **Revise**—`edit_shape` (all five roles), `edit_materials`,
+- **Revise**—`edit_takeoff {action: "edit"}` (all five roles), `edit_materials`,
   `edit_condition` (waste %, ×N multiplier, `height_ft`, `rise_ft` / `drop_ft` — the vertical legs every linear run adds to its plan length (#441), and the roll-goods
-  `roll_setup` opt-in—the reply echoes the figured order), `delete_shape`,
-  `undo_last`, with `list_shapes` as the mid-session inventory the mutating
+  `roll_setup` opt-in—the reply echoes the figured order), `edit_takeoff {action: "delete"}`,
+  `edit_takeoff {action: "undo"}`, with `edit_takeoff {action: "list"}` as the mid-session inventory the mutating
   verbs assume you have
 - **Proposals** (#365)—`propose_takeoff` opens a named batch that every
   commit after it attaches to (the estimator sees ONE Accept per batch, not
@@ -184,7 +182,7 @@ Fifty-two tools, in the order an agent tends to reach for them:
   estimator's acceptance in the canvas—nothing changes until then, and the
   summary and report carry the diff beside the current values;
   `withdraw_condition_edit` drops it. Design: `design/PROPOSALS.md`
-- **Scope collision** (#366)—`takeoff_summary.shared_floor_sf` is the floor
+- **Scope collision** (#366)—`summary.shared_floor_sf` is the floor
   claimed by more than one shape across the takeoff (Σ areas − union, once per
   cell), the number that has to read zero before a total means anything;
   `scope_duplicates` names every pair on different conditions with the shared
@@ -199,8 +197,8 @@ Fifty-two tools, in the order an agent tends to reach for them:
   the original reaches every twin that hasn't touched that row) and
   `split_condition` (cut a twin loose—following rows freeze at their current
   values and the original stops reaching it). One finish in two areas is neither
-  one condition nor two; both are reversible with `undo_last`
-- **Read the sheet**—`read_sheet_text`, `find_text`, `view_sheet` (render a
+  one condition nor two; both are reversible with `edit_takeoff {action: "undo"}`
+- **Read the sheet**—`find_text {action: "read"}`, `find_text`, `view_sheet` (render a
   sheet or crop to PNG with an optional calibrated measuring grid and
   committed-shapes overlay—the agent's eyes and its self-check)
 - **Annotate**—`annotate` (cloud, highlight, text, callout, arrow—plank/seam
@@ -225,13 +223,13 @@ Fifty-two tools, in the order an agent tends to reach for them:
   `origin {actor: "agent", reviewed: false}`—pending until the estimator
   accepts it in the register, because an RFI goes to the architect and nothing
   sends without a human. A delete is a tombstone: the number is never reissued
-  and the marked set keeps the gap. All four are journaled for `undo_last`)
-- **Report**—`takeoff_summary` (quantities only—materials stripped),
-  `export_takeoff` (the raw `opentakeoff.takeoff_canvas.v1` canvas payload—materials
-  as config rows, importable by the app), `export_report` (the
+  and the marked set keeps the gap. All four are journaled for `edit_takeoff {action: "undo"}`)
+- **Report**—`summary` (quantities only—materials stripped),
+  `export {action: "takeoff"}` (the raw `opentakeoff.takeoff_canvas.v1` canvas payload—materials
+  as config rows, importable by the app), `export {action: "report"}` (the
   computed `opentakeoff.report.v1` Report document—waste-adjusted nets, the
   materials buy list as order quantities, per-sheet subtotals, scale
-  provenance; the contract for pricing consumers), `export_marked_pdf` (**the
+  provenance; the contract for pricing consumers), `export {action: "marked_pdf"}` (**the
   marked-up planset**—the plan sheets vector-copied with shapes, hatches,
   quantity chips, and annotations burned in, plus a legend cover; the
   deliverable a human reviews, with machine-traced work disclosed as pending
@@ -259,9 +257,9 @@ Two rules carry over from the app unchanged:
   export/report). A detected scale note is a suggestion the agent must adopt
   explicitly (`set_scale { use_detected: true }`); measuring tools refuse
   with the exact hint (`Set the scale for <sheet> first—use set_scale
-  (detected: 1/4" = 1'-0").`), and a bare `one_click` returns px-only numbers
+  (detected: 1/4" = 1'-0").`), and a bare `takeoff_rooms {action: "at"}` returns px-only numbers
   with a warning rather than fabricating square feet.
-- **Provenance.** Every shape committed by `one_click`/`detect_rooms` carries
+- **Provenance.** Every shape committed by `takeoff_rooms` carries
   the same `origin` receipt the canvas mints: method, normalized seed,
   hatch-filter flag—and `raster_traced` when the boundary came from scan
   pixels rather than vector linework, so a pixel-bounded trace is
@@ -297,13 +295,13 @@ An agent asked to *"take off the carpet on this floor plan"*—tool calls
 verbatim, replies abridged:
 
 ```
-▸ load_plan  { "path": "/plans/sample-plan.pdf" }
+▸ open_drawings  { "action": "load", "path": "/plans/sample-plan.pdf" }
   { "file": "sample-plan.pdf", "page_count": 1,
     "sheets": [{ "sheet": "sample-plan.pdf", "width_px": 2448, "height_px": 1584,
                  "width_pt": 1224, "height_pt": 792,
                  "sheet_number": "A-101", "detected_scale": "1/4\" = 1'-0\"" }] }
 
-▸ read_sheet_text  { "sheet": "sample-plan.pdf",
+▸ find_text  { "action": "read", "sheet": "sample-plan.pdf",
                      "region": { "x0": 1468, "y0": 871, "x1": 2448, "y1": 1584 } }
   { "items": [ { "str": "A-101", "x": 1970, "y": 1284 },
                { "str": "SCALE: 1/4\" = 1'-0\"", "x": 1730, "y": 1348 } ],
@@ -316,20 +314,20 @@ verbatim, replies abridged:
 
     Room labels from the page text double as click targets (same px space):
 
-▸ one_click  { "sheet": "sample-plan.pdf", "x": 600, "y": 1084, "condition": "CPT-1" }
+▸ takeoff_rooms  { "action": "at", "sheet": "sample-plan.pdf", "at": [600, 1084], "condition": "CPT-1" }
   { "status": "ok", "area_sf": 437.98, "perimeter_lf": 86.61, "nverts": 4, "shape_id": "shp-…" }
 
-▸ one_click  { "sheet": "sample-plan.pdf", "x": 1640, "y": 1084, "condition": "CPT-1" }
-▸ one_click  { "sheet": "sample-plan.pdf", "x": 600,  "y": 464,  "condition": "CPT-1" }
-▸ one_click  { "sheet": "sample-plan.pdf", "x": 1600, "y": 464,  "condition": "CPT-1" }
+▸ takeoff_rooms  { "action": "at", "sheet": "sample-plan.pdf", "at": [1640, 1084], "condition": "CPT-1" }
+▸ takeoff_rooms  { "action": "at", "sheet": "sample-plan.pdf", "at": [600, 464], "condition": "CPT-1" }
+▸ takeoff_rooms  { "action": "at", "sheet": "sample-plan.pdf", "at": [1600, 464], "condition": "CPT-1" }
   … three more rooms, ~438 SF each …
 
     Two of those rooms are actually tile — reassign, then let the derivations
     do the work that follows from the rooms instead of measuring it again:
 
-▸ edit_shape  { "shape_id": "shp-…", "condition": "PT-1" }     … and one more
+▸ edit_takeoff  { "action": "edit", "shape_id": "shp-…", "condition": "PT-1" }     … and one more
 
-▸ derive_transitions  { "condition_a": "CPT-1", "condition_b": "PT-1", "condition": "T-1" }
+▸ derive  { "action": "transitions", "condition_a": "CPT-1", "condition_b": "PT-1", "condition": "T-1" }
   { "between": ["CPT-1", "PT-1"], "committed": 2, "total_lf": 53.88,
     "runs": [{ "length_lf": 26.94, "gap_in": 0.3, "at": [725, 784], … },
              { "length_lf": 26.94, "gap_in": 0.3, "at": [1715, 784], … }],
@@ -340,7 +338,7 @@ verbatim, replies abridged:
     instead: adjacency across a wall is a threshold in a doorway this cannot
     locate, so it is handed back as a question with a point to look at.
 
-▸ takeoff_summary  {}
+▸ summary  {}
   { "conditions": [{ "finish_tag": "CPT-1", "shape_count": 2, … },
                    { "finish_tag": "PT-1",  "shape_count": 2, … },
                    { "finish_tag": "T-1",   "shape_count": 2, "lf": 53.88, … }],
@@ -352,10 +350,10 @@ verbatim, replies abridged:
                 "region": { "x0": 500, "y0": 600, "x1": 1900, "y1": 1000 } }
   … PNG: committed shapes burned in, unreviewed machine work dashed …
 
-▸ export_marked_pdf  {}
+▸ export  { "action": "marked_pdf" }
   { "path": "/plans/sample-plan - marked set.pdf", "sheets": 1, … }
 
-▸ export_report  { "path": "/plans/sample-report.json" }
+▸ export  { "action": "report", "path": "/plans/sample-report.json" }
   { "schema": "opentakeoff.report.v1", "conditions": [...], … }
 ```
 
@@ -372,7 +370,7 @@ dense linework (hatching or text).`
   FastAPI adapter interface for plugging your own local *vision model* under
   the canvas's suggestion endpoints.
 - Scanned (raster-only) sheets **are** supported (#154): where vectors cannot
-  bound a room, `one_click` and `detect_rooms` fall back automatically to
+  bound a room, `takeoff_rooms` falls back automatically to
   flooding the sheet's rendered pixels with the same raster engine the canvas
   uses, disclosed as `raster_traced` on the reply and on the shape's origin.
   Vector wins wherever it works—a raster ring's corners are unsnapped,
@@ -380,11 +378,11 @@ dense linework (hatching or text).`
 
 ## Calibration and review correctness (0.9.72)
 
-`set_scale` recomputes existing dimensional quantities from geometry, including holes and cutout restore snapshots. Changing an existing calibration records one `undo_last` step that restores the scale, its confirmation/source, and the prior quantities together. Initial calibration of an unmeasured sheet adds no undo step. Counts retain their stored values. A sheet containing human-reviewed dimensional measurements refuses recalibration over MCP, consistent with the existing reviewed-shape edit rules; recalibrate it in the canvas and import the updated takeoff into a fresh session.
+`set_scale` recomputes existing dimensional quantities from geometry, including holes and cutout restore snapshots. Changing an existing calibration records one `edit_takeoff {action: "undo"}` step that restores the scale, its confirmation/source, and the prior quantities together. Initial calibration of an unmeasured sheet adds no undo step. Counts retain their stored values. A sheet containing human-reviewed dimensional measurements refuses recalibration over MCP, consistent with the existing reviewed-shape edit rules; recalibrate it in the canvas and import the updated takeoff into a fresh session.
 
-`import_takeoff` refuses new dimensional shapes when their source calibration differs from the session's calibration, or is missing while the session has one. The error names the sheet and scales; no session state changes. Align calibrations and re-export, or load a fresh session to adopt the export's calibration. Counts and duplicate IDs are exempt. An existing calibration is preserved even in an untraced session.
+`export {action: "import"}` refuses new dimensional shapes when their source calibration differs from the session's calibration, or is missing while the session has one. The error names the sheet and scales; no session state changes. Align calibrations and re-export, or load a fresh session to adopt the export's calibration. Counts and duplicate IDs are exempt. An existing calibration is preserved even in an untraced session.
 
-New agent measurements, including `measure_polygon` and `measure_line`, explicitly carry `origin.reviewed: false`. Legacy agent records without the flag are normalized on import and browser reload. Explicit prior human approval is preserved. No new review gate is introduced.
+New agent measurements, including `measure {kind: "area"}` and `measure {kind: "length"}`, explicitly carry `origin.reviewed: false`. Legacy agent records without the flag are normalized on import and browser reload. Explicit prior human approval is preserved. No new review gate is introduced.
 
 ## Geometry workflow
 
@@ -392,26 +390,26 @@ New agent measurements, including `measure_polygon` and `measure_line`, explicit
 
 ## Review cleanup and current tool inventory
 
-The [generated tool index](MCP_TOOL_INDEX.md) gives each tool's stage and required
+The [generated tool index](MCP_TOOL_INDEX.md) gives each tool's actions and required
 arguments directly from the running server's schemas. The default surface has
-<!--tool-count-->53<!--/tool-count--> tools; gated tools and the staged opener are listed separately.
+<!--tool-count-->33<!--/tool-count--> tools; the gated tool is listed separately.
 
 Use `list_annotations` → `edit_annotation {annotation_id, text}` to shorten or clear
-a note. One `undo_last` restores the text. Geometry, dimension length, links and
+a note. One `edit_takeoff {action: "undo"}` restores the text. Geometry, dimension length, links and
 human review are unchanged. RFI-linked notes refuse; inspect their question in
 the browser register. Verdicts are separate records, not editable annotations.
 
 `scope_duplicates` ignores machine-precision edge residue, but preserves real
 small overlaps with an explanation when SF rounds to zero. A material coverage
 row is not another finish polygon. For a physical opening, clip an explicit
-`measure_line` or `measure_surface` run with `cut_out`; a derived base with numeric
+`measure {kind: "length"}` or `measure {kind: "surface"}` run with `derive {action: "deduct"}`; a derived base with numeric
 opening allowances refuses clipping because those openings have no locations.
 
 ## Wiki resources
 
 Read `takeoff://wiki` for the [knowledge index](wiki/README.md), then the one
-`takeoff://wiki/{page}` resource the current task needs. The index and eight
-pages are readable before any plan is loaded, in flat or staged mode. They
+`takeoff://wiki/{page}` resource the current task needs. The index and nine
+pages are readable before any plan is loaded. They
 contain public documentation packaged with the MCP version, not project data.
 No additional measurement tool or approval authority is introduced.
 
@@ -422,8 +420,7 @@ than an installed package. This distinction is stated in each resource reply.
 
 The draft Takeoff Protocol is also available as static resources. Read
 `takeoff://protocol` for the compact index, then the allowlisted schemas under
-`takeoff://protocol/{path}`. This route is available before plan load and in
-staged mode. It is contract/discovery material and introduces no validator tool
+`takeoff://protocol/{path}`. This route is available before plan load. It is contract/discovery material and introduces no validator tool
 or writer migration. Resource URIs are transport addresses separate from the
 unchanged schema `$id` identifiers; those IDs support offline `$ref` resolution
 and do not promise hosted files. Read `takeoff://wiki/protocol` for scope,

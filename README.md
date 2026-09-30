@@ -5,7 +5,7 @@
 **The measurement engine for building plans—built so an AI agent can drive it, and so an estimator wants to.**
 
 A takeoff is the act of measuring quantities off a construction drawing. OpenTakeoff does it
-two ways over one engine: **<!--tool-count-->53<!--/tool-count--> MCP tools** for an agent, and a browser canvas for a person.
+two ways over one engine: **<!--tool-count-->33<!--/tool-count--> MCP tools** for an agent, and a browser canvas for a person.
 Agents and people share the takeoff document and quantity calculations. Each sheet carries
 its calibration; measurements carry geometry, method and authorship. Recalibration updates
 quantities together, incompatible imports report scale conflicts, and agent measurements
@@ -29,7 +29,7 @@ carry an explicit review status. See the [Phase 1 test guide](docs/PHASE_1_TESTI
 
 **Watch it:** [an autonomous agent runs a takeoff, live, no cuts (2:47)](https://youtu.be/e--kXxSGv7Y) · [hospital finish plan → report in about a minute (1:14)](https://youtu.be/cNDpPkTLY1k) · [canvas walkthrough (1:10)](https://youtu.be/aHiW8H2TSBs) · [One-Click Area (0:51)](https://youtu.be/YIjWZ-BAhLE)
 
-> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `one_click` / `detect_rooms` MCP verbs are **not registered** (a default build ships <!--tool-count-->53<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure_polygon` over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
+> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `takeoff_rooms` MCP tool is **not registered** (a default build ships <!--tool-count-->33<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure` (`kind: "area"`) over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
 
 <br/>
 
@@ -79,7 +79,7 @@ otherwise, and nothing an autonomous agent could call.
 OpenTakeoff is that engine, with two front ends sharing geometry and quantity modules:
 
 - **Review cleanup**—agents can edit annotation text with undo while preserving geometry and review; RFI-linked notes require browser review. Scope warnings distinguish numeric edge residue from real small overlaps.
-- **A stdio MCP server**—`npx -y opentakeoff-mcp`, <!--tool-count-->53<!--/tool-count--> tools, on the
+- **A stdio MCP server**—`npx -y opentakeoff-mcp`, <!--tool-count-->33<!--/tool-count--> tools, on the
   [official MCP registry](https://registry.modelcontextprotocol.io). An agent opens a plan,
   reads the title block, sets the scale, traces the rooms to their wall faces (the flood engine
   stays gated), checks its own work on a rendered overlay, and hands back a marked-up planset PDF.
@@ -106,7 +106,7 @@ second use is not a side effect; see [the data layer](#the-data-layer--why-this-
 - **Tracing rules an agent actually reads**—the room-boundary conventions an estimator uses
   (innermost wall face, door openings crossed on the wall centerline, columns and chases wrapped,
   never a hatch edge or a door leaf, a tight overlay check per ring) now ship inside the server:
-  `takeoff://wiki/workflows`, the initialize instructions and the `measure_polygon` description.
+  `takeoff://wiki/workflows`, the initialize instructions and the `measure` description.
   On a task with no conventions in it, one unprompted run went from 0 of 6 rooms with door
   notches to 6 of 6 ([#423](https://github.com/Kentucky-ai/opentakeoff/pull/423), MCP 0.9.84)
 - **A plan set with reference rings, and blind runs against it**—three public floor plans (a VA
@@ -126,7 +126,7 @@ second use is not a side effect; see [the data layer](#the-data-layer--why-this-
   existing record fields inventoried and formalized as draft schemas with an executable
   compatibility matrix (10 conform, 1 needs an adapter, 5 unsupported and named); one wiki for
   people and agents, packaged as MCP resources and checked against source in CI; and a workflow
-  benchmark that drives the built server flat and staged, scores geometry separately from
+  benchmark that drives the built server, scores geometry separately from
   totals, and reopens the export in a fresh process
   ([#406](https://github.com/Kentucky-ai/opentakeoff/pull/406)–[#419](https://github.com/Kentucky-ai/opentakeoff/pull/419),
   [roadmap](docs/ROADMAP.md))
@@ -138,21 +138,21 @@ second use is not a side effect; see [the data layer](#the-data-layer--why-this-
   scored corpus IoU ([#85](https://github.com/Kentucky-ai/opentakeoff/issues/85))
 - **The sheet graph**—an agent asks *"what finish is in room 134, and how do you know"* and
   gets the schedule row with a citation per cell, across continuation sheets, rotated headers,
-  and multi-building keys: `sheet_graph` / `resolve_tag` / `find_schedule`
+  and multi-building keys: `sheet_context` (`graph`) / `find_text` (`resolve_tag`) / `schedule` (`find`)
   ([#87](https://github.com/Kentucky-ai/opentakeoff/issues/87))
 - **Roll goods**—opt a condition into broadloom or sheet material and the engine figures the
   seams: lanes, multi-roll splits, cuts drawn to scale over their rooms in cutting order, a
   to-scale roll diagram with drag-to-reorder, and order footage beside the measured quantities
   ([#136](https://github.com/Kentucky-ai/opentakeoff/issues/136))
 - **Transitions, at the canvas**—**⟂ Transitions…** in the Takeoffs panel derives the line where
-  two finishes meet from rooms you already measured; `derive_transitions` does the same over MCP.
+  two finishes meet from rooms you already measured; `derive` (`transitions`) does the same over MCP.
   Flood-traced rooms don't share edges, so what's actually there is proximity in two flavors that
   mean different things: finishes changing inside one open space commit as a butt joint, while
   rooms parallel across a partition come back **withheld as questions**—the transition is a
   threshold in a doorway, and nothing in a trace record says where the doorway is. Committing
   34 LF of threshold because two rooms share 34 LF of wall would be a wrong bid with a machine's
   confidence behind it ([#202](https://github.com/Kentucky-ai/opentakeoff/issues/202))
-- **`symbol_sweep`**—every instance of a repeated symbol from one marqueed example, crossing
+- **`count`**—every instance of a repeated symbol from one point on an example (or a marqueed seed), crossing
   scales only by a *stated* ratio, never a searched one
 - **`mark_verdict` / `delete_verdict`**—an agent signs its own work as a graphite `AGENT`
   diamond; only a human hand mints the green `APPROVED` seal
@@ -211,19 +211,19 @@ becomes ink only when the operator clicks Accept.* The full run, live and uncut,
 
 | Group | Tools |
 |---|---|
-| **Open and orient** | `load_plan` · `sheet_info` · `sheet_context` · `get_sheet_vectors` · `read_sheet_text` · `find_text` · `view_sheet` |
+| **Open and orient** | `open_drawings` · `sheet_context` · `find_text` · `view_sheet` |
 | **Scale** | `set_scale` |
-| **Measure** | `one_click` · `detect_rooms` · `measure_polygon` · `cut_out` · `measure_line` · `measure_surface` · `place_count` |
-| **Repeat and derive** | `symbol_sweep` · `sweep_schedule_row` · `derive_base` · `derive_transitions` · `apply_rules` |
-| **Read the drawing set** | `sheet_graph` · `resolve_tag` · `find_schedule` |
-| **Edit and audit** | `list_shapes` · `edit_shape` · `edit_condition` · `edit_materials` · `duplicate_condition` · `split_condition` · `delete_shape` · `undo_last` |
-| **Mark and sign** | `annotate` · `list_annotations` · `link_annotation` · `mark_verdict` · `delete_verdict` |
+| **Measure and count** | `takeoff_rooms` · `measure` · `count` |
+| **Derive and schedules** | `derive` · `schedule` |
+| **Edit and audit** | `edit_takeoff` · `edit_condition` · `edit_materials` · `duplicate_condition` · `split_condition` · `scope_duplicates` · `scope_merge` |
+| **Propose** | `propose_takeoff` · `revise_proposal` · `withdraw_proposal` · `propose_condition_edit` · `withdraw_condition_edit` |
+| **Mark and sign** | `annotate` · `list_annotations` · `edit_annotation` · `link_annotation` · `mark_verdict` · `delete_verdict` |
 | **Ask** | `create_rfi` · `list_rfis` · `resolve_rfi` · `delete_rfi` |
-| **Hand off** | `takeoff_summary` · `export_takeoff` · `export_report` · `export_marked_pdf` · `export_dxf` · `import_takeoff` |
+| **Hand off** | `summary` · `export` |
 
 Plus browsable sheet resources (`takeoff://sheets`) so an agent can *see* the working set, not
 only act on it. Multi-document sessions are first-class: a bid set is plans **plus** schedule
-**plus** addenda, and `load_plan --merge` adds a document without disturbing existing scales,
+**plus** addenda, and `open_drawings` (`load`, `merge: true`) adds a document without disturbing existing scales,
 conditions, or shapes—the sheet graph then spans the whole set, so a room tag on one file
 resolves to a schedule row in another. `edit_condition` reaches the waste %, the ×N multiplier,
 and `roll_setup`, so an agent's takeoff doesn't ship with net === gross.
@@ -247,11 +247,11 @@ are the rules that make this one safe to hand a model, and why each one exists:
    refuses. Pixels × a wrong scale² is every number wrong at once, so the engine would rather
    stop than guess. Disagreeing scale notes inside a measured region raise a warning rather
    than a silent pick.
-3. **The engine traces; the model doesn't invent.** `one_click` returns the ring the wall
+3. **The engine traces; the model doesn't invent.** `takeoff_rooms` returns the ring the wall
    network produced from a seed point you name. A model cannot hand back a polygon it imagined and have
-   it counted. While One-Click is gated, a model draws the ring itself with `measure_polygon`, and the
+   it counted. While One-Click is gated, a model draws the ring itself with `measure` (`kind: "area"`), and the
    packaged rules say where it must sit: on the innermost wall-face strokes it read with
-   `get_sheet_vectors`, doors crossed on the wall centerline, checked on a tight overlay before the
+   `sheet_context` (`vectors`), doors crossed on the wall centerline, checked on a tight overlay before the
    next room. How well unprompted agents follow that is measured, not assumed: see the
    [plan set](evals/mcp-workflow-bench/plan-set/README.md).
 4. **Every record carries how it was made.** Method, seed point, whether hatch filtering
@@ -261,7 +261,7 @@ are the rules that make this one safe to hand a model, and why each one exists:
    proposals. `mark_verdict` lets an agent sign its own work as a graphite `AGENT` diamond; the
    green `APPROVED` seal has exactly one code path and it is the toolbar button under a human
    hand. No MCP call, no import, mints one.
-6. **The deliverable is a marked-up planset, not JSON.** `export_marked_pdf` burns the work
+6. **The deliverable is a marked-up planset, not JSON.** `export` (`marked_pdf`) burns the work
    into the drawings as drawn—condition colors, hatches, quantity chips, count markers—behind
    a legend cover with totals and a tally of how much of the set a person has actually
    reviewed. A takeoff nobody can check is not a takeoff.
@@ -531,7 +531,7 @@ plus a vision-capable model id.
 | **Voice** | Push-to-talk takeoff commands, recognized on-device in WebAssembly; audio never leaves the browser — gated off the toolbar by default (`VITE_COMMAND_BOX=1`) |
 | **View** | Light or **dark (negative print)**—sheet pixels inverted at draw time, exports follow |
 | **Storage** | IndexedDB + localStorage—client-only, nothing uploaded |
-| **MCP server** | <!--tool-count-->53<!--/tool-count--> tools + browsable sheet resources on stdio, multi-document sessions ([`mcp/`](mcp/README.md)) |
+| **MCP server** | <!--tool-count-->33<!--/tool-count--> tools + browsable sheet resources on stdio, multi-document sessions ([`mcp/`](mcp/README.md)) |
 | **Provenance** | Every shape records its scale, its method, its confidence, and whether a person or an agent made it |
 | **Capture (opt-in)** | Bundled [capture server](capture/README.md) banks each contributed takeoff as (geometry → label) training rows |
 | **Deploy** | One static build—Netlify, Vercel, GitHub Pages, Cloudflare Pages, S3, any static host |

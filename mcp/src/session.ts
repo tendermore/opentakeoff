@@ -802,7 +802,7 @@ export class Session {
       this.journal = [];
       this.pendingCommits = [];
     } else if (this.docs.has(base)) {
-      throw new UserError(`${base} is already loaded — merge adds NEW documents. To reload it, call load_plan without merge (replaces the whole session).`);
+      throw new UserError(`${base} is already loaded — merge adds NEW documents. To reload it, call open_drawings {action: "load"} without merge (replaces the whole session).`);
     }
     this.graph = null;   // the sheet graph (#87) indexes the OLD document set
 
@@ -860,7 +860,7 @@ export class Session {
   }
 
   sheet(name: string): SheetState {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     const hit = this.sheets.get(name);
     if (hit) return hit;
     // convenience: accept the title-block sheet number (e.g. "A-101") too
@@ -884,7 +884,7 @@ export class Session {
   /** Resource-URI addressing: 1-based position in load order across every
    * loaded document (=== page number for a single-document session). */
   sheetForPage(ord: number): SheetState {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     const hit = this.sheetList()[ord - 1];
     if (!hit) throw new UserError(`No sheet ${ord} — the working set has sheets 1–${this.sheets.size}.`);
     return hit;
@@ -898,7 +898,7 @@ export class Session {
   /** The takeoff://sheets index payload — cheap (no geometry is built). */
   index() {
     if (!this.docs.size) {
-      return { file: null, page_count: 0, sheets: [], hint: "No plan loaded — call the load_plan tool with a PDF path, then list resources again." };
+      return { file: null, page_count: 0, sheets: [], hint: "No plan loaded — call the open_drawings {action: \"load\"} tool with a PDF path, then list resources again." };
     }
     return {
       file: this.file,
@@ -1077,7 +1077,7 @@ export class Session {
     const geo = await this.ensureGeometry(s);
     const nSeg = geo.segs.length >> 2;
     if (!nSeg) {
-      throw new UserError(`${s.key} has no vector linework — it is a scan (or a flattened raster export), and get_sheet_vectors reads the drawn segments, of which a scan has none. There is nothing to return here: view_sheet renders the region as pixels and is the path on a scan; one_click and detect_rooms still flood it through the raster fallback.`);
+      throw new UserError(`${s.key} has no vector linework — it is a scan (or a flattened raster export), and sheet_context {action: "vectors"} reads the drawn segments, of which a scan has none. There is nothing to return here: view_sheet renders the region as pixels and is the path on a scan; takeoff_rooms {action: "at"} and takeoff_rooms still flood it through the raster fallback.`);
     }
     const clampX = (v: number) => Math.max(0, Math.min(v, s.widthPx));
     const clampY = (v: number) => Math.max(0, Math.min(v, s.heightPx));
@@ -1381,7 +1381,7 @@ export class Session {
       upp = feet / px;
       source = "calibrate";
     } else if (mode.use_detected) {
-      if (!s.detected) throw new UserError(`No detected scale for ${s.key} — read the title block with read_sheet_text, or calibrate from a known dimension.`);
+      if (!s.detected) throw new UserError(`No detected scale for ${s.key} — read the title block with find_text {action: "read"}, or calibrate from a known dimension.`);
       upp = s.detected.upp;
       label = s.detected.label;
       source = "detected";
@@ -1603,7 +1603,7 @@ export class Session {
     let raster = false;
     if (!rasterEligible || vectorViable) {
       const mask = await this.maskWithLayers(name, opts.layers);
-      if (!mask && !rasterEligible) throw new UserError("This sheet has no vector linework and no scan image to flood — nothing here bounds a region. Trace the space with measure_polygon instead.");
+      if (!mask && !rasterEligible) throw new UserError("This sheet has no vector linework and no scan image to flood — nothing here bounds a region. Trace the space with measure {kind: \"area\"} instead.");
       if (mask) {
         // the sealed engine with the sheet's own feet-true arguments — the
         // mask carries mppf (buildVectorMask baked the scale in), so
@@ -1631,7 +1631,7 @@ export class Session {
       this.refuseLayersOnRaster(opts.layers);
       const rmask = await this.ensureRasterMask(s);
       const r = floodAtSeed(rmask, x, y, SENS_BALANCED, s.upp ? rmask.ws / s.upp : 0);
-      if (r.status === "leak") throw new UserError("That space isn't enclosed on the scan — the fill escaped through a gap (faded line or open doorway). Seed a more enclosed spot, or trace it with measure_polygon.");
+      if (r.status === "leak") throw new UserError("That space isn't enclosed on the scan — the fill escaped through a gap (faded line or open doorway). Seed a more enclosed spot, or trace it with measure {kind: \"area\"}.");
       if (r.status !== "ok") throw new UserError("Landed on dense scan ink (text or hatching). Seed an open spot inside the room.");
       f = r;
       raster = true;
@@ -1746,7 +1746,7 @@ export class Session {
       graph = await this.ensureGraph();
       if (!graph.available) throw new UserError("This set has no text layer (a scan) — the sheet graph is unavailable, not empty.");
       if (!graph.tables.some((t) => t.kind === "room-finish")) {
-        throw new UserError("No room-finish schedule in the working set — load_plan the schedule sheet with merge: true, or pass condition to commit every room under one tag.");
+        throw new UserError("No room-finish schedule in the working set — open_drawings {action: \"load\"} the schedule sheet with merge: true, or pass condition to commit every room under one tag.");
       }
     }
     // Mask resolution (#154) — one mask for the whole sweep, canvas trigger
@@ -1761,7 +1761,7 @@ export class Session {
     let raster = false;
     if (!rasterEligible || vectorViable) mask = await this.maskWithLayers(name, opts.layers);
     if (!mask) {
-      if (!rasterEligible) throw new UserError("This sheet has no vector linework and no scan image to flood — nothing here bounds a region. Trace rooms with measure_polygon instead.");
+      if (!rasterEligible) throw new UserError("This sheet has no vector linework and no scan image to flood — nothing here bounds a region. Trace rooms with measure {kind: \"area\"} instead.");
       this.refuseLayersOnRaster(opts.layers);
       mask = await this.ensureRasterMask(s);
       raster = true;
@@ -1922,6 +1922,7 @@ export class Session {
           // px-only preview — the engine account still rides (see oneClick)
           return {
             label: c.label,
+            method: c.method,
             nverts: c.ring.length,
             ...(c.merged.length ? { merged_labels: c.merged } : {}),
             ...(c.ev ? Session.floodStamp(c.ev) : {}),
@@ -1949,6 +1950,8 @@ export class Session {
         // sealed openings, door wedges, min-passage, raster), per room
         const common = {
           label: c.label,
+          method: c.method,
+          ...(printed != null ? { printed_m2: printed } : {}),
           nverts: c.ring.length,
           ...(c.merged.length ? { merged_labels: c.merged } : {}),
           ...(c.ev ? Session.floodStamp(c.ev, area_sf) : {}),
@@ -2028,7 +2031,7 @@ export class Session {
       ...(disagreements.length ? { area_disagrees: disagreements } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — one_click inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -2065,7 +2068,7 @@ export class Session {
   measurePolygon(name: string, verts: Point[], opts: { condition?: string; role: "floor_area" | "deduct"; arc_through?: number[] }) {
     const s = this.sheet(name);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
-    const { pts: ring, arcs } = this.bend(verts, opts.arc_through, true, "measure_polygon");
+    const { pts: ring, arcs } = this.bend(verts, opts.arc_through, true, "measure {kind: \"area\"}");
     const { area_sf = 0, perimeter_lf = 0 } = this.quantify(s, opts.role, ring);
     let shape_id: string | undefined;
     // agent-supplied coordinates are a hand trace by a machine hand: manual
@@ -2079,7 +2082,7 @@ export class Session {
   measureLine(name: string, pts: Point[], opts: { condition?: string; arc_through?: number[]; rise_ft?: number; drop_ft?: number }) {
     const s = this.sheet(name);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
-    const { pts: run, arcs } = this.bend(pts, opts.arc_through, false, "measure_line");
+    const { pts: run, arcs } = this.bend(pts, opts.arc_through, false, "measure {kind: \"length\"}");
     // #441 — the run's legs: its own rise/drop where passed, else the
     // condition's defaults. Without a condition there is nothing to default
     // from, so a bare measurement carries only what the call states.
@@ -2112,7 +2115,7 @@ export class Session {
     const s = this.sheet(name);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
     // bend BEFORE the height gate so a bad arc refuses with nothing minted
-    const bent = this.bend(pts, opts.arc_through, false, "measure_surface");
+    const bent = this.bend(pts, opts.arc_through, false, "measure {kind: \"surface\"}");
     pts = bent.pts;
     const existing = this.conditions.find((x) => x.finish_tag === opts.condition);
     const h = opts.height_ft ?? (Number(existing?.height_ft) || 0);
@@ -2205,7 +2208,7 @@ export class Session {
     this.currentProposalId = proposal.id;
     return {
       proposal_id: proposal.id, label: proposal.label, rationale: proposal.rationale,
-      note: "Open. Every shape you commit from now on (measure_*, sweeps, derives, cut_out) attaches to this proposal until you open another or withdraw it; the estimator sees the batch as one Accept. revise_proposal replaces its pending shapes as one step, withdraw_proposal removes them.",
+      note: "Open. Every shape you commit from now on (measure, count, derive) attaches to this proposal until you open another or withdraw it; the estimator sees the batch as one Accept. revise_proposal replaces its pending shapes as one step, withdraw_proposal removes them.",
     };
   }
 
@@ -2251,7 +2254,7 @@ export class Session {
     const ids = this.pendingCommits;
     this.pendingCommits = [];
     this.record({ op: "proposal_revise", tool: "revise_proposal", proposal_id: id, removed, ids });
-    return { proposal_id: id, label: p.label, replaced: removed.length, committed: ids.length, shape_ids: ids, note: "One journal step — undo_last puts the previous pending batch back exactly. Accepted shapes were not touched." };
+    return { proposal_id: id, label: p.label, replaced: removed.length, committed: ids.length, shape_ids: ids, note: "One journal step — edit_takeoff {action: \"undo\"} puts the previous pending batch back exactly. Accepted shapes were not touched." };
   }
 
   /** withdraw_proposal: remove every still-pending shape in the batch, as one
@@ -2268,7 +2271,7 @@ export class Session {
     p.withdrawn_at = nowIso();
     this.record({ op: "proposal_withdraw", tool: "withdraw_proposal", proposal_id: id, removed, was_current: wasCurrent });
     const kept = this.shapes.filter((x) => x.origin?.proposal_id === id).length;
-    return { proposal_id: id, label: p.label, withdrawn: removed.length, accepted_kept: kept, note: kept ? `${kept} shape(s) the estimator had already accepted stay — reviewed work is ink.` : "Every shape in the batch was still pending; all removed. undo_last restores the batch." };
+    return { proposal_id: id, label: p.label, withdrawn: removed.length, accepted_kept: kept, note: kept ? `${kept} shape(s) the estimator had already accepted stay — reviewed work is ink.` : "Every shape in the batch was still pending; all removed. edit_takeoff {action: \"undo\"} restores the batch." };
   }
 
   /** The proposal ledger takeoff_summary carries: per batch, what is still
@@ -2332,7 +2335,7 @@ export class Session {
       proposal_id: proposal.id, condition: c.finish_tag, condition_id: c.id,
       current: Session.conditionKnobs(c), proposed: diff, rationale: cleanRationale,
       ...(replaced ? { replaced_proposal_id: replaced.id } : {}),
-      note: "Pending. The condition is unchanged until the estimator accepts in the canvas; takeoff_summary and export_report show the current values with this diff beside them.",
+      note: "Pending. The condition is unchanged until the estimator accepts in the canvas; summary and export {action: \"report\"} show the current values with this diff beside them.",
     };
   }
 
@@ -2435,7 +2438,7 @@ export class Session {
    * shared area and which condition each belongs to; same-condition overlaps
    * (a double trace) as their own list. Read-only. */
   scopeDuplicates(opts: { sheet?: string; min_fraction?: number } = {}) {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     let shapes = this.shapes;
     if (opts.sheet) { const s = this.sheet(opts.sheet); shapes = shapes.filter((x) => x.sheet_id === s.key); }
     const r = this.scopeCollisions(shapes, opts.min_fraction);
@@ -2446,7 +2449,7 @@ export class Session {
       min_fraction: opts.min_fraction ?? 0.05,
       note: !floors ? "No floor_area shapes to compare."
         : r.collisions.length ? `${r.collisions.length} pair(s) on different conditions share floor — every total downstream counts that floor twice. scope_merge a pair with the winner stated, or view_sheet its look region and re-trace.`
-        : r.duplicates.length ? "No cross-condition collision; the same-condition pairs listed are double traces — delete_shape one of each."
+        : r.duplicates.length ? "No cross-condition collision; the same-condition pairs listed are double traces — edit_takeoff {action: \"delete\"} one of each."
         : "No shared floor on the compared sheets.",
     };
   }
@@ -2459,11 +2462,11 @@ export class Session {
    * refused, so with both shapes accepted this is the estimator's call in the
    * canvas (the collision badge is theirs), not the agent's. */
   scopeMerge(opts: { shape_a: string; shape_b: string; winner?: string }) {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     const A = this.shapes.find((x) => x.id === opts.shape_a);
     const B = this.shapes.find((x) => x.id === opts.shape_b);
-    if (!A) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_a)} — scope_duplicates or list_shapes for real ids.`);
-    if (!B) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_b)} — scope_duplicates or list_shapes for real ids.`);
+    if (!A) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_a)} — scope_duplicates or edit_takeoff {action: "list"} for real ids.`);
+    if (!B) throw new UserError(`No shape with id ${JSON.stringify(opts.shape_b)} — scope_duplicates or edit_takeoff {action: "list"} for real ids.`);
     if (A.id === B.id) throw new UserError("shape_a and shape_b are the same shape.");
     for (const x of [A, B]) if (x.measure_role !== "floor_area") throw new UserError(`Shape ${x.id} is ${x.measure_role} — only floor_area shapes claim floor. A deduct subtracts, a run has no area to share.`);
     if (A.sheet_id !== B.sheet_id) throw new UserError(`Shapes on different sheets (${A.sheet_id} / ${B.sheet_id}) cannot share floor.`);
@@ -2485,7 +2488,7 @@ export class Session {
       throw new UserError(`Shape ${loser.id} (${pair.a.shape_id === loser.id ? pair.a.condition : pair.b.condition}) was affirmed by a human — reviewed work is ink, and trimming or deleting it would mutate what the estimator signed. Name the other shape as the loser, or leave the collision for the canvas.`);
     }
     if (this.shapes.some((x) => x.cuts_shape_id === loser.id)) {
-      throw new UserError(`Shape ${loser.id} carries reconciled cutouts — trimming it would strand their restore snapshots. delete_shape the cuts first, or re-trace the room.`);
+      throw new UserError(`Shape ${loser.id} carries reconciled cutouts — trimming it would strand their restore snapshots. edit_takeoff {action: "delete"} the cuts first, or re-trace the room.`);
     }
     const i = this.shapes.findIndex((x) => x.id === loser.id);
     const upp = s.upp;
@@ -2501,7 +2504,7 @@ export class Session {
       };
     }
     const r = subtractWinner(loser, winner, { w: s.widthPx, h: s.heightPx });
-    if (!r) throw new UserError(`Taking the ${pair.shared_sf} SF out of ${loser.id} would split it into disjoint pieces (or leave nothing) — that is a re-trace decision, not a merge: measure_polygon the remainder as its own room.`);
+    if (!r) throw new UserError(`Taking the ${pair.shared_sf} SF out of ${loser.id} would split it into disjoint pieces (or leave nothing) — that is a re-trace decision, not a merge: measure {kind: "area"} the remainder as its own room.`);
     const before = structuredClone(loser);
     const toNorm = (ring: number[][]): [number, number][] => ring.map(([x, y]) => [x / s.widthPx, y / s.heightPx]);
     loser.verts_norm = toNorm(r.outer);
@@ -2513,7 +2516,7 @@ export class Session {
       action: "trimmed" as const, winner: winner.id, loser: loser.id, shared_sf: pair.shared_sf,
       loser_before_sf: loserArea, loser_after_sf: loser.computed.area_sf ?? 0,
       loser_holes: r.holes.length, shape_count: this.shapes.length,
-      note: `The loser keeps its remainder (exact boolean difference, the cut_out arithmetic); its quantities are re-measured from the result. One undo step restores it verbatim.`,
+      note: `The loser keeps its remainder (exact boolean difference, the derive {action: "deduct"} arithmetic); its quantities are re-measured from the result. One undo step restores it verbatim.`,
     };
   }
 
@@ -2539,12 +2542,12 @@ export class Session {
     }
     const floors = this.shapes.filter((x) => x.condition_id === src.id && x.measure_role === "floor_area");
     if (!floors.length) {
-      throw new UserError(`${src.finish_tag} has no floor_area shapes to derive from — commit rooms first (one_click / detect_rooms).`);
+      throw new UserError(`${src.finish_tag} has no floor_area shapes to derive from — commit rooms first (takeoff_rooms or measure {kind: "area"}).`);
     }
     const byShape = new Map<string, number>();
     for (const [i, o] of (opts.openings ?? []).entries()) {
       const hit = floors.find((f) => f.id === o.shape_id);
-      if (!hit) throw new UserError(`openings[${i}]: ${JSON.stringify(o.shape_id)} is not a floor_area shape of ${src.finish_tag} — list_shapes for real ids.`);
+      if (!hit) throw new UserError(`openings[${i}]: ${JSON.stringify(o.shape_id)} is not a floor_area shape of ${src.finish_tag} — edit_takeoff {action: "list"} for real ids.`);
       if (!(o.lf >= 0)) throw new UserError(`openings[${i}]: lf must be >= 0.`);
       byShape.set(o.shape_id, (byShape.get(o.shape_id) ?? 0) + o.lf);
     }
@@ -2595,7 +2598,7 @@ export class Session {
    * consecutive Applies on the canvas. */
   async applyRules(opts: { sheet?: string } = {}) {
     if (!this.rules.length) {
-      throw new UserError("No rules in this session — rules ride import_takeoff from a canvas file (an estimator's taught corrections, #88). Minting new rules is the canvas's job; this verb only re-runs what a human already taught.");
+      throw new UserError("No rules in this session — rules ride export {action: \"import\"} from a canvas file (an estimator's taught corrections, #88). Minting new rules is the canvas's job; this verb only re-runs what a human already taught.");
     }
     const activeCondIds = new Set(this.rules.filter((r) => r.active).map((r) => r.seed_condition_id));
     const sheetKeys = opts.sheet
@@ -2667,13 +2670,13 @@ export class Session {
    * a subtract that erases or splits the parent refuses whole. */
   cutOut(opts: { parent_shape_id: string; verts: Point[] }) {
     const parent = this.shapes.find((x) => x.id === opts.parent_shape_id);
-    if (!parent) throw new UserError(`No shape with id ${JSON.stringify(opts.parent_shape_id)} — list_shapes for real ids.`);
+    if (!parent) throw new UserError(`No shape with id ${JSON.stringify(opts.parent_shape_id)} — edit_takeoff {action: "list"} for real ids.`);
     if (parent.measure_role === "surface_area" || parent.measure_role === "linear") return this.cutRunOut(parent, opts.verts);
     if (parent.measure_role !== "floor_area") {
-      throw new UserError(`cut_out subtracts from an area or clips a run — ${parent.id} is ${parent.measure_role}. A count marker has nothing to cut: delete_shape it.`);
+      throw new UserError(`derive {action: "deduct"} subtracts from an area or clips a run — ${parent.id} is ${parent.measure_role}. A count marker has nothing to cut: edit_takeoff {action: "delete"} it.`);
     }
     if (parent.origin?.reviewed === true) {
-      throw new UserError(`Shape ${parent.id} was affirmed by a human — reviewed work is ink, and cutting a hole in it would mutate what the estimator signed. Commit an independent deduct with measure_polygon instead.`);
+      throw new UserError(`Shape ${parent.id} was affirmed by a human — reviewed work is ink, and cutting a hole in it would mutate what the estimator signed. Commit an independent deduct with measure {kind: "area"} instead.`);
     }
     const s = this.sheet(parent.sheet_id);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
@@ -2683,12 +2686,12 @@ export class Session {
     const toNorm = (ring: number[][]): [number, number][] => ring.map(([x, y]) => [x / s.widthPx, y / s.heightPx]);
     const outerPx = toPx(parent.verts_norm);
     if (!ringFullyInside(outerPx, opts.verts)) {
-      throw new UserError("The cut is not fully inside the parent's outer ring. The canvas resolves an edge-crossing cut as a boundary clip; over the wire the rule is refusal-over-guessing — reshape the parent with edit_shape, or commit an independent deduct with measure_polygon.");
+      throw new UserError("The cut is not fully inside the parent's outer ring. The canvas resolves an edge-crossing cut as a boundary clip; over the wire the rule is refusal-over-guessing — reshape the parent with edit_takeoff {action: \"edit\"}, or commit an independent deduct with measure {kind: \"area\"}.");
     }
     const holesPx = (parent.verts_norm_holes ?? []).map(toPx);
     const r = subtractCutout(outerPx, holesPx, opts.verts);
     if (!r) {
-      throw new UserError("The subtract degenerates — this cut would erase the parent or split it into disjoint pieces. That is a re-trace decision, not a hole: measure_polygon the pieces as their own rooms.");
+      throw new UserError("The subtract degenerates — this cut would erase the parent or split it into disjoint pieces. That is a re-trace decision, not a hole: measure {kind: \"area\"} the pieces as their own rooms.");
     }
     const parentPrev: CutoutParentPrev = {
       verts_norm: parent.verts_norm.map((v) => [...v] as [number, number]),
@@ -2737,13 +2740,13 @@ export class Session {
   private cutRunOut(parent: Shape, verts: Point[]) {
     const derived = parent.origin?.derived;
     if (derived && "openings_lf" in derived && derived.openings_lf > 0) {
-      throw new UserError("This derived base already has numeric openings with no stored locations. Use measure_line for the installed runs; clipping this gross perimeter would lose the existing allowance.");
+      throw new UserError("This derived base already has numeric openings with no stored locations. Use measure {kind: \"length\"} for the installed runs; clipping this gross perimeter would lose the existing allowance.");
     }
     if (parent.origin?.reviewed === true) {
       throw new UserError(`Shape ${parent.id} was affirmed by a human — reviewed work is ink, and clipping it would mutate what the estimator signed.`);
     }
     if ((parent as { curved?: boolean }).curved) {
-      throw new UserError(`Shape ${parent.id} is a curved run — its vertices are control points, not the line itself, so clipping them would move the curve. Reshape it with edit_shape.`);
+      throw new UserError(`Shape ${parent.id} is a curved run — its vertices are control points, not the line itself, so clipping them would move the curve. Reshape it with edit_takeoff {action: "edit"}.`);
     }
     const s = this.sheet(parent.sheet_id);
     if (s.upp == null) throw new UserError(this.scaleGate(s));
@@ -2755,7 +2758,7 @@ export class Session {
       throw new UserError(`The cut does not cross ${parent.id} — nothing came off it. view_sheet the run's coordinates and place the ring over the stretch you mean to remove.`);
     }
     if (r.kind === "erased") {
-      throw new UserError(`That ring covers the whole of ${parent.id}. Removing a run outright is delete_shape, not a cut.`);
+      throw new UserError(`That ring covers the whole of ${parent.id}. Removing a run outright is edit_takeoff {action: "delete"}, not a cut.`);
     }
     const target_prev: CutoutParentPrev = {
       verts_norm: parent.verts_norm.map((v) => [...v] as [number, number]),
@@ -2778,7 +2781,7 @@ export class Session {
     const toNorm = (run: number[][]): [number, number][] => run.map(([x, y]) => [x / s.widthPx, y / s.heightPx]);
     const survivors = r.runs ?? [];
     const [head, ...rest] = survivors;
-    if (!head) throw new UserError(`That ring covers the whole of ${parent.id}. Removing a run outright is delete_shape, not a cut.`);
+    if (!head) throw new UserError(`That ring covers the whole of ${parent.id}. Removing a run outright is edit_takeoff {action: "delete"}, not a cut.`);
     parent.verts_norm = toNorm(head);
     parent.computed = qty(openLen(head), parentLegs);
     const minted: Shape[] = rest.map((piece) => ({
@@ -2798,8 +2801,8 @@ export class Session {
       removed_lf: round2(Math.max(0, wasLf - pieces.reduce((n, p) => n + p.lf, 0))),
       removed_sf: round2(Math.max(0, wasSf - pieces.reduce((n, p) => n + p.sf, 0))),
       note: minted.length
-        ? `The cut fell inside the run, so it comes back in ${pieces.length} pieces — same condition, same height, each measured on its own${parentLegs.rise || parentLegs.drop ? `; the run's rise/drop stay on ${parent.id}, the new piece(s) carry none (rise_ft/drop_ft 0 — edit_shape to move a leg)` : ""}. One undo_last puts the run back whole.`
-        : "The run keeps its id and its condition; only its length (and the SF that rides on it) changed. One undo_last puts it back whole.",
+        ? `The cut fell inside the run, so it comes back in ${pieces.length} pieces — same condition, same height, each measured on its own${parentLegs.rise || parentLegs.drop ? `; the run's rise/drop stay on ${parent.id}, the new piece(s) carry none (rise_ft/drop_ft 0 — edit_takeoff {action: "edit"} to move a leg)` : ""}. One edit_takeoff {action: "undo"} puts the run back whole.`
+        : "The run keeps its id and its condition; only its length (and the SF that rides on it) changed. One edit_takeoff {action: \"undo\"} puts it back whole.",
     };
   }
 
@@ -2876,7 +2879,7 @@ export class Session {
     const floors = (c: typeof a) => this.shapes.filter((x) => x.condition_id === c.id && x.measure_role === "floor_area");
     const fa = floors(a), fb = floors(b);
     for (const [tag, list] of [[a.finish_tag, fa], [b.finish_tag, fb]] as const) {
-      if (!list.length) throw new UserError(`${tag} has no floor_area shapes to derive from — commit rooms first (one_click / detect_rooms).`);
+      if (!list.length) throw new UserError(`${tag} has no floor_area shapes to derive from — commit rooms first (takeoff_rooms or measure {kind: "area"}).`);
     }
     // a run is only measurable in FEET, so every sheet in play needs its scale
     // before anything is compared — the derive_base refusal, one step earlier
@@ -2932,7 +2935,7 @@ export class Session {
       withheld,
       withheld_lf: round2(withheld.reduce((n, r) => n + r.length_lf, 0)),
       note: withheld.length
-        ? `${withheld.length} run(s) are adjacency ACROSS A WALL, not a butt joint — the transition there is a threshold in the doorway, and the trace record does not say where the doorway is. view_sheet each \`at\` and place them with measure_line / place_count.`
+        ? `${withheld.length} run(s) are adjacency ACROSS A WALL, not a butt joint — the transition there is a threshold in the doorway, and the trace record does not say where the doorway is. view_sheet each \`at\` and place them with measure {kind: "length"} / count {action: "place"}.`
         : "Every run was a butt joint inside one open space. Verify with view_sheet overlay:true before trusting the total.",
     };
   }
@@ -2964,7 +2967,7 @@ export class Session {
   async countMarks(opts: { marks?: string[]; commit?: boolean } = {}) {
     const graph = await this.ensureGraph();
     if (!graph.available) {
-      throw new UserError("This set has no text layer (a scan) — the census reads drawn tag text, so it cannot run. Marquee one device with symbol_sweep instead.");
+      throw new UserError("This set has no text layer (a scan) — the census reads drawn tag text, so it cannot run. Marquee one device with count {action: \"sweep\"} instead.");
     }
     const canon = (k: string) => (k || "").trim().toUpperCase().replace(/\s+/g, "");
     const MARK_RE = /^[A-Z]{1,3}-?\d{1,3}[A-Z]?$/;
@@ -2987,7 +2990,7 @@ export class Session {
     } else {
       marks = [...rowCite.keys()].filter((k) => MARK_RE.test(k)).sort();
       if (!marks.length) {
-        throw new UserError('No mark-shaped schedule row keys in the set to census — state the marks yourself: count_marks { marks: ["S1", "R1"] }.');
+        throw new UserError('No mark-shaped schedule row keys in the set to census — state the marks yourself: count {action: "marks", marks: ["S1", "R1"]}.');
       }
     }
 
@@ -3008,7 +3011,7 @@ export class Session {
       }
     }
     if (!planSheets.length) {
-      throw new UserError("No plan-role sheet in the set — the census counts installed work, and every sheet classified as schedule/legend/detail/unknown. sheet_graph shows each sheet's role and evidence.");
+      throw new UserError("No plan-role sheet in the set — the census counts installed work, and every sheet classified as schedule/legend/detail/unknown. sheet_context {action: \"graph\"} shows each sheet's role and evidence.");
     }
 
     // a tag inside a schedule table's own region is that table's row label
@@ -3185,7 +3188,7 @@ export class Session {
       if (diffMatches.length) parts.push(`Committed match(es) the drawing names differently (${diffMatches.join(", ")}) — the geometry matched but the tag disagrees; check they belong in this count, or exclude one as a counter-example.`);
       const same = lbl.withheld.filter((l) => l && l.label === seedTag).length;
       const others = [...new Set(lbl.withheld.filter((l): l is PlacementLabel => !!l && l.label !== seedTag).map((l) => l.label))];
-      if (same) parts.push(`${same} withheld placement(s) carry the seed's own tag "${seedTag}" — the drawing says they are real; look, then place_count.`);
+      if (same) parts.push(`${same} withheld placement(s) carry the seed's own tag "${seedTag}" — the drawing says they are real; look, then count {action: "place"}.`);
       if (others.length) parts.push(`Withheld placements the drawing names differently (${others.join(", ")}) are sibling fixtures, not missed counts.`);
     }
     return parts.length ? parts.join(" ") : null;
@@ -3286,7 +3289,7 @@ export class Session {
       throw new UserError("commit_seed: true needs commit: true — the seed joins the same one-undo-step batch as the matches.");
     }
     if (opts.commitSeed && scope === "set") {
-      throw new UserError("commit_seed applies to sheet scope only — in a set-wide sweep the seed may sit on a detail or legend sheet, where it is a reference drawing. If the seed instance is installed work, place_count it on its sheet explicitly.");
+      throw new UserError("commit_seed applies to sheet scope only — in a set-wide sweep the seed may sit on a detail or legend sheet, where it is a reference drawing. If the seed instance is installed work, count {action: \"place\"} it on its sheet explicitly.");
     }
     const geo = await this.ensureGeometry(s);
     if (!geo.segs.length) {
@@ -3408,7 +3411,7 @@ export class Session {
           if (opts.commit && !refusal && !res.matches.length && !opts.commitSeed) parts.push("commit requested but nothing cleared the bar — no shapes were committed.");
           // #296 — a count that excludes something the estimator can see must
           // say so: the seed is almost always installed work in sheet scope.
-          if (committed && !opts.commitSeed) parts.push(`The seed instance at (${round1(fp.center[0])}, ${round1(fp.center[1])}) is NOT in this count — if it is installed work, re-run with commit_seed: true or place_count it.`);
+          if (committed && !opts.commitSeed) parts.push(`The seed instance at (${round1(fp.center[0])}, ${round1(fp.center[1])}) is NOT in this count — if it is installed work, re-run with commit_seed: true or count {action: "place"} it.`);
           if (labelNote) parts.push(labelNote);
           return parts.length ? { note: parts.join(" ") } : {};
         })(),
@@ -3526,7 +3529,7 @@ export class Session {
     }
     const rejectedTotal = perSheet.reduce((n, p) => n + p.rejected.length, 0);
     if (rejectedTotal) {
-      notes.push(`${rejectedTotal} placement(s) the geometry accepted were rejected by your counter-example(s) and are NOT in found — each is named per sheet in rejected[] with what it saw. Look before accepting the exclusion: place_count reinstates one by hand.`);
+      notes.push(`${rejectedTotal} placement(s) the geometry accepted were rejected by your counter-example(s) and are NOT in found — each is named per sheet in rejected[] with what it saw. Look before accepting the exclusion: count {action: "place"} reinstates one by hand.`);
     }
     const lumRejectedTotal = perSheet.reduce((n, p) => n + (p.lum_gate?.rejected ?? 0), 0);
     if (lumRejectedTotal) {
@@ -3595,7 +3598,7 @@ export class Session {
   async countSymbol(name: string, opts: { at: Point; condition: string; level?: number; commit?: boolean; drop?: number[]; include_loose?: boolean; add_withheld?: number[]; wing_angles?: boolean; px?: number }) {
     const s = this.sheet(name);
     const geo = await this.ensureGeometry(s);
-    if (!geo.segs.length) throw new UserError("This sheet has no vector linework (likely a scan) — count_symbol reads the drawn segments.");
+    if (!geo.segs.length) throw new UserError("This sheet has no vector linework (likely a scan) — count {action: \"symbol\"} reads the drawn segments.");
     const ink = this.inkFor(s, geo);
     const at: Point = [Math.max(0, Math.min(opts.at[0], s.widthPx)), Math.max(0, Math.min(opts.at[1], s.heightPx))];
     const pxPerMetre = s.upp ? 1 / (s.upp * 0.3048) : null;
@@ -3656,7 +3659,7 @@ export class Session {
     const bad = [...drop].filter((n) => !marks[n]);
     if (bad.length) throw new UserError(`drop: no mark ${bad.join(", ")} — marks are numbered 0–${marks.length - 1} on the picture.`);
     const badW = (opts.add_withheld ?? []).filter((n) => !withheld[n - 1]);
-    if (badW.length) throw new UserError(`add_withheld: no mark W${badW.join(", W")} — withheld marks are ${withheld.length ? `W1–W${withheld.length}` : "none"} on the picture.`);
+    if (badW.length) throw new UserError(`add_withheld: no mark W${badW.join(", W")} — withheld marks are ${withheld.length ? `W1${withheld.length > 1 ? `–W${withheld.length}` : ""}` : "none"} on the picture.`);
     const near = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1]) <= radius;
     if (opts.commit) {
       const keep = marks.filter((m) => !m.already && !drop.has(m.n) && (!m.loose || opts.include_loose));
@@ -3726,7 +3729,7 @@ export class Session {
         image: { region: view.meta.region, img_px: view.meta.img_px, zoom: view.meta.zoom },
         legend: "image 1: the marks; image 2: a close-up of the example seed. blue = your example (0), green = counted, grey = already counted under this condition, purple = loose (a smaller seed also matches: variants or look-alikes), orange W = withheld near-match",
         next: committed
-          ? "Committed. If instances are missing (another orientation or variant), call count_symbol again with a point on one of them and the same condition: marks already counted show grey and are never counted twice."
+          ? "Committed. If instances are missing (another orientation or variant), call count {action: \"symbol\"} again with a point on one of them and the same condition: marks already counted show grey and are never counted twice."
           : "Look at the picture. Wrong marks: pass drop:[numbers]. Loose (purple) marks that are real: include_loose:true. Wrong seed: pass level from seeds_tried. Right: repeat with commit:true. Then look for instances with no mark and repeat with a point on one of them.",
       },
     };
@@ -3766,7 +3769,7 @@ export class Session {
     tolerancePx?: number;
   } = {}) {
     const t = (tag || "").trim().toUpperCase().replace(/\s+/g, "");
-    if (!t) throw new UserError('Pass a schedule-row tag as drawn, e.g. sweep_schedule_row { tag: "T1" }.');
+    if (!t) throw new UserError('Pass a schedule-row tag as drawn, e.g. schedule {action: "sweep_row", tag: "T1"}.');
     const graph = await this.ensureGraph();
     if (!graph.available) throw new UserError("This set has no text layer (a scan) — the sheet graph is unavailable, so schedule rows cannot be read.");
 
@@ -3781,10 +3784,10 @@ export class Session {
         const keys = x.rows.map((row) => row.key).slice(0, 12).join(", ");
         return `${x.kind} on ${x.sheet} (${x.rows.length} rows: ${keys}${x.rows.length > 12 ? ", …" : ""})`;
       }).join(" | ");
-      throw new UserError(`No schedule row "${t}" in the set — tables found: ${found || "none"}. Check the tag as drawn (find_schedule shows each table's region), or merge the schedule sheet in with load_plan.`);
+      throw new UserError(`No schedule row "${t}" in the set — tables found: ${found || "none"}. Check the tag as drawn (schedule {action: "find"} shows each table's region), or merge the schedule sheet in with open_drawings {action: "load"}.`);
     }
     if (rowHits.length > 1) {
-      throw new UserError(`Ambiguous: ${rowHits.length} schedule rows carry the key "${t}" — the same mark defined twice cannot seed one sweep. Marquee the marker yourself with symbol_sweep.`);
+      throw new UserError(`Ambiguous: ${rowHits.length} schedule rows carry the key "${t}" — the same mark defined twice cannot seed one sweep. Marquee the marker yourself with count {action: "sweep"}.`);
     }
     const { tb, r } = rowHits[0];
     // sibling keys span EVERY table in the set, not just the row's own: a
@@ -3838,8 +3841,8 @@ export class Session {
     const totalOcc = drawnBySheet.reduce((n, e) => n + e.occ.length, 0);
     const mentions = occBySheet.reduce((n, e) => n + e.occ.length, 0) - totalOcc;
     if (!totalOcc) {
-      if (mentions) throw new UserError(`Schedule row "${t}" (${table} on ${tb.sheet}) is mentioned ${mentions}× on plan sheets but never drawn — every occurrence is bare text with no linework near it (a note), so there is no instance to count. If the device is drawn without its tag, marquee one instance with symbol_sweep {scope: "set"}.`);
-      throw new UserError(`Schedule row "${t}" (${table} on ${tb.sheet}) cannot be geometrically anchored — its tag is not drawn on any plan sheet, and a fingerprint is never guessed from text alone. If the marker is drawn untagged, marquee one instance with symbol_sweep {scope: "set"}.`);
+      if (mentions) throw new UserError(`Schedule row "${t}" (${table} on ${tb.sheet}) is mentioned ${mentions}× on plan sheets but never drawn — every occurrence is bare text with no linework near it (a note), so there is no instance to count. If the device is drawn without its tag, marquee one instance with count {action: "sweep", scope: "set"}.`);
+      throw new UserError(`Schedule row "${t}" (${table} on ${tb.sheet}) cannot be geometrically anchored — its tag is not drawn on any plan sheet, and a fingerprint is never guessed from text alone. If the marker is drawn untagged, marquee one instance with count {action: "sweep", scope: "set"}.`);
     }
 
     // 3. anchor + pad ladder + corroboration. Anchor sheet = the plan sheet
@@ -4107,7 +4110,7 @@ export class Session {
       skipped,
       ...(committed ?? {}),
       ...(notes.length ? { note: notes.join(" ") } : {}),
-      ...(capped.length ? { warning: `Work cap: candidate placements were dropped un-scored on ${capped.map((p) => p.state.key).join(", ")} — sweep those sheets singly with symbol_sweep and reconcile the counts.` } : {}),
+      ...(capped.length ? { warning: `Work cap: candidate placements were dropped un-scored on ${capped.map((p) => p.state.key).join(", ")} — sweep those sheets singly with count {action: "sweep"} and reconcile the counts.` } : {}),
     };
   }
 
@@ -4116,7 +4119,7 @@ export class Session {
    * delete_shape assume you have, without pulling the whole export_takeoff
    * payload to find one shape. Filters narrow, they never 404 an empty list. */
   listShapes(f: { sheet?: string; condition?: string } = {}) {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     let rows = this.shapes;
     if (f.sheet) { const s = this.sheet(f.sheet); rows = rows.filter((x) => x.sheet_id === s.key); }
     if (f.condition) {
@@ -4215,7 +4218,7 @@ export class Session {
     const orphans = this.shapes.filter((x) => x.cuts_shape_id === id).length;
     return {
       deleted: id, shape_count: this.shapes.length,
-      ...(orphans ? { note: `${orphans} reconciled deduct(s) pointed at this shape and are now orphaned (their holes died with the parent; totals ignore them) — the canvas behaves the same. delete_shape them too, or undo_last.` } : {}),
+      ...(orphans ? { note: `${orphans} reconciled deduct(s) pointed at this shape and are now orphaned (their holes died with the parent; totals ignore them) — the canvas behaves the same. edit_takeoff {action: "delete"} them too, or edit_takeoff {action: "undo"}.` } : {}),
     };
   }
 
@@ -4260,7 +4263,7 @@ export class Session {
       throw new UserError(`rise_ft / drop_ft are a linear run's vertical legs — ${JSON.stringify(id)} ${patch.role !== undefined ? `would be ${roleAfter}` : `is ${roleAfter}`}. A wall's vertical is its height_ft.`);
     }
     if (cur.origin?.derived && (patch.rise_ft !== undefined || patch.drop_ft !== undefined)) {
-      throw new UserError(`Shape ${JSON.stringify(id)} is a derived run (base or transition) — a floor-level line by construction; it never takes a rise or drop. Trace the vertical run with measure_line.`);
+      throw new UserError(`Shape ${JSON.stringify(id)} is a derived run (base or transition) — a floor-level line by construction; it never takes a rise or drop. Trace the vertical run with measure {kind: "length"}.`);
     }
     // #206 — a reconciled cutout pair is one geometry, not two shapes to edit
     // independently. Moving/re-roling the deduct would desync the hole it cut
@@ -4269,10 +4272,10 @@ export class Session {
     // (the canvas has the same limitation — its hole rings don't track a
     // reshape either, #137 follow-up). Label edits stay fine on both.
     if (cur.cuts_shape_id && (patch.verts !== undefined || patch.role !== undefined || patch.condition !== undefined)) {
-      throw new UserError(`Shape ${JSON.stringify(id)} is a reconciled cutout — its ring IS the hole in ${cur.cuts_shape_id}. delete_shape it (the parent's geometry is restored) and cut_out again where you mean it.`);
+      throw new UserError(`Shape ${JSON.stringify(id)} is a reconciled cutout — its ring IS the hole in ${cur.cuts_shape_id}. edit_takeoff {action: "delete"} it (the parent's geometry is restored) and derive {action: "deduct"} again where you mean it.`);
     }
     if (cur.verts_norm_holes?.length && (patch.verts !== undefined || patch.role !== undefined)) {
-      throw new UserError(`Shape ${JSON.stringify(id)} carries ${cur.verts_norm_holes.length} reconciled hole(s) — reshaping its outer ring would strand them. delete_shape the cutout deduct(s) first (each restores the parent), reshape, then cut_out again.`);
+      throw new UserError(`Shape ${JSON.stringify(id)} carries ${cur.verts_norm_holes.length} reconciled hole(s) — reshaping its outer ring would strand them. edit_takeoff {action: "delete"} the cutout deduct(s) first (each restores the parent), reshape, then derive {action: "deduct"} again.`);
     }
     const s = this.sheet(cur.sheet_id);
     const role = patch.role ?? cur.measure_role;
@@ -5009,7 +5012,7 @@ export class Session {
     if (m.text === text) throw new UserError("The annotation already has that text — nothing changed.");
     this.record({ op: "annotation_text", tool: "edit_annotation", id, before: m.text });
     m.text = text;
-    return { id, text, note: "Text updated; geometry, dimensions, links and review records are unchanged. undo_last restores the previous text." };
+    return { id, text, note: "Text updated; geometry, dimensions, links and review records are unchanged. edit_takeoff {action: \"undo\"} restores the previous text." };
   }
 
   /** Attach an existing annotation to a condition, or detach it with "". The
@@ -5140,7 +5143,7 @@ export class Session {
     const text = (answer ?? "").trim();
     if (!text) throw new UserError(`${r.number} needs an answer — resolve_rfi records the response; to withdraw the question use delete_rfi.`);
     if (r.status !== "open") {
-      throw new UserError(`${r.number} is ${r.status}, not open — resolve_rfi answers an OPEN question only. list_rfis shows each status; a resolved RFI stays resolved (undo_last reverses your own resolve).`);
+      throw new UserError(`${r.number} is ${r.status}, not open — resolve_rfi answers an OPEN question only. list_rfis shows each status; a resolved RFI stays resolved (edit_takeoff {action: "undo"} reverses your own resolve).`);
     }
     const before = structuredClone(r);
     const now = new Date();
@@ -5175,7 +5178,7 @@ export class Session {
       number: r.number,
       unlinked_markups: unlinked.length,
       rfis_remaining: this.liveRfis().length,
-      note: `${r.number} withdrawn — a tombstone, not a renumber: the register and the marked set keep the gap, and the next RFI takes ${nextRfiNumber(this.rfis)}. ${unlinked.length ? `${unlinked.length} markup${unlinked.length === 1 ? "" : "s"} kept their note and lost the link.` : "No markups were linked."} undo_last puts it back.`,
+      note: `${r.number} withdrawn — a tombstone, not a renumber: the register and the marked set keep the gap, and the next RFI takes ${nextRfiNumber(this.rfis)}. ${unlinked.length ? `${unlinked.length} markup${unlinked.length === 1 ? "" : "s"} kept their note and lost the link.` : "No markups were linked."} edit_takeoff {action: "undo"} puts it back.`,
     };
   }
 
@@ -5233,7 +5236,7 @@ export class Session {
     let shape: Shape | undefined;
     if (a.shape_id !== undefined) {
       shape = this.shapes.find((x) => x.id === a.shape_id);
-      if (!shape) throw new UserError(`No shape with id ${JSON.stringify(a.shape_id)} — list_shapes has the real ids.`);
+      if (!shape) throw new UserError(`No shape with id ${JSON.stringify(a.shape_id)} — edit_takeoff {action: "list"} has the real ids.`);
       // one mark per shape: a second identical diamond stacked on the same
       // anchor is invisible duplication, the same failure class the canvas's
       // click-to-lift toggle prevents. Re-mark = delete_verdict + mark_verdict.
@@ -5311,7 +5314,7 @@ export class Session {
    * one model space at the same origin would be a lie. A sheet without a
    * scale refuses too (a CAD file in pixels is worse than none). */
   exportDxf(sheetName?: string, units: "ft" | "m" = "ft"): { sheet: SheetState; build: DxfBuild } {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     let s: SheetState;
     if (sheetName != null && sheetName !== "") {
       s = this.sheet(sheetName);
@@ -5337,7 +5340,7 @@ export class Session {
   }
 
   exportPayload(): TakeoffDocument {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     // The envelope is the canvas's own writer (web/src/lib/takeoffDocument.js):
     // key order, omit-when-empty and the units rule are decided there once.
     // What the server contributes is its field bag; provenance rides the sheet
@@ -5365,7 +5368,7 @@ export class Session {
    * materials as CONFIG rows and takeoff_summary strips them; only this
    * document carries the computed order quantities. */
   exportReport(projectName = "") {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     // roll goods (#147): the same pure seam the canvas report uses — figured
     // here so the report.v1 block fills the moment a condition carries a setup.
     // It runs BEFORE the rows because a materials row with basis "seam_lf"
@@ -5396,7 +5399,7 @@ export class Session {
   private graph: SheetGraph | null = null;
 
   private async ensureGraph(): Promise<SheetGraph> {
-    if (!this.docs.size) throw new UserError("No plan loaded — call load_plan first.");
+    if (!this.docs.size) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first.");
     if (!this.graph) {
       const inputs: SheetSpans[] = [];
       // The drawn delta-triangle hunt needs linework — but the hunt is a BONUS
@@ -5504,7 +5507,7 @@ export class Session {
   }
 
   async resolveRoomTag(tag: string) {
-    if (!tag || !tag.trim()) throw new UserError("Pass a room tag, e.g. resolve_tag { tag: \"134\" }.");
+    if (!tag || !tag.trim()) throw new UserError("Pass a room tag, e.g. find_text {action: \"resolve_tag\", tag: \"134\"}.");
     const g = await this.ensureGraph();
     if (!g.available) throw new UserError("This set has no text layer (a scan) — the sheet graph is unavailable, not empty.");
     const res = resolveTag(g, tag);

@@ -4,7 +4,7 @@
 
 > この翻訳の一部の機能説明は英語版より古い可能性があります。現在の利用可否は[英語 README](README.md)と[共通 Wiki](docs/wiki/README.md)を確認してください。
 
-> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `one_click` / `detect_rooms` MCP verbs are **not registered** (a default build ships <!--tool-count-->53<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure_polygon` over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
+> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `takeoff_rooms` MCP tool is **not registered** (a default build ships <!--tool-count-->33<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure` (`kind: "area"`) over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
 
 **人と AI エージェントの両方のために作られた、最初の拾い出しキャンバス。**
 
@@ -94,8 +94,8 @@ npm run dev        # http://localhost:5173
 
 同じエンジンが [MCP](https://modelcontextprotocol.io) を話します。[`mcp/`](mcp/README.md) は
 MCP クライアントから駆動できる stdio サーバーで、コマンド一つで動きます — `npx -y opentakeoff-mcp`。
-`load_plan`、`read_sheet_text`、`set_scale`、`one_click`、`view_sheet`、`takeoff_summary`、
-`export_takeoff` などを提供します。
+`open_drawings`、`find_text`、`set_scale`、`takeoff_rooms`、`measure`、`count`、`view_sheet`、`summary`、
+`export` などを提供します。
 
 エージェントは図面を開き、表題欄を読み、縮尺を採用し（黙って適用されることはありません）、
 部屋をクリックし、校正済みの計測グリッド付きレンダリング（`view_sheet`）で自分の作業を検証し、

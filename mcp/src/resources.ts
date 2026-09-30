@@ -28,8 +28,8 @@ function parsePage(session: Session, raw: string | string[]) {
 }
 
 export function registerResources(server: McpServer, session: Session): void {
-  // Static, public knowledge is available before a plan is loaded and in every
-  // staged-tool mode. No URI is interpreted as a path or a fetch target.
+  // Static, public knowledge is available before a plan is loaded. No URI is
+  // interpreted as a path or a fetch target.
   for (const page of WIKI_PAGES) {
     server.registerResource(`wiki-${page.key}`, page.uri, {
       title: page.title,
@@ -102,7 +102,7 @@ export function registerResources(server: McpServer, session: Session): void {
     new ResourceTemplate("takeoff://sheet/{page}/text", { list: sheetEntries("/text", "text/plain", "sheet text") }),
     {
       title: "Sheet text",
-      description: "The sheet's text content, reading order, joined — title block, room labels, schedules, scale notes. For positions use the read_sheet_text tool.",
+      description: "The sheet's text content, reading order, joined — title block, room labels, schedules, scale notes. For positions use the find_text {action: \"read\"} tool.",
       mimeType: "text/plain",
     },
     async (uri, { page }) => {

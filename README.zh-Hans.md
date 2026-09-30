@@ -4,7 +4,7 @@
 
 > 本译文的部分功能说明可能落后于英文版。请查看[英文 README](README.md)和[共用 Wiki](docs/wiki/README.md)了解当前可用状态。
 
-> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `one_click` / `detect_rooms` MCP verbs are **not registered** (a default build ships <!--tool-count-->53<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure_polygon` over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
+> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `takeoff_rooms` MCP tool is **not registered** (a default build ships <!--tool-count-->33<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure` (`kind: "area"`) over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
 
 **建筑图纸的测量引擎 —— 造得让 AI 智能体能驱动，也让估算员愿意用。**
 
@@ -72,7 +72,7 @@ OpenTakeoff 是**纯客户端的浏览器应用**，所以这块画布在 Window
 
 OpenTakeoff 就是这个引擎,在同一套几何算法上跑着两个前端:
 
-- **一个 stdio MCP 服务器** —— `npx -y opentakeoff-mcp`,<!--tool-count-->53<!--/tool-count--> 个工具,
+- **一个 stdio MCP 服务器** —— `npx -y opentakeoff-mcp`,<!--tool-count-->33<!--/tool-count--> 个工具,
   在 [MCP 官方注册表](https://registry.modelcontextprotocol.io)上。一个智能体打开图纸、读图签栏、
   设定比例、漫水填充房间、在渲染叠加图上核对自己的工作,然后交回一份标记好的图纸 PDF。
 - **一块浏览器画布** —— 没有后端,没有账号,不上传。估算员把一套图纸拖进去描图,用的是
@@ -98,18 +98,18 @@ OpenTakeoff 就是这个引擎,在同一套几何算法上跑着两个前端:
   ([#85](https://github.com/Kentucky-ai/opentakeoff/issues/85))
 - **图纸关系图** —— 智能体问"134 号房间是什么面层,你怎么知道的",得到的是那一行明细表,
   外加每个单元格的引用出处,横跨续页、旋转过的表头,以及多栋楼的编号体系:
-  `sheet_graph` / `resolve_tag` / `find_schedule`
+  `sheet_context`(`graph`)/ `find_text`(`resolve_tag`)/ `schedule`(`find`)
   ([#87](https://github.com/Kentucky-ai/opentakeoff/issues/87))
 - **卷材** —— 把一个做法设成宽幅卷材或片材,引擎会算出接缝:分幅、多卷拼接、按裁剪顺序
   按比例画在房间上的裁剪线、一张可拖动重排的按比例卷材图,以及和测量数量并排的订购码数
   ([#136](https://github.com/Kentucky-ai/opentakeoff/issues/136))
 - **画布上的过渡条** —— Takeoffs 面板里的 **⟂ Transitions…** 从你已经测量过的房间推导出两种
-  面层交接的那条线;`derive_transitions` 在 MCP 上做的是同一件事。漫水描出来的房间互不共边,
+  面层交接的那条线;`derive`(`transitions`)在 MCP 上做的是同一件事。漫水描出来的房间互不共边,
   所以实际存在的是两种含义不同的"临近":同一个开放空间内面层变化的地方作为对接缝提交,而
   隔着一道隔断相邻的房间会被**作为问题保留、不计入数量** —— 那条过渡线其实是门洞里的门槛,
   而任何描图记录都没说门洞在哪儿。把两个房间共享的 34 LF 墙体直接算成 34 LF 门槛,会是一份
   带着机器自信的错误报价 ([#202](https://github.com/Kentucky-ai/opentakeoff/issues/202))
-- **`symbol_sweep`** —— 从一个圈选样本出发,扫出一个重复符号的每一处实例,跨图纸比例只按
+- **`count`** —— 从一个样本上的一个点(或一个圈选)出发,扫出一个重复符号的每一处实例,跨图纸比例只按
   *声明过*的比例换算,绝不自己去搜比例
 - **`mark_verdict` / `delete_verdict`** —— 智能体用石墨色的 `AGENT` 菱形给自己的工作签字;
   只有人手才能盖上绿色的 `APPROVED` 印章
@@ -159,18 +159,18 @@ Claude Code:`claude mcp add opentakeoff -- npx -y opentakeoff-mcp`。Claude Desk
 
 | 分组 | 工具 |
 |---|---|
-| **打开与定位** | `load_plan` · `sheet_info` · `sheet_context` · `get_sheet_vectors` · `read_sheet_text` · `find_text` · `view_sheet` |
+| **打开与定位** | `open_drawings` · `sheet_context` · `find_text` · `view_sheet` |
 | **比例** | `set_scale` |
-| **测量** | `one_click` · `detect_rooms` · `measure_polygon` · `cut_out` · `measure_line` · `measure_surface` · `place_count` |
-| **重复与推导** | `symbol_sweep` · `sweep_schedule_row` · `derive_base` · `derive_transitions` · `apply_rules` |
-| **读懂整套图纸** | `sheet_graph` · `resolve_tag` · `find_schedule` |
-| **编辑与审计** | `list_shapes` · `edit_shape` · `edit_condition` · `edit_materials` · `duplicate_condition` · `split_condition` · `delete_shape` · `undo_last` |
-| **标注与签字** | `annotate` · `list_annotations` · `link_annotation` · `mark_verdict` · `delete_verdict` |
+| **测量与计数** | `takeoff_rooms` · `measure` · `count` |
+| **推导与明细表** | `derive` · `schedule` |
+| **编辑与审计** | `edit_takeoff` · `edit_condition` · `edit_materials` · `duplicate_condition` · `split_condition` · `scope_duplicates` · `scope_merge` |
+| **提议** | `propose_takeoff` · `revise_proposal` · `withdraw_proposal` · `propose_condition_edit` · `withdraw_condition_edit` |
+| **标注与签字** | `annotate` · `list_annotations` · `edit_annotation` · `link_annotation` · `mark_verdict` · `delete_verdict` |
 | **提问** | `create_rfi` · `list_rfis` · `resolve_rfi` · `delete_rfi` |
-| **交付** | `takeoff_summary` · `export_takeoff` · `export_report` · `export_marked_pdf` · `export_dxf` · `import_takeoff` |
+| **交付** | `summary` · `export` |
 
 再加上可浏览的图纸资源(`takeoff://sheets`),让智能体不只是操作这套工作图纸,还能"看见"它。
-多文档会话是一等公民:一套标书是图纸**加上**明细表**加上**补充文件,`load_plan --merge`
+多文档会话是一等公民:一套标书是图纸**加上**明细表**加上**补充文件,`open_drawings`(`load`, `merge: true`)
 在不打乱已有比例、做法或图形的情况下加入一份文档 —— 图纸关系图随后横跨整套文件,所以一份文件里的
 房间标签能解析到另一份文件里的明细表行。`edit_condition` 能改到损耗率、×N 倍数和 `roll_setup`,
 所以智能体的算量结果不会出现净量等于毛量的情况。
@@ -192,14 +192,14 @@ Claude Code:`claude mcp add opentakeoff -- npx -y opentakeoff-mcp`。Claude Desk
    采用它必须是一次显式的 `set_scale`。测量一张没有设定比例的图纸会被拒绝。像素 × 一个错误的
    比例²,会让每一个数字同时全错,所以引擎宁可停下也不去猜。测量区域内出现互相矛盾的比例标注
    会给出警告,而不是静默地挑一个。
-3. **引擎负责描图,模型不能凭空造型。** `one_click` 返回的是墙体网络从你指定的种子点算出的那个环。
+3. **引擎负责描图,模型不能凭空造型。** `takeoff_rooms` 返回的是墙体网络从你指定的种子点算出的那个环。
    模型没法交回一个自己想象出来的多边形并让它被计数。
 4. **每条记录都带着它是怎么产生的。** 方法、种子点、是否启用了填充图案过滤、是否来自扫描像素、
    置信度因子,以及如果之后被人工移动过,机器最初画出的那个环。
 5. **智能体的成果是铅笔稿,直到有人给它上墨。** 导出的内容落到画布里是虚线提议。`mark_verdict`
    让智能体用石墨色的 `AGENT` 菱形给自己的工作签字;绿色的 `APPROVED` 印章只有一条代码路径,
    就是工具栏那个按钮,在一只人手之下。没有哪个 MCP 调用、哪次导入能盖上它。
-6. **交付物是一份标记好的图纸,不是一堆 JSON。** `export_marked_pdf` 把工作成果按实际绘制方式
+6. **交付物是一份标记好的图纸,不是一堆 JSON。** `export`(`marked_pdf`)把工作成果按实际绘制方式
    烧录进图纸 —— 做法颜色、填充图案、数量标签、计数标记 —— 前面还有一页带总量的图例封面,
    以及一份"这套图纸里到底有多少被人实际复核过"的统计。一份没人能核对的算量,不算算量。
 7. **拒绝也是可以行动的字符串。** "那块区域在图纸线条上没有封闭 —— 填充溢出了",这句话告诉模型
@@ -426,7 +426,7 @@ OpenTakeoff 可以请求一个**你自己**提供的视觉模型来读图纸上�
 | **语音** | 按住说话式的算量口令,设备端 WebAssembly 识别;音频从不离开浏览器 |
 | **视图** | 浅色或**深色(负片)**——绘制时反转图纸像素,导出结果遵循 |
 | **存储** | IndexedDB + localStorage —— 纯客户端,不上传任何东西 |
-| **MCP 服务器** | <!--tool-count-->53<!--/tool-count--> 个工具 + 可通过 stdio 浏览的图纸资源,多文档会话([`mcp/`](mcp/README.md)) |
+| **MCP 服务器** | <!--tool-count-->33<!--/tool-count--> 个工具 + 可通过 stdio 浏览的图纸资源,多文档会话([`mcp/`](mcp/README.md)) |
 | **来源记录** | 每个图形都记录它的比例、方法、置信度,以及是人还是智能体做的 |
 | **捕获(可选开启)** | 内置的[捕获服务器](capture/README.md)把每次贡献的算量存为(几何 → 标签)训练数据行 |
 | **部署** | 一个静态构建产物 —— Netlify、Vercel、GitHub Pages、Cloudflare Pages、S3,任意静态主机 |
