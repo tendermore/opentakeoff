@@ -5,6 +5,8 @@
 | Floor SF | Area assigned to a floor finish, net of supported deductions | Adding wall SF to call the result building floor area |
 | Room boundary | The innermost interior wall face, with door openings crossed on the wall centerline | Tracing a hatch edge, a door leaf drawn open, or stopping at casework; see [workflows](workflows.md#trace-a-room-the-way-an-estimator-does) |
 | Wall SF | Measured run LF × that shape's height | Applying one elevation width to every wall or treating floor deducts as wall openings |
+| Wall length | Centreline LF per drawn thickness class and side; L corners to the centreline intersection, T abutments to the face; gross through openings, net without | Reading a height off a plan, or merging walls that only line up across a room |
+| Window count | Glazed openings drawn in walls; type and size only from a schedule row | Counting a schedule row as installed work, or giving a plan width as the window size |
 | Base/transition LF | Installed run length or a disclosed derived allowance | Treating a numeric opening allowance as a located gap |
 | Count | Located instances with count semantics | Counting a note's bare mention as a drawn device |
 | Order quantity | Net quantity with the condition's stated multiplier/waste rules | Increasing the traced geometry to carry waste |

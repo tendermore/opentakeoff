@@ -26,7 +26,7 @@ import {
   exportDxfOutput, getSheetVectorsOutput,
   proposeTakeoffOutput, reviseProposalOutput, withdrawProposalOutput,
   proposeConditionEditOutput, withdrawConditionEditOutput,
-  scopeDuplicatesOutput, scopeMergeOutput,
+  scopeDuplicatesOutput, scopeMergeOutput, measureWallsOutput,
 } from "./outputs.ts";
 import { exportMarkedPdf } from "./marked.ts";
 import { assertWritable, OVERWRITE_DESC } from "./safewrite.ts";
@@ -229,6 +229,10 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       return { action: "place", ...(await session.placeCount(a.sheet, a.points, { condition: a.condition })) };
     }
     if (a.action === "marks") return { action: "marks", ...(await session.countMarks({ marks: a.marks, commit: a.commit })) };
+    if (a.action === "windows") {
+      need("count", "windows", a, "sheet");
+      return { action: "windows", ...(await session.countWindows(a.sheet, { condition: a.condition, commit: a.commit })) };
+    }
     if (a.action === "doors") {
       need("count", "doors", a, "sheet");
       return { action: "doors", ...(await session.countDoors(a.sheet, { condition: a.condition, commit: a.commit })) };
@@ -245,10 +249,10 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   };
 
   server.registerTool("count", {
-    description: "Count EA items. doors: every hinged door on a sheet, read off its swing (double leaves = one), with widths; non-door curves rejected. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.",
+    description: "Count EA items. doors: hinged doors from their swings (a pair = one), with widths. windows: glazed wall openings with schedule marks. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.",
     inputSchema: {
-      action: z.enum(["doors", "symbol", "sweep", "place", "marks"]),
-      sheet: z.string().optional().describe("doors, symbol, sweep, place: the sheet"),
+      action: z.enum(["doors", "windows", "symbol", "sweep", "place", "marks"]),
+      sheet: z.string().optional().describe("doors, windows, symbol, sweep, place: the sheet"),
       condition: z.string().optional().describe("Tag the count is filed under (minted on first use); needed to commit"),
       commit: z.boolean().default(false).describe("Save the counted marks as one undo step; default is a preview"),
       at: point().optional().describe("symbol: a point on or beside one example instance"),
@@ -288,27 +292,30 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     return reply;
   });
   server.registerTool("measure", {
-    description: "Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.",
+    description: "Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). walls: every wall on the sheet, no points — centreline LF gross/net of openings by thickness class and side; area only with height_ft. A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.",
     inputSchema: {
-      kind: z.enum(["area", "length", "surface"]),
+      kind: z.enum(["area", "length", "surface", "walls"]),
       sheet: z.string(),
-      points: z.array(point()).min(2).describe("area: the ring (≥3); length, surface: the run (≥2)"),
-      condition: z.string().optional().describe("Finish tag to commit under (minted on first use); surface needs it"),
+      points: z.array(point()).min(2).optional().describe("area: the ring (≥3); length, surface: the run (≥2); walls: none"),
+      condition: z.string().optional().describe("Finish tag to commit under (minted on first use); surface needs it; walls: the class-tag prefix (default WALL)"),
+      commit: z.boolean().default(false).describe("walls: file every run under its class condition; default is a preview"),
       role: roleSchema().describe("area: floor_area (default) or deduct"),
       arc_through: arcThrough(),
       rise_ft: z.number().min(0).optional().describe("length: this run's vertical leg up, feet"),
       drop_ft: z.number().min(0).optional().describe("length: this run's vertical leg down, feet"),
-      height_ft: z.number().positive().optional().describe("surface: wall height, feet (written to the condition)"),
+      height_ft: z.number().positive().optional().describe("surface, walls: wall height, feet (written to the condition) — from a section, schedule or the user, never guessed"),
       snap_to_walls: z.boolean().optional().describe("area: first move each edge onto the wall face it parallels within 0.3 m (a rough outline, e.g. drawn from a picture); snap says how many vertices moved and which reading was kept"),
     },
-    outputSchema: perAction("kind", ["area", "length", "surface"], measurePolygonOutput, measureLineOutput, measureSurfaceOutput),
+    outputSchema: perAction("kind", ["area", "length", "surface", "walls"], measurePolygonOutput, measureLineOutput, measureSurfaceOutput, measureWallsOutput),
   }, run("measure", async (a) => {
+    if (a.kind === "walls") return { kind: "walls", ...(await session.measureWalls(a.sheet, { condition: a.condition, commit: a.commit, height_ft: a.height_ft })) };
     if (a.kind === "area") {
       needPoints("measure", "area", a.points, 3);
       if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry
       const snapped = a.snap_to_walls ? await session.snapOutline(a.sheet, a.points) : null;
       return { kind: "area", ...(await session.measurePolygon(a.sheet, snapped ? snapped.verts : a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })), ...(snapped ? { snap: { vertices_moved: snapped.moved, reading: snapped.reading, ...(snapped.agrees !== null ? { agrees_with_printed_area: snapped.agrees } : {}) } } : {}) };
     }
+    needPoints("measure", a.kind, a.points, 2);
     if (a.kind === "length") return { kind: "length", ...(await session.measureLine(a.sheet, a.points, { condition: a.condition, arc_through: a.arc_through, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
     need("measure", "surface", a, "condition");
     return { kind: "surface", ...(await session.measureSurface(a.sheet, a.points, { condition: a.condition, height_ft: a.height_ft, arc_through: a.arc_through })) };

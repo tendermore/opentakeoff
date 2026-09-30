@@ -12,12 +12,12 @@ Default build: **17 tools**. Coordinates, where present, are full-sheet image pi
 |---|---|---|---|
 | `annotate` | `add`, `edit`, `link`, `list` | Default | `action` |
 | `conditions` | `edit`, `duplicate`, `split`, `materials`, `scope_duplicates`, `scope_merge` | Default | `action` |
-| `count` | `doors`, `symbol`, `sweep`, `place`, `marks` | Default | `action` |
+| `count` | `doors`, `windows`, `symbol`, `sweep`, `place`, `marks` | Default | `action` |
 | `derive` | `deduct`, `base`, `transitions` | Default | `action` |
 | `edit_takeoff` | `list`, `edit`, `delete`, `undo` | Default | `action` |
 | `export` | `marked_pdf`, `report`, `takeoff`, `dxf`, `import` | Default | `action` |
 | `find_text` | `find`, `read`, `resolve_tag` | Default | `action` |
-| `measure` | `area`, `length`, `surface` | Default | `kind`, `sheet`, `points` |
+| `measure` | `area`, `length`, `surface`, `walls` | Default | `kind`, `sheet` |
 | `open_drawings` | `load`, `info` | Default | `action` |
 | `proposal` | `propose`, `revise`, `withdraw`, `propose_condition_edit`, `withdraw_condition_edit` | Default | `action` |
 | `review` | `mark`, `delete` | Default | `action` |

@@ -127,7 +127,7 @@ The floor the room sweep left, after `detect`. The sheet's walls — lines the d
 
 ## `count`
 
-Count EA items. doors: every hinged door on a sheet, read off its swing (double leaves = one), with widths; non-door curves rejected. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.
+Count EA items. doors: hinged doors from their swings (a pair = one), with widths. windows: glazed wall openings with schedule marks. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.
 
 ### `action: "doors"`
 
@@ -138,6 +138,16 @@ Fields:
 - `sheet`: The sheet
 - `condition`: Tag to file the doors under (commit)
 - `commit`: File the doors as EA markers; default is a preview
+
+### `action: "windows"`
+
+Window openings on one sheet, found in the wall takeoff (`measure {kind: "walls"}`): a gap in a wall band with at least two glazing lines drawn along the wall INSIDE the band and no door swing at it. Each window gives its centre `at`, the drawn opening width (plan — the only size a plan shows), the host wall's thickness and side. Where the set carries a window (or door/window) schedule, the nearest drawn row mark within 1.5 m (or 1.2 × the width) ties the window to its row, whose cells (type, width × height, …) ride along; `by_type` groups windows by mark, unmarked ones by width to the nearest 100 mm. `plan_without_row` lists windows no schedule mark sits next to; `rows_without_window` lists schedule rows no window on this sheet carries (with whether the mark is drawn here at all). Not found, by construction: windows in a curtain wall, in a wall the wall takeoff withheld, or drawn without glazing lines — check `rows_without_window` and view_sheet. commit (needs condition) files one EA marker per window. Needs scale and vector linework; a scan refuses.
+
+Fields:
+
+- `sheet`: The sheet
+- `condition`: Tag to file the windows under (commit)
+- `commit`: File the windows as EA markers; default is a preview
 
 ### `action: "symbol"` (was `count_symbol`)
 
@@ -177,7 +187,7 @@ Fields:
 
 ## `measure`
 
-Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.
+Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). walls: every wall on the sheet, no points — centreline LF gross/net of openings by thickness class and side; area only with height_ft. A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.
 
 ### `kind: "area"` (was `measure_polygon`)
 
@@ -205,6 +215,20 @@ Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (
 Fields:
 
 - `arc_through`: Indices of points that are the MIDDLE of an arc: the trace runs the point before → this point → the point after as the unique circle through the three (the canvas's Curve mode). For a curved wall put one point anywhere ON the bow between its two ends and mark it. The arc is baked to ordinary vertices on commit and origin.curved is stamped; a mark on an end of an open run, or two marks in a row, refuses.
+
+### `kind: "walls"`
+
+Every wall on one sheet, read from the linework alone — no points, no layers, no text vocabulary. A wall is a BAND: two outer faces a wall's thickness apart (60–700 mm) with its material between them — poché, a hatch or insulation symbol repeated along it, further layer lines, or nothing on sets that draw walls as empty pairs. Parallel pairs holding a fixture, text or casework are not walls; on a sheet that draws its walls with poché or hatch, an empty pair is withheld as casework. Table rows, stair treads and tile grids (regular-pitch families), the drawing border, and short bands meeting no wall at an angle (legend samples, symbols) are withheld with their reason.
+
+Quantities follow the centreline convention (NRM2): an L corner runs both walls to the centreline intersection, a wall abutting another at a T stops at its face. `gross_m` runs through the openings bridged into a run — a door (a swing at the gap), a window (glazing lines inside the band) or an opening (one line across) — and `net_m` subtracts them; two walls that merely line up across a room are never bridged. Each run reports its centreline (image px), measured thickness, class (the sheet's widths clustered at 15 mm drafting tolerance, named to the nearest 10 mm), side and openings. Side: `ext` when rays cast from one face leave the drawing without crossing another wall and those from the other face do not, `int` when neither does, `unsided` otherwise.
+
+HEIGHT is never read off a plan: pass `height_ft` (from a section, a room schedule or the user) or set it on a class condition first; without it the reply says height unknown and reports no area. commit files each run as one linear shape — a surface (LF × height) when the height is known — under `<prefix> EXT|INT|UNSIDED <mm>` (prefix = `condition`, default WALL), one undo step, agent-pending. The shape is the gross centreline, so the marked PDF shows every counted run; clip a run at an opening with `derive {action: "deduct"}` when the handoff wants net runs drawn. Needs the sheet's scale and vector linework: a raster scan refuses with the reason (reading one needs a raster band detector this build does not have).
+
+Fields:
+
+- `condition`: Class-tag prefix (default WALL)
+- `commit`: File every counted run; default is a preview
+- `height_ft`: Wall height in feet from a stated source; enables wall area
 
 ## `derive`
 
