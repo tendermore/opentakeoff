@@ -259,7 +259,7 @@ export function extractTextMarks(textContent: TextContentLike, viewport: Viewpor
 // a FULL-string match, deliberately: a room-size note (`19'-2" x 21'-1"`), a
 // ceiling note (`9'-0" CLG`) or a leader with trailing words must never
 // anchor a line. Rotation comes from the item's own baseline transform.
-export const DIMTEXT_RE = /^\s*\d+'\s*(?:-?\s*\d+(?:\s+\d+\/\d+)?\s*")?\s*$/;
+export const DIMTEXT_RE = /^\s*\d+'(?:[\s-]*\d+(?:\s+\d+\/\d+)?\s*")?\s*$/;   // one [\s-]* run: no two space runs to split between (ReDoS)
 export interface DimTextItem { x: number; y: number; ang: number; wPx: number }
 export function extractDimTexts(textContent: TextContentLike, viewport: Viewport): DimTextItem[] {
   const out: DimTextItem[] = [];

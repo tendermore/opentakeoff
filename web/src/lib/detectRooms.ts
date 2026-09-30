@@ -55,7 +55,7 @@ export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*(?::\s*)?|[A-ZÆØÅ][a-zæ
  *  its number as its label; its net area (SF, NSF) is what it is checked
  *  against. A gross area (GSF) is a total — walls included, often a whole
  *  floor or department — and is never a room's printed area (printedAreaM2). */
-export const SF_STAMP_RE = /^(?:(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?\s*(?:[NG]?S\.?F\.?|SQ\.?\s*FT\.?)|[NG]?SF\s*:?\s*(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?)$/i;
+export const SF_STAMP_RE = /^(?:(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?\s*(?:[NG]?S\.?F\.?|SQ\.?\s*FT\.?)|[NG]?SF\s*(?::\s*)?(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?)$/i;
 
 const GROSS_SF_RE = /GSF/i;
 
