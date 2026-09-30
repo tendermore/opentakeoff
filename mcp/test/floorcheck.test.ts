@@ -23,17 +23,21 @@ async function stamped() {
   return s;
 }
 
-test("an outline agreeing with the room area printed inside it is verified; one with none inside, or on a sheet without printed areas, says so", async () => {
+// The demo plan prints a 1/4" = 1'-0" scale note: an imperial sheet, where an
+// outline with no printed area to check it commits unverified and says the
+// drawn-walls check does not apply (units_not_metric; unitgate.test.ts has the
+// metric side).
+test("an outline agreeing with the room area printed inside it is verified; one with none inside, or on a sheet without printed areas, says why not", async () => {
   const s = await stamped();
   assert.equal(s.measurePolygon(KEY, SQ(0, 0), { condition: "GULV", role: "floor_area" }).check, "printed_area");
-  assert.equal(s.measurePolygon(KEY, SQ(1000, 1000), { condition: "GULV", role: "floor_area" }).check, "unverified: no_printed_area_inside");
+  assert.equal(s.measurePolygon(KEY, SQ(1000, 1000), { condition: "GULV", role: "floor_area" }).check, "unverified: units_not_metric");
   const bare = new Session();
   await bare.loadPlan(PLAN);
   bare.setScale(KEY, { upp: 1 / 36 });
   const r = bare.measurePolygon(KEY, SQ(0, 0), { condition: "GULV", role: "floor_area" });
-  assert.equal(r.check, "unverified: no_printed_areas_on_sheet");
-  assert.deepEqual(bare.shapes.find((x) => x.id === r.shape_id)!.check, { status: "unverified", reason: "no_printed_areas_on_sheet" });
-  assert.equal(bare.listShapes().shapes[0].check, "unverified: no_printed_areas_on_sheet");
+  assert.equal(r.check, "unverified: units_not_metric");
+  assert.deepEqual(bare.shapes.find((x) => x.id === r.shape_id)!.check, { status: "unverified", reason: "units_not_metric" });
+  assert.equal(bare.listShapes().shapes[0].check, "unverified: units_not_metric");
 });
 
 test("two rooms measured as one outline are refused even when the outline equals their printed sum", async () => {

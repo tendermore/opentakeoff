@@ -1473,3 +1473,9 @@ test("a title-block title set over two lines is read as one ('AREA A PLUMBING' /
   ] });
   assert.equal(r.role, "plan");
 });
+
+import { readsNordic } from "../src/lib/sheetvocab.ts";
+test("readsNordic: a lone ø is a diameter sign, an ø inside a word is Nordic text", () => {
+  for (const t of ["ø 5'-0\"", "Ø100", "2 x ø 32", "TURNING CIRCLE ø"]) assert.equal(readsNordic(t), false, t);
+  for (const t of ["Kjøkken", "Stue/kjøkken", "ØSTRE FASADE", "PLANTEGNING 1. ETASJE"]) assert.equal(readsNordic(t), true, t);
+});

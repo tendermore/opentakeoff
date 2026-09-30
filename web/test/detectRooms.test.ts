@@ -301,9 +301,10 @@ test("detectionReport: a completed pass is unchanged, and a caller with no `trie
   assert.equal(legacy.headline, complete.headline);
 });
 
-test("printedAreaM2 reads US square-foot stamps as m², and leaves notes and numbers alone", () => {
+test("printedAreaM2 reads US net square-foot stamps as m², and leaves gross totals, notes and numbers alone", () => {
   for (const t of ["705 SF", "705 S.F.", "NSF 705", "705 SQ FT"]) assert.equal(Math.round(printedAreaM2(t)! * 100) / 100, 65.5, t);
   assert.equal(Math.round(printedAreaM2("1,250 NSF")! * 10) / 10, 116.1);
   assert.equal(printedAreaM2("12,5 m²"), 12.5);
   for (const t of ["705", "SF", "(APPROX. 720 SF)", "APPROX. 2400 SF NEW PARKING"]) assert.equal(printedAreaM2(t), null, t);
+  for (const t of ["705 GSF", "GSF 705"]) assert.equal(printedAreaM2(t), null, `${t}: a gross total is never a room's area`);
 });

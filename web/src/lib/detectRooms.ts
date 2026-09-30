@@ -50,15 +50,20 @@ export const ROOM_LABEL_RE = /^\d{2,3}[A-Z]?$/;
 // The prefix is a short area code ("A: 12,0 m²", "BRA 59,7 m²") or a word and a colon ("Netto: 83,3 m²").
 export const AREA_STAMP_RE = /^(?:[A-ZÆØÅ]{1,4}\s*(?::\s*)?|[A-ZÆØÅ][a-zæøå]{1,11}\s*:\s*)?(?:\d{1,4}(?:[.,]\d{1,2})?\s*m[²2]|\d{1,4}[.,]\d{1,2}\s*m)$/i;
 
-/** A US room's printed area, in square feet: after the number ("705 SF",
- *  "705 S.F.", "1,250 NSF", "705 SQ FT") or before it ("NSF 705"). A US room
- *  still takes its number as its label; this is its area to check against. */
+/** A US area in square feet: after the number ("705 SF", "705 S.F.",
+ *  "1,250 NSF", "705 SQ FT") or before it ("NSF 705"). A US room still takes
+ *  its number as its label; its net area (SF, NSF) is what it is checked
+ *  against. A gross area (GSF) is a total — walls included, often a whole
+ *  floor or department — and is never a room's printed area (printedAreaM2). */
 export const SF_STAMP_RE = /^(?:(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?\s*(?:[NG]?S\.?F\.?|SQ\.?\s*FT\.?)|[NG]?SF\s*:?\s*(\d{1,3}(?:,\d{3})+|\d{1,5})(?:\.\d{1,2})?)$/i;
+
+const GROSS_SF_RE = /GSF/i;
 
 /** The m² a room-area label prints ("A: 12,0 m²" → 12; "705 SF" → 65.5), or
  *  null for any other label (a room number carries no area). */
 export function printedAreaM2(label: string): number | null {
   const sf = label.trim().match(SF_STAMP_RE);
+  if (sf && GROSS_SF_RE.test(sf[0])) return null;
   if (sf) return Number((sf[0].match(/\d[\d,]*(?:\.\d+)?/)![0]).replace(/,/g, "")) * M2_PER_SF;
   if (!AREA_STAMP_RE.test(label.trim())) return null;
   const m = label.match(/(\d{1,4}(?:[.,]\d{1,2})?)\s*m/i);

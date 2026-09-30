@@ -196,8 +196,8 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
         role: roleSchema(),
         return_verts: z.boolean().default(false).describe("Include each traced polygon's vertices"),
         min_area_sf: z.number().positive().default(5).describe("detect: enclosed regions smaller than this are withheld, not rooms"),
-        labels: z.array(z.union([z.string(), z.object({ text: z.string(), at: point().describe("Where the text is printed (image px), e.g. a find_text hit's center") })])).optional()
-          .describe("detect: seed from these room labels instead of the engine's own choice — a text (every place the sheet prints it) or {text, at} (the one printed there). Each room still has to pass the same checks; texts the sheet does not print return in labels_unmatched"),
+        labels: z.array(z.union([z.string(), z.object({ text: z.string(), at: point().describe("Where the text is printed (image px), e.g. a find_text hit's center") })])).min(1).optional()
+          .describe("detect: seed from these room labels instead of the engine's own choice — a text (every place the sheet prints it) or {text, at} (the one printed there). Each room still has to pass the same checks; texts the sheet does not print return in labels_unmatched. At least one; leave it out for the engine's own choice"),
         sensitivity: z.number().min(0).max(1).optional().describe("Fill sensitivity 0 strict … 1 aggressive (default 0.5)"),
         layers: z.object({
           include: z.array(z.string()).optional().describe("Layer names or ids whose ink must bound the flood"),
