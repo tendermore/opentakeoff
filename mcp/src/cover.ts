@@ -293,6 +293,9 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       if (!inRing(l.x, l.y, ring)) { flag(k, z, `the printed ${l.text} sits outside the zone's outline (${round2(traced)} m²) — a strip beside the label, not its room`); continue; }
       if (!printedAgrees(traced, l.m2!)) { flag(k, z, `zone ${round2(traced)} m² vs printed ${l.text} — the zone runs past the room or stops short of it`); continue; }
     } else if (walls) {
+      // the drawn-walls check judges the outline's shape, not whether it is a room's size: a wall cavity or a
+      // symbol box follows its "walls" perfectly (0.01 m² pieces did on the no-stamp dev sheets)
+      if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`); continue; }
       const w = walls.judge(ring);
       if (!w.pass) { flag(k, z, `zone ${round2(traced)} m²: ${w.reason} — no printed area to check it against`); continue; }
     } else {
