@@ -199,7 +199,7 @@ export const coverFloorOutput = {
     zone_m2: z.number().optional().describe("The floor zone round the label, m²"),
     walls_pct: z.number().optional().describe("Share of the zone's edge that is wall or a measured room, %"),
     reason: z.string().optional().describe("Why a flagged room was not measured, with the numbers"),
-    code: z.enum(["open_to_outside", "unplaced_label", "untraceable", "surrounds_void", "label_outside_outline", "area_differs", "several_printed_sum_differs", "several_labels_no_printed_area", "total_stamp_inside", "too_small", "off_drawn_walls", "not_walled", "overlaps_measured", "refused", "ready_to_commit"]).optional()
+    code: z.enum(["open_to_outside", "unplaced_label", "untraceable", "surrounds_void", "label_outside_outline", "area_differs", "several_printed_sum_differs", "several_labels_no_printed_area", "total_stamp_inside", "too_small", "off_drawn_walls", "not_walled", "overlaps_measured", "refused", "ready_to_commit", "zone_in_pieces"]).optional()
       .describe("flagged: the reason as a stable code, for a caller that words it itself (numbers in zone_m2, outline_m2, printed_m2, sum_m2)"),
     outline_m2: z.number().optional().describe("The outline traced from the zone, m², where the reason compares it"),
     sum_m2: z.number().optional().describe("Several printed areas in one zone: their sum, m²"),

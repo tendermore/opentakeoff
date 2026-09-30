@@ -10,7 +10,7 @@
 // size — and the shape says it was not checked against a printed area.
 import type { MaskObj, Point, VectorGeometry } from "../../web/src/lib/oneclick.ts";
 import { snapVertices, ringArea, buildMask, MASK_MAX_DIM, SEG_FILLONLY } from "../../web/src/lib/oneclick.ts";
-import { coverZones, zoneCuts, zoneRing, zoneRectAt, wallFaceSegs, dropWallIslands, type CoverLabel, type CoverZone } from "../../web/src/lib/floorcover.ts";
+import { coverZones, zoneCuts, zonePieces, zoneRectAt, wallFaceSegs, dropWallIslands, type CoverLabel, type CoverZone } from "../../web/src/lib/floorcover.ts";
 import { RENDER_SCALE } from "../../web/src/lib/sheets.ts";
 import { ROLE_CODE, ROLE_HIDDEN } from "../../web/src/lib/layers.ts";
 import { printedAreaM2, roomLabelSeeds, isTotalStamp } from "../../web/src/lib/detectRooms.ts";
@@ -32,6 +32,9 @@ export const MIN_ROOM_M2 = 1;
 const HOLE_M2 = 0.5, HOLE_FRAC = 0.03;
 /** How far (mask cells) a zone's edge may move onto a wall face: the trace's own slack (detect_rooms' WALL_SNAP_CELLS). */
 const ZONE_SNAP_CELLS = 3;
+/** A zone in several connected pieces is outlined by its largest; when that piece holds less of the zone than
+ *  this share, the outline is not the zone and the room is flagged instead (zone_in_pieces). */
+export const PIECE_SHARE_MIN = 0.8;
 /** How many unlabelled floor pieces a reply lists (largest first); the total covers all. */
 const MAX_PIECES = 30;
 /** A zone filling less of its extent than this (an L-shaped corridor, a hall round a core) is clouded where its
@@ -132,7 +135,7 @@ export interface CoverSheet {
 export type CoverCode =
   | "open_to_outside" | "unplaced_label" | "untraceable" | "surrounds_void" | "label_outside_outline"
   | "area_differs" | "several_printed_sum_differs" | "several_labels_no_printed_area" | "total_stamp_inside"
-  | "too_small" | "off_drawn_walls" | "not_walled" | "overlaps_measured" | "refused" | "ready_to_commit";
+  | "too_small" | "off_drawn_walls" | "not_walled" | "overlaps_measured" | "refused" | "ready_to_commit" | "zone_in_pieces";
 
 export interface CoverRoom {
   label: string;
@@ -298,10 +301,17 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       for (const k of z.labels) flag(k, null, `the floor round this label is open to the outside of the building (${z.labels.length > 1 ? `shared by ${list}` : "an opening the drawing does not close"}) — not a room outline`, "open_to_outside");
       continue;
     }
+    // a zone folded together across drawn lines can be several pieces: its outline is the largest one, and a
+    // zone whose largest piece is not nearly all of it has no one outline
+    const pieces = zonePieces(z, res.mw, res.mh, res.ws);
+    if (pieces.share < PIECE_SHARE_MIN) {
+      for (const k of z.labels) flag(k, z, `the zone is in ${pieces.rings.length} separate pieces and the largest holds only ${Math.round(pieces.share * 100)}% of it — no one outline covers it`, "zone_in_pieces");
+      continue;
+    }
     // a zone is traced a cell or two inside the wall faces: its edges go onto the faces they parallel
     // (detect_rooms' walls-only path does the same), the reading that agrees with the printed area winning
     const outline = (printed: number[]) => {
-      const raw = zoneRing(z, res.mw, res.mh, res.ws);
+      const raw = pieces.ring;
       const snapped = sh.raster || !sh.snap ? raw : snapVertices(raw, (px, py, d) => sh.nearestSnap(px, py, d), SNAP_TOL);
       return sh.raster || !sh.geo ? snapped : snapToWalls(snapped, sh.geo, sh.mask, pxPerM, printed, sh.roles, ZONE_SNAP_CELLS / res.ws).ring;
     };
