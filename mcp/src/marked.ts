@@ -131,9 +131,10 @@ export async function exportMarkedPdf(session: Session, opts: MarkedPdfOpts) {
   // the credit line says how many are still pencil.
   const pendingRfis = rfis.filter((r) => r.origin?.actor === "agent" && r.origin.reviewed !== true).length;
   // what checked the floor numbers (session.ts FloorCheck): a room area printed
-  // inside the outline, or nothing — unverified floors are named, never implied
+  // inside the outline, the drawn walls, or — for a combined zone — the sum of its
+  // rooms' printed areas; or nothing: unverified floors are named, never implied
   const floors = session.shapes.filter((s) => s.measure_role === "floor_area" && s.check);
-  const checked = floors.filter((s) => s.check?.status === "verified").length;
+  const checked = floors.filter((s) => s.check?.status === "verified" || s.check?.status === "combined").length;
   const creditParts = [
     ...(machine ? [T.creditShapes(machine)] : []),
     ...(floors.length ? [T.floorChecks(checked, floors.length)] : []),
