@@ -45,7 +45,7 @@ test("preflight accepts real MCP manual roles and derived base without recomputa
   session.measureLine(sheet, [[100, 300], [200, 300]], { condition: "L-1" });
   session.measureSurface(sheet, [[100, 400], [200, 400]], { condition: "W-1", height_ft: 3 });
   session.placeCount(sheet, [[300, 300], [400, 300]], { condition: "C-1" });
-  session.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
+  await session.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
   const record = session.exportPayload();
   assert.deepEqual(record.shapes.map(s => s.computed[s.measure_role === "count" ? "count" : s.measure_role === "linear" ? "perimeter_lf" : "area_sf"]), [100, 4, 10, 30, 1, 1, 37]);
   inspect(record, "eligible");

@@ -104,7 +104,7 @@ const cases = {
     const a = s.measurePolygon(sheet, square, { condition: "F-1", role: "floor_area" });
     const b = s.measurePolygon(sheet, [[200, 100], [300, 100], [300, 200], [200, 200]],
       { condition: "F-2", role: "floor_area" });
-    const result = s.deriveTransitions({ condition_a: "F-1", condition_b: "F-2", condition: "T-1" });
+    const result = await s.deriveTransitions({ condition_a: "F-1", condition_b: "F-2", condition: "T-1" });
     assert.equal(result.committed, 1);
     assert.equal(result.total_lf, 10);
     const source = clone(s.exportPayload());
@@ -127,7 +127,7 @@ const cases = {
     w.measurePolygon(sheet, [[205, 100], [305, 100], [305, 200], [205, 200]],
       { condition: "F-2", role: "floor_area" });
     const before = clone(w.exportPayload());
-    const withheld = w.deriveTransitions({ condition_a: "F-1", condition_b: "F-2", condition: "T-1" });
+    const withheld = await w.deriveTransitions({ condition_a: "F-1", condition_b: "F-2", condition: "T-1" });
     assert.equal(withheld.committed, 0);
     assert.equal(withheld.withheld.length, 1);
     assert.equal(withheld.withheld[0].reason, "wall_separated");
@@ -290,7 +290,7 @@ const cases = {
   async "derived-base-roundtrip"(t) {
     const s = await session();
     const room = s.measurePolygon(sheet, square, { condition: "F-1", role: "floor_area" });
-    s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
+    await s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
     const source = clone(s.exportPayload()), run = source.shapes.find(x => x.measure_role === "linear");
     assert.deepEqual(run.origin.derived, { from_shape_id: room.shape_id, gross_lf: 40, openings_lf: 3 });
     assert.equal(quantity(source, "B-1", "lf"), 37);
@@ -355,7 +355,7 @@ const cases = {
     s.measureLine(sheet, [[100, 300], [200, 300]], { condition: "L-1" });
     s.measureSurface(sheet, [[100, 400], [200, 400]], { condition: "W-1", height_ft: 3 });
     s.placeCount(sheet, [[300, 300], [400, 300]], { condition: "C-1" });
-    s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
+    await s.deriveBase({ source_condition: "F-1", condition: "B-1", openings: [{ shape_id: room.shape_id, lf: 3 }] });
     const original = clone(s.shapes[0].verts_norm);
     s.shapes[0].origin.evidence = { schedule_row_tag: "F-1", matched_text: "101" };
     for (const dx of [0.01, 0.02]) s.shapes = applyShapeCommand(s.shapes, { type: "geom", id: room.shape_id,

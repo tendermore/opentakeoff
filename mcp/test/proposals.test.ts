@@ -33,7 +33,7 @@ test("propose_takeoff: every commit path that follows attaches to the open batch
   const c = s.placeCount(KEY, [[50, 50], [60, 60]], { condition: "TH-1" }).shape_ids;
   const cutRes = s.cutOut({ parent_shape_id: a, verts: SQ(220, 20, 20) });
   const cut = "deduct_shape_id" in cutRes ? cutRes.deduct_shape_id : "";
-  const base = s.deriveBase({ source_condition: "CPT-1", condition: "RB-2" });
+  const base = await s.deriveBase({ source_condition: "CPT-1", condition: "RB-2" });
   const byId = new Map(s.shapes.map((x) => [x.id, x]));
   assert.equal(byId.get(loose)!.origin?.proposal_id, undefined, "a commit before the proposal is not in it");
   for (const id of [a, b, ...c, cut, ...base.rooms.map((r) => r.base_shape_id)]) assert.equal(byId.get(id)!.origin?.proposal_id, p.proposal_id, `${id} attached centrally`);
