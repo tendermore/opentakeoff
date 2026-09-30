@@ -32,9 +32,15 @@ const headWord = (head: string, suffixes: string[] = []): RegExp =>
 /** nordic: the term reads only on a sheet that shows Nordic text (æ/ø/å
  * anywhere) — "PLAN 2" is the second floor on a Norwegian sheet and the
  * house model on a US one ("ENERGY COMPLIANCE - PLAN 2"). */
-export interface RoleTerm { re: RegExp; role: SheetRole; conf: number; nordic?: boolean }
+/** level: the term is a bare level name ("2. ETASJE") — it scopes another
+ * drawing type named with it rather than contesting it. */
+export interface RoleTerm { re: RegExp; role: SheetRole; conf: number; nordic?: boolean; level?: boolean }
 export const EUROPEAN_ROLE_TERMS: RoleTerm[] = [
   // schedules: NO/DA "skjema, liste", SV "förteckning", DE "Liste"
+  // an English title that ENDS in PLAN(S), or joins it to another drawing
+  // ("PLANS AND DETAILS"), names a plan ("AREA 'A' PLANS", "LIFE SAFETY PLAN") — the key-plan inset and "PLAN NOTES" are masked
+  // before this runs, and running text never ends a short title this way
+  { re: new RegExp(`(?<![${L}])PLANS?(?:\\s*$|\\s*(?:AND|&)\\s)`, "u"), role: "plan", conf: 0.85 },
   // legends first: "SYMBOLLISTE" is a legend, not a list of items
   { re: headWord("TEGNFORKLARING|SYMBOLFORKLARING|SIGNATURFORKLARING|SYMBOLLISTE|TECKENFÖRKLARING|LEGENDE"), role: "legend", conf: 0.5 },
   // schedules: NO/DA "skjema", SV "förteckning", and "…liste" as a compound
@@ -57,7 +63,7 @@ export const EUROPEAN_ROLE_TERMS: RoleTerm[] = [
   // sections and details: NO "snitt / detalj", SV "sektion / detalj", DA "snit / detalje", DE "Schnitt / Detail"
   { re: headWord("SNITT|SNIT|SEKTION|SCHNITT|DETALJ|DETALJE|DETAIL", ["ER", "ET", "TEGNING", "TEGNINGER", "S", "E", "EN"]), role: "detail", conf: 0.6 },
   // a level name standing as the title ("1. ETASJE", "U. ETG", "KJELLER") — NO
-  { nordic: true, re: new RegExp(`(?:\\d+\\s*\\.?|(?<![${L}])U\\.?|UNDER|SOKKEL|HOVED|LOFT)\\s*(?:ETASJE|ETG)(?![${L}])|(?<![${L}])(?:ETASJE|ETG)\\.?\\s*[U\\d]|(?<![${L}])(?:KJELLER|LOFT)(?:ETASJE)?(?![${L}])`, "u"), role: "plan", conf: 0.6 },
+  { nordic: true, level: true, re: new RegExp(`(?:\\d+\\s*\\.?|(?<![${L}])U\\.?|UNDER|SOKKEL|HOVED|LOFT)\\s*(?:ETASJE|ETG)(?![${L}])|(?<![${L}])(?:ETASJE|ETG)\\.?\\s*[U\\d]|(?<![${L}])(?:KJELLER|LOFT)(?:ETASJE)?(?![${L}])`, "u"), role: "plan", conf: 0.6 },
 ];
 
 /** Title words that LOOK like a role but are not one — checked before the
@@ -77,9 +83,10 @@ export const NORDIC_TEXT_RE = new RegExp(`[ÆØÅæøå]|(?<![${L}])(?:ETASJE|ET
 
 /** Running-text references are not titles: "SEE FINISH PLAN FOR …", "Se
  * plantegning for plassering", "iht. snitt A-A". Tested after a leading
- * bullet/dash is stripped. A bare leading "SE" is not enough on its own —
+ * bullet/dash is stripped. A revision-block entry ("REV-1 DPI PLAN") names
+ * what changed, not the sheet. A bare leading "SE" is not enough on its own —
  * in English it is the south-east compass point ("SE ELEVATION"). */
-export const REFERENCE_RE = /^(SEE|REFER|PER|NOTED|AS SHOWN|JF|JFR|IHT|I\.H\.T|REF)\b|REFER TO|\b(SEE|SE|IHT\.?|JF\.?) [A-ZÆØÅ]*(TEGNING|PLAN|DETALJ|SNITT|FASADE|OPPRISS|SKJEMA|SHEET|DETAIL|SECTION)/u;
+export const REFERENCE_RE = /^(SEE|REFER|PER|NOTED|AS SHOWN|JF|JFR|IHT|I\.H\.T|REF|REV|REVISION|REVISJON)\b|REFER TO|\b(SEE|SE|IHT\.?|JF\.?) [A-ZÆØÅ]*(TEGNING|PLAN|DETALJ|SNITT|FASADE|OPPRISS|SKJEMA|SHEET|DETAIL|SECTION)/u;
 
 /** Title-block field labels — "TEGNING:", "INNHOLD:", "SHEET TITLE". A title
  * block prints them small beside the value; they are never the title. */

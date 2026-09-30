@@ -28,7 +28,9 @@ import { EUROPEAN_ROLE_TERMS, NORDIC_TEXT_RE, NOT_A_ROLE_TITLE, REFERENCE_RE, TI
  * rot is not provided (older span sources), a span at least four characters
  * long whose box is more than twice as tall as it is wide is treated as
  * vertical — a real horizontal token that long cannot be taller than wide. */
-export interface GraphSpan { str: string; x: number; y: number; w: number; h: number; rot?: number }
+export interface GraphSpan { str: string; x: number; y: number; w: number; h: number; rot?: number;
+  /** Internal: a title-block title joined from this many lines (classifySheetRole). */
+  joined?: number }
 /** segs (optional): the sheet's vector linework as flat [x1,y1,x2,y2, ...] in
  * the same px space as the spans (VectorGeometry.segs) — feeds the drawn
  * delta-triangle hunt. Text-only callers omit it and lose only that lane. */
@@ -83,7 +85,7 @@ const ROLE_SIGNALS: Array<{ re: RegExp; role: SheetRole; conf: number }> = [
 // (schedule, demolition) first, then the English signals above unchanged,
 // then the European plan/elevation/section/level words. The tables live in
 // sheetvocab.ts — one place for every language.
-const ALL_ROLE_TERMS: Array<{ re: RegExp; role: SheetRole; conf: number; nordic?: boolean }> = [
+const ALL_ROLE_TERMS: Array<{ re: RegExp; role: SheetRole; conf: number; nordic?: boolean; level?: boolean }> = [
   ...EUROPEAN_ROLE_TERMS.filter((t) => t.role === "legend" || t.role === "schedule" || t.role === "demolition"),
   ...ROLE_SIGNALS,
   ...EUROPEAN_ROLE_TERMS.filter((t) => t.role !== "legend" && t.role !== "schedule" && t.role !== "demolition"),
@@ -93,12 +95,13 @@ const MAX_TITLE_WORDS = 7;
 /** The role a single span NAMES, or null. Running-text references ("SEE
  * FINISH PLAN FOR …", "- Se plantegning for plassering") and look-alike
  * titles (a drawing list, a schematic, the KEY PLAN inset) name none. */
-function roleTermOf(str: string, nordic: boolean): { role: SheetRole; conf: number } | null {
+function roleTermOf(str: string, nordic: boolean, lines = 1): { role: SheetRole; conf: number } | null {
   const u = norm(str).replace(/^[-–—•*·]+\s*/, "");
   // A title is a short line — on dev sets title-block titles run ≤ 6 words;
   // the note text that used to outvote them is sentences.
-  if (u.length < 4 || u.length > 80 || u.split(/\s+/).filter((w) => /[\p{L}\d]/u.test(w)).length > MAX_TITLE_WORDS || REFERENCE_RE.test(u) || TITLE_FIELD_LABEL_RE.test(u)) return null;
+  if (u.length < 4 || u.length > 80 || u.split(/\s+/).filter((w) => /[\p{L}\d]/u.test(w)).length > MAX_TITLE_WORDS * lines || REFERENCE_RE.test(u) || TITLE_FIELD_LABEL_RE.test(u)) return null;
   const roles = new Set<SheetRole>();
+  let levelOnlyPlan = true;   // every plan reading so far came from a bare level name
   let first: { role: SheetRole; conf: number } | null = null;
   const masked = u.replace(NOT_A_ROLE_TITLE, " ");
   for (const sig of ALL_ROLE_TERMS) {
@@ -106,13 +109,14 @@ function roleTermOf(str: string, nordic: boolean): { role: SheetRole; conf: numb
     if (!sig.re.test(masked)) continue;
     if (!first) first = { role: sig.role, conf: sig.conf };
     roles.add(sig.role);
+    if (sig.role === "plan" && !sig.level) levelOnlyPlan = false;
   }
   if (!first) return null;
   // A title that names a level AND a drawing type ("DØRSKJEMA 2. ETASJE",
   // "FASADE MOT NORD 1. ETG") is that drawing type scoped to the level — the
   // bare-level term is the weakest plan signal and never contests it.
   // Two drawing types in one title ("PLAN OG SNITT") are two readings.
-  if (first.role !== "plan") roles.delete("plan");
+  if (first.role !== "plan" && levelOnlyPlan) roles.delete("plan");
   roles.delete(first.role);
   return roles.size ? { role: first.role, conf: first.conf / 2 } : first;
 }
@@ -135,6 +139,56 @@ const TITLE_ZONE = { x: 0.6, y: 0.55 };
  * text while notes and schedule cells sit at 1×. */
 const VIEW_TITLE_SCALE = 1.4;
 
+/** A title-block title set over two or more lines ("AREA A PLUMBING" /
+ * "PLANS") is ONE title: consecutive lines in the title zone, set at the same
+ * size (within 15% — rounding between lines of one style), overlapping
+ * across and less than a line apart, are joined into one span. Lines outside
+ * the zone, field labels ("SHEET TITLE:") and a mix of sizes stay apart.
+ * Vertical title strips join side by side the same way. Returns the spans
+ * plus one extra span per joined block. */
+function joinTitleLines(spans: GraphSpan[], W: number, H: number): GraphSpan[] {
+  const inZone = (s: GraphSpan) => s.x + (s.w || 0) / 2 >= W * TITLE_ZONE.x && s.y + (s.h || 0) / 2 >= H * TITLE_ZONE.y;
+  const lineOk = (s: GraphSpan) => inZone(s) && !TITLE_FIELD_LABEL_RE.test(norm(s.str)) && /[\p{L}]/u.test(s.str);
+  const out: GraphSpan[] = [];
+  const used = new Set<GraphSpan>();
+  for (const vertical of [false, true]) {
+    const lines = spans.filter((s) => lineOk(s) && isVertical(s) === vertical)
+      .sort((a, b) => (vertical ? a.x - b.x : a.y - b.y));
+    for (const first of lines) {
+      if (used.has(first)) continue;
+      const group = [first];
+      used.add(first);
+      for (;;) {
+        const last = group[group.length - 1];
+        const size = vertical ? last.w || 0 : last.h || 0;
+        const next = lines.find((c) => {
+          if (used.has(c)) return false;
+          const cs = vertical ? c.w || 0 : c.h || 0;
+          if (!size || Math.abs(cs - size) > size * 0.15) return false;
+          const gap = vertical ? c.x - (last.x + (last.w || 0)) : c.y - (last.y + (last.h || 0));
+          const across = vertical
+            ? Math.min(c.y + (c.h || 0), last.y + (last.h || 0)) - Math.max(c.y, last.y)
+            : Math.min(c.x + (c.w || 0), last.x + (last.w || 0)) - Math.max(c.x, last.x);
+          return gap >= -size * 0.3 && gap <= size * 0.8 && across > 0;
+        });
+        if (!next) break;
+        group.push(next);
+        used.add(next);
+      }
+      if (group.length === 1) continue;
+      let bb = bboxOf(group[0]);
+      for (const g of group) bb = merge(bb, bboxOf(g));
+      // the joined block keeps its LINE size: a vertical strip's narrow side,
+      // a horizontal block's line height
+      out.push({ ...first, joined: group.length, str: group.map((g) => g.str.trim()).join(" "), x: bb[0], y: bb[1],
+        w: vertical ? first.w : bb[2] - bb[0], h: vertical ? bb[3] - bb[1] : first.h });
+    }
+  }
+  // the lines themselves stay candidates too: a joined block that picks up a
+  // project-name line above the title must not hide the title line
+  return [...spans, ...out.filter((j) => !spans.includes(j))];
+}
+
 export function classifySheetRole(sheet: SheetSpans): RoleResult {
   const spans = sheet.spans.filter((s) => (s.str || "").trim());
   const W = sheet.width ?? Math.max(1, ...spans.map((s) => s.x + (s.w || 0)));
@@ -145,7 +199,7 @@ export function classifySheetRole(sheet: SheetSpans): RoleResult {
   type Hit = { role: SheetRole; conf: number; span: GraphSpan; size: number };
   const title: Hit[] = [], view: Hit[] = [], body: Hit[] = [];
   const nordic = spans.some((sp) => NORDIC_TEXT_RE.test(sp.str));
-  for (const sp of spans) {
+  for (const sp of joinTitleLines(spans, W, H)) {
     // Body text reads horizontally: rotated text there is dimensions, labels
     // and leaders drawn along the geometry. A title block printed along the
     // sheet's right edge sets its title VERTICALLY (a common US layout), so a
@@ -155,7 +209,7 @@ export function classifySheetRole(sheet: SheetSpans): RoleResult {
     const cx = sp.x + (sp.w || 0) / 2, cy = sp.y + (sp.h || 0) / 2;
     const inZone = cx >= W * TITLE_ZONE.x && cy >= H * TITLE_ZONE.y;
     if (turned && !(inZone && vertical)) continue;
-    const t = roleTermOf(sp.str, nordic);
+    const t = roleTermOf(sp.str, nordic, sp.joined ?? 1);
     if (!t) continue;
     const size = vertical ? sp.w || 0 : sp.h || 0;
     const hit = { ...t, span: sp, size };
@@ -428,7 +482,9 @@ export interface TableCell { text: string; bbox: Bbox }
  * (a qualified key's prefix, or the BLDG column) when one exists. */
 export interface TableRow { key: string; sheet: string; building?: string; cells: Record<string, TableCell>; revision?: RowRevision;
   /** A card schedule's type drawn as several columns (left/right hand) — counts summed, this many columns. */
-  columns?: number }
+  columns?: number;
+  /** Where the row's key was read (row tables) — the key-column consistency check uses it. */
+  keyBox?: Bbox }
 export interface TablePart { sheet: string; title: string; rows: number; region: Bbox; rotated_headers?: boolean }
 export interface ScheduleTable {
   kind: TableKind;
@@ -450,6 +506,8 @@ export interface ScheduleTable {
   /** "card": a transposed schedule — one COLUMN per type, field labels down
    * the first column (the Nordic door/window layout). Absent: one row per item. */
   layout?: "card";
+  /** Row tables: text lines inside the table whose first token is not a key (see checkOpeningRows). */
+  unkeyed?: GraphSpan[];
   /** A printed total beside the count row, checked against the read counts. */
   total?: { printed: number; sum: number; agrees: boolean; source: Evidence };
 }
@@ -695,9 +753,71 @@ function findHeaderRow(rows: GraphSpan[][], vocab: string[], required: string[],
         }
       }
     }
-    return { anchors: subTierAnchors(rows, idx, anchors.sort((a, b) => a.x - b.x), vocab), rowIndex: idx };
+    // One header row can carry TWO tables' words side by side (a door
+    // schedule's "WIDTH x HEIGHT" left of a finish schedule's FLOOR | BASE on
+    // the same baseline): a table's columns are contiguous, so a gap wider
+    // (see contiguousGroup) splits the anchors, and the header is the group
+    // that qualifies on its own.
+    const sorted = anchors.sort((a, b) => a.x - b.x);
+    let group = contiguousGroup(sorted, required, minHits);
+    if (!group) continue;
+    // Split off a neighbour, this table's own lower tier (ROOM "NO." | "NAME"
+    // under the parent row) could not be descended into — that row carries
+    // the neighbour's words too. Adopt the lower tier's words that sit over
+    // THIS group's band, one row down within two text heights.
+    if (group.length < sorted.length) {
+      const { x0 } = bandLimits(group), gx1 = group[group.length - 1].x;
+      const hy = rowY(rows[idx]);
+      const hs2 = rows[idx].map((t) => t.h || 8).sort((a, b) => a - b);
+      const h2 = hs2[hs2.length >> 1] || 8;
+      const taken = new Set(group.map((a) => a.label));
+      for (let j = idx + 1; j < rows.length && rowY(rows[j]) - hy <= 2 * h2; j++) {
+        for (const hh of headerHits(rows[j], vocab)) {
+          const cx = hh.span.x + (hh.span.w || 0) / 2;
+          if (cx < x0 - bandLimits(group).medGap * 2 || cx > gx1 || taken.has(hh.label)) continue;
+          taken.add(hh.label);
+          group = [...group, { label: hh.label, x: cx }].sort((a, b) => a.x - b.x);
+        }
+      }
+    }
+    return { anchors: subTierAnchors(rows, idx, group, vocab), rowIndex: idx };
   }
   return null;
+}
+
+/** A multi-tier door schedule names its size column on a tier ABOVE the row
+ * that defines the key column ("WIDTH x HEIGHT" over "NO. | TYPE | …"): the
+ * two rows above the header, within the header's own x-band, count. */
+function sizeNamedAbove(rows: GraphSpan[][], hdrIdx: number, anchors: Anchor[], vocab: string[]): boolean {
+  if (hdrIdx < 1) return false;
+  const { x0, x1 } = bandLimits(anchors);
+  const hs = rows[hdrIdx].map((t) => t.h || 8).sort((a, b) => a - b);
+  const h = hs[hs.length >> 1] || 8;
+  const hy = rowY(rows[hdrIdx]);
+  for (let j = hdrIdx - 1; j >= 0 && hy - rowY(rows[j]) <= 3 * h; j--) {
+    if (rows[j].some((t) => t.x >= x0 && t.x <= x1 && headerLabels(t.str, vocab).some((w) => OPENING_SIZE_HEADERS.has(w)))) return true;
+  }
+  return false;
+}
+
+function contiguousGroup(anchors: Anchor[], required: string[], minHits: number): Anchor[] | null {
+  // Split at a gap that stands out twice over: wider than six median column
+  // pitches AND 2.5× the next-widest gap. A schedule's own wide column
+  // (REMARKS, HARDWARE) is one of several wide gaps; the space between two
+  // tables is alone of its kind. Recursive, so three tables split twice.
+  const split = (g: Anchor[]): Anchor[][] => {
+    if (g.length < 3) return [g];
+    const gaps = g.slice(1).map((a, i) => a.x - g[i].x);
+    const sorted = [...gaps].sort((x, y) => x - y);
+    const med = sorted[gaps.length >> 1] || 1, top = sorted[sorted.length - 1], second = sorted[sorted.length - 2] ?? 0;
+    if (top <= med * 6 || top <= second * 2.5) return [g];
+    const at = gaps.indexOf(top) + 1;
+    return [...split(g.slice(0, at)), ...split(g.slice(at))];
+  };
+  const groups = split(anchors);
+  if (groups.length === 1) return anchors;
+  return groups.find((g) => qualifies(g, required, minHits)
+    || qualifies(g.map((a) => ({ label: a.label.split(" ").pop()! })), required, minHits)) ?? null;
 }
 
 // ── two-tier headers (#87 phase 3b) ─────────────────────────────────────────
@@ -1038,7 +1158,7 @@ function bandDataRows(
   sheetKey: string,
   buildings: Set<string> | undefined,
   cfg: { fromIdx: number; belowY: number; keyAlign?: { x: number; tol: number }; deltas?: DeltaIndex; sheetNumbers?: Set<string> },
-): { out: TableRow[]; region: Bbox | null } {
+): { out: TableRow[]; region: Bbox | null; unkeyed: GraphSpan[] } {
   const { x0, x1, medGap } = bandLimits(anchors);
   // a device schedule keyed by TYPE / FIXTURE uses letter types ("A", "B2") as
   // its marks — decided from the table's own header, never guessed per row
@@ -1145,7 +1265,7 @@ function bandDataRows(
     // continuation adoption: a keyed row whose key column does not line up
     // with the base's belongs to some OTHER structure — skipped, never merged
     if (cfg.keyAlign && Math.abs(centerX(banded[0]) - cfg.keyAlign.x) > cfg.keyAlign.tol) continue;
-    const row: TableRow = { key: keyed.key, sheet: sheetKey, cells: {} };
+    const row: TableRow = { key: keyed.key, sheet: sheetKey, cells: {}, keyBox: bboxOf(banded[0]) };
     if (keyed.building) row.building = keyed.building;
     add(row, banded);
     out.push(row);
@@ -1200,7 +1320,16 @@ function bandDataRows(
     const cellB = norm(row.cells.BLDG?.text || row.cells.BUILDING?.text || "");
     if (DESIGNATOR_RE.test(cellB)) row.building = cellB;
   }
-  return { out, region };
+  // Lines BETWEEN the first and last keyed row whose first token could not be
+  // read as a key: where one starts in the key column, a row was there and
+  // was not read — the row count is not the schedule's (the opening check
+  // refuses on it)
+  const unkeyed: GraphSpan[] = [];
+  if (out.length > 1) {
+    const top = outY[0], bot = outY[outY.length - 1];
+    for (const o of orphans) if (o.y > top && o.y < bot) unkeyed.push(o.toks[0]);
+  }
+  return { out, region, unkeyed };
 }
 
 /** Extract one kind of table from a sheet's spans. Returns null when the
@@ -1281,7 +1410,7 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
   // The opening gate, same shape: a door/window schedule states a SIZE — a
   // MARK/TYPE header with no WIDTH, HEIGHT or SIZE column is some other list.
   if ((kind === "equipment" && !anchors.some((a) => EQUIPMENT_ONLY.has(a.label)))
-    || (kind === "opening" && !anchors.some((a) => OPENING_SIZE_HEADERS.has(a.label)))) {
+    || (kind === "opening" && !anchors.some((a) => OPENING_SIZE_HEADERS.has(a.label)) && !sizeNamedAbove(rows, flat?.rowIndex ?? -1, anchors, vocab))) {
     let hb: Bbox | null = null;
     for (const t of headerSpans) hb = hb ? merge(hb, bboxOf(t)) : bboxOf(t);
     return hb ? { skip: hb } : null;
@@ -1331,6 +1460,7 @@ function extractTableCore(sheet: SheetSpans, kind: ExtractKind, opts: ExtractOpt
   }
   const tableKind: TableKind = kind === "opening" ? openingKindOf(title?.text ?? "") ?? "door-window" : kind;
   const table: ScheduleTable = { kind: tableKind, sheet: sheet.key, title, headers: anchors.map((a) => a.label), rows: out, region: region!, anchors };
+  if (kind === "opening" && banded.unkeyed.length) table.unkeyed = banded.unkeyed;
   if (rotated) table.rotated_headers = true;
   return { table };
 }
@@ -1341,6 +1471,71 @@ export function openingKindOf(title: string): OpeningKind | null {
   const u = norm(title);
   const d = DOOR_WORD_RE.test(u), w = WINDOW_WORD_RE.test(u);
   return d && w ? "door-window" : d ? "door" : w ? "window" : null;
+}
+
+// A door/window ROW table is only returned when its rows are consistent —
+// otherwise it is refused and the refusal names what was read, because a
+// wrong row count is a wrong door count in the bid. Checks, in order:
+//   1. every key sits in ONE key column — the run of key starts nearest the
+//      key header: a row whose key starts away from it (more than two text
+//      heights, or half a column pitch) came from another block banded in —
+//      hardware-set captions, sub-rows of a multi-line cell, a note — and is
+//      withheld by name;
+//   2. the keys share one shape (digits → 9, letters → A: "101A" → 999A):
+//      a table whose dominant shape covers under 75% of the aligned rows is a
+//      mix of blocks and is refused outright (a few odd keys under a clear
+//      dominant shape stay — "X1" among "1".."5" is a real mark);
+//   3. at least two rows survive — a single row under a header is as likely
+//      a coincidence of words as a schedule;
+//   4. no line between the first and last row STARTS in the key column
+//      without reading as a key (below).
+const KEY_SHAPE_SHARE = 0.75;
+function checkOpeningRows(t: ScheduleTable): { table: ScheduleTable | null; note?: string } {
+  const name = `"${t.title?.text || `untitled ${t.kind} table`}"`;
+  const withBox = t.rows.filter((r) => r.keyBox);
+  if (withBox.length !== t.rows.length || !t.rows.length) return { table: t };
+  const hs = withBox.map((r) => r.keyBox![3] - r.keyBox![1]).sort((a, b) => a - b);
+  const h = hs[hs.length >> 1] || 8;
+  const pitch = bandLimits(t.anchors ?? [{ label: "", x: 0 }]).medGap;
+  const tol = Math.max(2 * h, (t.anchors?.length ?? 0) > 1 ? pitch * 0.5 : 0);
+  // the key column is the run of key starts nearest the key HEADER — not the
+  // most common start: eight sub-row fragments can outnumber a short column
+  const keyHdr = t.anchors?.[0]?.x ?? withBox[0].keyBox![0];
+  const starts = withBox.map((r) => r.keyBox![0]);
+  const colX = starts.reduce((best, x) => {
+    const near = starts.filter((y) => Math.abs(y - x) <= tol);
+    const c = near.reduce((a, b) => a + b, 0) / near.length;
+    return Math.abs(c - keyHdr) < Math.abs(best - keyHdr) ? c : best;
+  }, Infinity);
+  const aligned = t.rows.filter((r) => Math.abs(r.keyBox![0] - colX) <= tol);
+  const offColumn = t.rows.filter((r) => !aligned.includes(r));
+  const shape = (k: string) => k.replace(/\d/g, "9").replace(/[A-ZÆØÅ]/g, "A");
+  const counts = new Map<string, number>();
+  for (const r of aligned) counts.set(shape(r.key), (counts.get(shape(r.key)) ?? 0) + 1);
+  const [, domN] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
+  const listed = (rs: TableRow[]) => rs.map((r) => r.key).join(", ");
+  // (a dominant shape needs rows to dominate: under four aligned rows the key
+  // column's alignment is the only evidence, and the shape test is skipped)
+  if (!aligned.length || (aligned.length >= 4 && domN / aligned.length < KEY_SHAPE_SHARE)) {
+    return { table: null, note: `${name} REFUSED as a door/window schedule — its row keys do not form one key column (read: ${listed(t.rows)}); look at the table region before counting from it` };
+  }
+  const kept = aligned;
+  if (kept.length < 2) {
+    return { table: null, note: `${name} REFUSED as a door/window schedule — only ${kept.length} consistent row (read: ${listed(t.rows)})` };
+  }
+  // 4. a line inside the table that STARTS in the key column but did not
+  //    read as a key is a row the reader missed — the count is unverifiable
+  const kTop = Math.min(...kept.map((r) => r.keyBox![1])), kBot = Math.max(...kept.map((r) => r.keyBox![3]));
+  // (only a token carrying a DIGIT is a key the reader failed on — a word
+  // there is a group heading such as "EXTERIOR DOORS" or "Tofløyet")
+  const missed = (t.unkeyed ?? []).filter((sp) => /\d/.test(sp.str) && Math.abs(sp.x - colX) <= tol && sp.y > kTop && sp.y < kBot);
+  if (missed.length) {
+    return { table: null, note: `${name} REFUSED as a door/window schedule — ${missed.length} line(s) in its key column did not read as a key (${missed.map((m) => `"${m.str.trim()}"`).join(", ")}), so the ${kept.length} rows read are not the whole schedule (read: ${listed(kept)})` };
+  }
+  const out: ScheduleTable = { ...t, rows: kept };
+  return offColumn.length
+    ? { table: out, note: `${name}: ${offColumn.length} row(s) WITHHELD — ${listed(offColumn)} — off the key column; the table keeps ${kept.length} rows` }
+    : { table: out };
 }
 
 // Transposed ("card") schedules — the common Nordic layout. Types run ACROSS
@@ -1801,7 +1996,14 @@ export function buildSheetGraph(sheets: SheetSpans[]): SheetGraph {
     // A table whose own heading names some OTHER schedule ("FLOOR/ROOF BEAM
     // SCHEDULE", "Kjøkkenskjema") has a mark and a width but is not a door or
     // window schedule — dropped, and the drop named.
-    const openings = [...cards, ...openingRows].filter((t) => {
+    const refusedInk: Bbox[] = [];
+    const openings = [...cards, ...openingRows.flatMap((t) => {
+      const r = checkOpeningRows(t);
+      if (r.note) notes.push(`${s.key}: ${r.note}`);
+      // (a one-row "table" is a coincidence of header words, not door ink)
+      if (!r.table && t.rows.length >= 2) refusedInk.push(t.region);
+      return r.table ? [r.table] : [];
+    })].filter((t) => {
       const other = !!t.title && SCHEDULE_WORD_RE.test(norm(t.title.text)) && !openingKindOf(t.title.text);
       if (other) notes.push(`${s.key}: "${t.title!.text}" has a mark and a size column but its title names no door or window — not indexed as a door/window schedule`);
       return !other;
@@ -1819,7 +2021,11 @@ export function buildSheetGraph(sheets: SheetSpans[]): SheetGraph {
     // A door schedule carries MARK / TYPE / MATERIAL / FINISH columns, so the
     // finish and room hunts can read the same ink; the opening reading wins
     // (its size columns are the proof) and the finish reading is dropped.
-    const overlapsOpening = (t: ScheduleTable) => openings.some((o) => overlapFrac(t.region, o.region) >= 0.5 || overlapFrac(o.region, t.region) >= 0.5);
+    // A door/window table REFUSED for inconsistent rows is still a door
+    // schedule's ink: a finish/material reading of the same ink is not
+    // returned in its place.
+    const overlapsOpening = (t: ScheduleTable) => openings.some((o) => overlapFrac(t.region, o.region) >= 0.5 || overlapFrac(o.region, t.region) >= 0.5)
+      || (t.kind === "finish" && refusedInk.some((o) => overlapFrac(t.region, o) >= 0.5));
     for (let k = found.length - 1; k >= 0; k--) {
       if (!overlapsOpening(found[k])) continue;
       notes.push(`${s.key}: "${found[k].title?.text || `untitled ${found[k].kind} table`}" is the same ink as a door/window schedule — indexed once, as the door/window schedule`);
