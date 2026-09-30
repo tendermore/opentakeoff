@@ -40,6 +40,7 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 import { sweepCommitRefusal } from "./sweepGuard.ts";
 import { coverSheet, coverLabels, snapToWalls } from "./cover.ts";
 import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, isTotalStamp, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
+import { measureWalls, countWindows, type WallHost, type WallsOpts } from "./walls.ts";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
@@ -3819,6 +3820,72 @@ export class Session {
       origins: fresh.map(() => ({ method: "agent_v1" as const, actor: "agent" as const, reviewed: false })),
     });
     return { ...base, committed: r.committed, skipped_already_counted: found.doors.length - fresh.length, shape_ids: r.shape_ids, ea_total: r.ea_total, note: `Filed under ${r.condition}; one undo step.` };
+  }
+
+  /** The narrow host walls.ts reads a sheet through: geometry, doors, text,
+   * schedule tables and commit hooks — the engine and reply shapes live there. */
+  private async wallHost(name: string, tool: string): Promise<WallHost> {
+    const s = this.sheet(name);
+    if (s.upp == null) throw new UserError(`${s.key} has no scale — wall bands are recognised by their real thickness, so set_scale first (${this.scaleGate(s)})`);
+    const geo = await this.ensureGeometry(s);
+    if (!s.spans) s.spans = textSpans(s.page);
+    const graph = await this.ensureGraph();
+    // a run or a marker already filed under the same tag at the same place is
+    // not filed again (a repeated commit is a no-op, like count {doors})
+    const px = (sh: Shape) => sh.verts_norm.map(([x, y]) => [x * s.widthPx, y * s.heightPx] as Point);
+    const filedUnder = (tag: string, role: MeasureRole) => {
+      const c = this.conditions.find((x) => x.finish_tag === tag);
+      return c ? this.shapes.filter((x) => x.condition_id === c.id && x.sheet_id === s.key && x.measure_role === role).map(px) : [];
+    };
+    const same = (a: Point[], b: Point[], tol: number) => a.length === b.length &&
+      (a.every((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1]) <= tol) || a.every((p, i) => Math.hypot(p[0] - b[a.length - 1 - i][0], p[1] - b[a.length - 1 - i][1]) <= tol));
+    const commitRun: WallHost["commitRun"] = (tag, line, lengthLf, heightFt) => {
+      const role: MeasureRole = heightFt ? "surface_area" : "linear";
+      if (filedUnder(tag, role).some((v) => same(v, line, 2))) return null;
+      const origin = { method: "agent_v1" as const, actor: "agent" as const };
+      if (!heightFt) return this.commit(s, tag, "linear", line, Session.linearQty(lengthLf), origin).id;
+      const c = this.conditionFor(tag);
+      if (c.height_ft !== heightFt) {
+        this.record({ op: "condition", tool, condition_id: c.id, before: { waste_pct: c.waste_pct, multiplier: c.multiplier, height_ft: c.height_ft } });
+        c.height_ft = heightFt;
+      }
+      const shape = this.commit(s, tag, "surface_area", line, { area_sf: round2(lengthLf * heightFt), perimeter_lf: round2(lengthLf) }, origin);
+      shape.height_ft = heightFt;
+      return shape.id;
+    };
+    const commitCount: WallHost["commitCount"] = (tag, at) => {
+      const reach = 0.3 / 0.3048 / s.upp!;            // one window's marker lands within 0.3 m
+      const filed = filedUnder(tag, "count").map((v) => v[0]);
+      const fresh = at.filter((p) => !filed.some((q) => Math.hypot(p[0] - q[0], p[1] - q[1]) <= reach));
+      if (!fresh.length) return { shape_ids: [], ea_total: filed.length, skipped: at.length };
+      const r = this.placeCount(name, fresh, { condition: tag, tool, origins: fresh.map(() => ({ method: "agent_v1" as const, actor: "agent" as const, reviewed: false })) });
+      return { shape_ids: r.shape_ids, ea_total: r.ea_total, skipped: at.length - fresh.length };
+    };
+    return {
+      sheet: s.key, geo, upp: s.upp, width: s.widthPx, height: s.heightPx, text: s.spans, sheetNumber: s.sheetNumber,
+      doors: (await this.ensureDoors(name))?.doors ?? [],
+      tables: graph.available ? graph.tables : [],
+      scan: this.rasterPolicy(s, geo).rasterEligible && !this.rasterPolicy(s, geo).vectorViable,
+      commitRun,
+      commitCount,
+      heightOf: (tag) => Number(this.conditions.find((c) => c.finish_tag === tag)?.height_ft) || undefined,
+    };
+  }
+
+  /** measure {kind: "walls"} — mcp/src/walls.ts. */
+  async measureWalls(name: string, opts: WallsOpts) {
+    const host = await this.wallHost(name, "measure_walls");
+    // the commit is one undo step even when a later run throws
+    try {
+      return measureWalls(host, opts);
+    } finally {
+      if (opts.commit) this.flushCommits("measure_walls");
+    }
+  }
+
+  /** count {action: "windows"} — mcp/src/walls.ts. */
+  async countWindows(name: string, opts: { condition?: string; commit?: boolean; region?: WallsOpts["region"] } = {}) {
+    return countWindows(await this.wallHost(name, "count_windows"), opts);
   }
 
   /** The seed→target size ratio for a cross-sheet sweep (#186): seed-sheet

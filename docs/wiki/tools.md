@@ -127,7 +127,7 @@ The floor the room sweep left, after `detect`. The sheet's walls — lines the d
 
 ## `count`
 
-Count EA items. doors: every hinged door on a sheet, read off its swing (double leaves = one), with widths; non-door curves rejected. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.
+Count EA items. doors: hinged doors from their swings (a pair = one), with widths. windows: glazed wall openings with schedule marks. symbol: a point on one example → every copy in the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, then commit — marks already counted never count twice. sweep: the same from a tight seed_rect, set-wide. place: markers at points you located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.
 
 ### `action: "doors"`
 
@@ -138,6 +138,17 @@ Fields:
 - `sheet`: The sheet
 - `condition`: Tag to file the doors under (commit)
 - `commit`: File the doors as EA markers; default is a preview
+
+### `action: "windows"`
+
+Windows on one sheet. Where the set carries a window (or door/window) schedule and the sheet draws its row marks, each drawn mark is one window (`counted_by: "marks"`): its plan width is read from the wall opening the mark stands beside (a glazed opening, a door-less opening; the mark must project onto the opening's span), the size printed at the mark ("Dim 1 205x1 420", "12x21" — Nordic modules are decimetres) is read as `plan_note_width_mm`, and both are checked against the row's width (`width_check`, `note_check`). A mark at a door swing is listed in `marks_at_doors`, and a schedule key drawn where no wall opening stands beside it (a note, a legend, a bare "1") in `marks_unresolved` — neither is counted or committed; a glazed opening with no mark on a marked sheet is listed in `plan_without_row`, not counted. Glazed gaps a post (≤ 0.3 m) apart in one wall join into one window only while the joined width stays ≤ 3 m; the joined window lists `merged_from_mm`. A repeated commit skips windows already filed under the condition (`skipped_already_filed`). On an unmarked sheet the count is geometric (`counted_by: "geometry"`): a gap in an exterior wall band with at least two glazing lines inside the band and no door swing; one window divided by mullions is one window. Glazed openings in interior or unsided walls come back in `withheld`. `rows_without_window` lists schedule rows no window on this sheet carries. Width and height are from the schedule row when it has them; a plan shows width only. Refuses scans and other trades' sheets like `measure {kind: "walls"}`.
+
+Fields:
+
+- `sheet`: The sheet
+- `condition`: Tag to file the windows under (commit)
+- `commit`: File the windows as EA markers; default is a preview
+- `region`: Only this rect (image px)
 
 ### `action: "symbol"` (was `count_symbol`)
 
@@ -177,7 +188,7 @@ Fields:
 
 ## `measure`
 
-Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.
+Measure geometry you trace (image px); pass condition to commit it. area: a closed polygon → SF and perimeter (role deduct subtracts); a room ring sits on the innermost wall faces and crosses each door on the wall centerline. length: an open polyline → LF, plus rise_ft / drop_ft vertical legs. surface: a wall run → LF × height_ft (wall tile, wainscot). walls: every wall on the sheet, no points — centreline LF gross/net of openings by thickness class and side; area only with height_ft. A curved wall is one point on its bow listed in arc_through, never a chord. Needs the sheet's scale.
 
 ### `kind: "area"` (was `measure_polygon`)
 
@@ -205,6 +216,21 @@ Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (
 Fields:
 
 - `arc_through`: Indices of points that are the MIDDLE of an arc: the trace runs the point before → this point → the point after as the unique circle through the three (the canvas's Curve mode). For a curved wall put one point anywhere ON the bow between its two ends and mark it. The arc is baked to ordinary vertices on commit and origin.curved is stamped; a mark on an end of an open run, or two marks in a row, refuses.
+
+### `kind: "walls"`
+
+Every wall on one sheet, read from the linework — no points, no text vocabulary. The wall engine never reads a layer name; the door swings it uses to classify openings come from the engine's shared door reader, whose ink mask honours the sheet's layer roles when the PDF has layers (as every tool's mask does). A wall is a BAND: two outer faces a wall's thickness apart (60–700 mm) with its material between them — poché, a hatch or insulation symbol repeated along it, further layer lines, or nothing on sets that draw walls as empty pairs. Parallel pairs holding a fixture, text or casework are not walls; on a sheet that draws its walls with poché or hatch, an empty pair is withheld as casework. An empty pair counts only where it joins the wall network (held by walls at both ends, grown outward from the poché/hatch walls). Table rows, stair treads, tile grids and site hatch (regular-pitch families), the drawing border, short bands meeting no wall at an angle (legend samples, symbols), bands under 1 m not held at both ends, groups of joined bands under 8 m in total (details, diagrams), and bands open to the outside on both faces (railings, parapets) are withheld with their reason.
+
+Quantities follow the centreline convention (NRM2): an L corner runs both walls to the centreline intersection whichever wall the corner square is drawn in, a wall abutting another at a T stops at its face. `gross_m` runs through the openings bridged into a run — a door (a swing at the gap), a window (glazing lines inside the band) or an opening (one line across); gaps under 0.4 m are junction breaks. `net_m` deducts openings per NS 3420-1: an opening whose area is known (a window mark resolved to it, with the schedule row's height × the plan width) under 0.5 m² is not deducted; an opening of unknown height is deducted by its width and says so in its `rule`. Net wall area (`area_net_m2`) is given only when every deducted opening's height is known; otherwise null with the reason. Two walls that merely line up across a room are never bridged. Each run reports its centreline (image px), measured thickness, class (the sheet's widths clustered at 15 mm drafting tolerance, named to the nearest 10 mm), side and openings. Side: `ext` when rays cast from one face leave the drawing without crossing another wall and those from the other face do not, `int` when neither does, `unsided` otherwise.
+
+HEIGHT is never read off a plan: pass `height_ft` (from a section, a room schedule or the user) or set it on a class condition first; without it the reply says height unknown and reports no area. commit files each run twice, never summed together: its gross centreline as one linear shape — a surface (LF × height) when the height is known — under `<prefix> EXT|INT|UNSIDED <mm>` (prefix = `condition`, default WALL), and the wall drawn between its deducted openings as linear pieces under `<class> NET`; one undo step, agent-pending. A run already filed under the same tag at the same place is skipped (`skipped_already_filed`), so a repeated commit adds nothing. Needs the sheet's scale and vector linework: a raster scan refuses with the reason (reading one needs a raster band detector this build does not have). A sheet of another trade refuses too, naming the words that said so: ventilation, plumbing, sprinkler, electrical, structural, landscape/civil or demolition, read from the title block's drawing title (short title lines only, never notes or legend sentences), from a legend of one trade's devices, or from a Nordic trade code (RIV, RIE, RIB, VVS …) or NCS-shaped number (M-101, E201) — open the architectural plan instead. A group of walls whose own drawing title prints another scale than the sheet's (a detail or section beside the plan) is withheld as `other_scale`.
+
+Fields:
+
+- `condition`: Class-tag prefix (default WALL)
+- `commit`: File every counted run; default is a preview
+- `height_ft`: Wall height in feet from a stated source; enables wall area
+- `region`: Only this rect (image px) — one drawing of a sheet that also carries details, legends or a key plan drawn at other scales
 
 ## `derive`
 

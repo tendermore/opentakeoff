@@ -240,6 +240,27 @@ export const measureSurfaceOutput = {
   shape_id: z.string(),
 };
 
+/** measure {kind: "walls"} — mcp/src/walls.ts. */
+export const measureWallsOutput = {
+  sheet: z.string(),
+  rule: z.string().describe("The measurement convention the lengths follow"),
+  totals: z.object({
+    gross_m: z.number(), net_m: z.number(), exterior_gross_m: z.number(), interior_gross_m: z.number(), unsided_gross_m: z.number(),
+    gross_lf: z.number(), net_lf: z.number(),
+  }).describe("Sheet totals: gross through bridged openings, net without them"),
+  classes: z.array(z.record(z.string(), z.unknown())).describe("Per condition (side × thickness class): runs, gross/net m and LF, openings; height_ft and area_gross_m2 only with a known height"),
+  height: z.record(z.string(), z.unknown()).describe("Where the height came from, or why it is unknown"),
+  style: z.record(z.string(), z.unknown()).describe("How the sheet draws its walls (poché / hatch / empty pairs, by length) and whether empty pairs count"),
+  runs: z.array(z.record(z.string(), z.unknown())).describe("Every counted run: centreline (image px), thickness, side, gross/net m, openings, condition"),
+  withheld_total_m: z.number(),
+  withheld: z.array(z.record(z.string(), z.unknown())).describe("Wall-like bands NOT counted, longest first, each with its reason"),
+  withheld_truncated: z.number().int().optional(),
+  committed: z.number().int(),
+  shape_ids: z.array(z.string()).optional(),
+  skipped_already_filed: z.number().int().optional().describe("Runs already filed under the same tag at the same place — not filed again"),
+  note: z.string(),
+};
+
 /** place_count (#146) — EA markers, one shape per point, scale-free. */
 export const placeCountOutput = {
   committed: z.number().int().describe("Count shapes committed by this call — one per point"),
