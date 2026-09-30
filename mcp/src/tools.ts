@@ -324,7 +324,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   }));
 
   server.registerTool("derive", {
-    description: "Derive quantities from committed shapes instead of re-measuring. deduct: cut a real hole in a committed floor shape (a column, a casework island), or clip a stretch out of an open run; the ring must sit inside the parent. base: wall base from a condition's rooms, perimeter minus the doors drawn on each room's ring; openings you state for a room replace its detected ones. transitions: where two finishes meet; butt joints and door thresholds commit as runs, wall runs with no door come back withheld with a point to look at. Each call is one undo step.",
+    description: "Derive quantities from committed shapes instead of re-measuring. deduct: cut a real hole in a committed floor shape (a column, a casework island), or clip a stretch out of an open run; the ring must sit inside the parent. base: skirting along each room's drawn walls, doors and open sides cut out; rooms off the walls flagged; stated openings replace the reading. transitions: where two finishes meet; butt joints and door thresholds commit as runs, wall runs with no door come back withheld with a point to look at. Each call is one undo step.",
     inputSchema: {
       action: z.enum(["deduct", "base", "transitions"]),
       parent_shape_id: z.string().optional().describe("deduct: a committed floor_area shape, or an open run to clip"),

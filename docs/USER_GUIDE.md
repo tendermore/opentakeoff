@@ -922,7 +922,7 @@ A few worth knowing about from the canvas side, because they're the same feature
   drafter agreeing, and a confident match with *no* label is flagged as the first thing to look at.
 - `sheet_context {action: "graph"}` / `find_text {action: "resolve_tag"}` / `schedule {action: "find"}` answer *"what finish is in room 134, and how do
   you know"* with a citation per cell—across continuation sheets and multi-building keys.
-- `derive {action: "base"}` computes base LF from committed rooms (perimeter minus stated openings), and
+- `derive {action: "base"}` computes base LF from committed rooms along the drawn walls (doors, openings and open sides cut out; or the perimeter minus openings you state), and
   `derive {action: "transitions"}` finds where two finishes meet—the same derivation the canvas's
   **⟂ Transitions…** button runs ([§5](#5-the-measuring-tools)). The second one is worth understanding before
   you read its output: flood-traced rooms **don't share edges**—a trace fills to the wall

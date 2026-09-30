@@ -136,8 +136,9 @@ The tools and their actions, in the order an agent tends to reach for them:
   true endpoints)
 - **Derive**—the quantities that follow from rooms already committed, instead
   of measuring them a second time. `derive {action: "base"}` mints base LF per room
-  (perimeter *minus the door openings you state*—your claim, recorded on
-  `origin.derived`; the tool never guesses a door). `derive {action: "transitions"}` mints
+  along the drawn walls (doors, openings with no door and open sides cut out
+  of the committed runs; a ring off the walls is flagged, not measured; or
+  the perimeter minus openings you state, recorded on `origin.derived`). `derive {action: "transitions"}` mints
   the line where two finishes meet, and is built around a fact worth knowing
   before you call it: **flood-traced rooms do not share edges.** A trace fills
   to the wall linework, so two rooms across a partition sit four to eight inches
@@ -402,8 +403,8 @@ the browser register. Verdicts are separate records, not editable annotations.
 `conditions {action: "scope_duplicates"}` ignores machine-precision edge residue, but preserves real
 small overlaps with an explanation when SF rounds to zero. A material coverage
 row is not another finish polygon. For a physical opening, clip an explicit
-`measure {kind: "length"}` or `measure {kind: "surface"}` run with `derive {action: "deduct"}`; a derived base with numeric
-opening allowances refuses clipping because those openings have no locations.
+`measure {kind: "length"}` or `measure {kind: "surface"}` run with `derive {action: "deduct"}`; a derived base from stated
+(numeric) opening allowances refuses clipping because those openings have no locations.
 
 ## Wiki resources
 
