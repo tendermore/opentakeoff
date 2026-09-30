@@ -1,4 +1,12 @@
-// Wall takeoff from plan linework — no layers, no text vocabulary, no per-set numbers.
+// Wall takeoff from plan linework — no text vocabulary, no per-set numbers.
+//
+// What reads layers and what does not: this module reads only the segments,
+// their paint flags and the fill luminance — never a PDF layer name or role.
+// Its inputs can: the caller's door openings come from doors.ts, whose swing
+// reading runs on the engine's shared ink mask, and on a layered PDF that mask
+// honours the layer roles classifyLayerName assigns (the engine's existing
+// behaviour for every tool, not something walls add). On the evaluation sheets
+// the walls and windows came out identical with the layer table stripped.
 //
 // A wall in plan is a BAND: two outer faces a wall's thickness apart, with its
 // material between them — solid poché, a hatch, further parallel lines
@@ -11,9 +19,10 @@
 // casework and is withheld, never counted.
 //
 // Quantities follow the centreline convention (NRM2 "walling measured on the
-// centre line"): an L corner runs both walls to the centreline intersection, a
-// wall abutting another at a T stops at its face, and a run is carried through
-// an opening only as GROSS length — net length subtracts every bridged gap.
+// centre line"): an L corner runs both walls to the centreline intersection
+// (whichever wall the drafter drew the corner square in), a wall abutting
+// another at a T stops at its face, and a run is carried through an opening
+// only as GROSS length; the caller decides which openings net deducts.
 //
 // Pure module: input is the sheet's vector geometry (oneclick.ts), output is
 // runs in image px with their metric quantities. Scale comes in as px per metre.
@@ -519,18 +528,50 @@ function runsOf(bands: Band[], famIdx: number, pxPerM: number): RawRun[] {
   const tol = 0.01 * pxPerM;
   const sorted = bands.slice().sort((a, b) => a.c0 - b.c0 || a.c1 - b.c1 || a.lo - b.lo);
   const out: RawRun[] = [];
+  // runs indexed by their faces' offsets (tolerance-sized buckets), so a band
+  // finds the run it continues without scanning every run
+  const byFaces = new Map<string, RawRun[]>();
+  const kOf = (c0: number, c1: number) => `${Math.round(c0 / tol)}|${Math.round(c1 / tol)}`;
   for (const b of sorted) {
-    const r = out.find((x) => Math.abs(x.c0 - b.c0) <= tol && Math.abs(x.c1 - b.c1) <= tol && b.lo <= x.hi + tol && b.hi >= x.lo - tol);
+    let r: RawRun | undefined;
+    const k0 = Math.round(b.c0 / tol), k1 = Math.round(b.c1 / tol);
+    for (let d0 = -1; d0 <= 1 && !r; d0++) for (let d1 = -1; d1 <= 1 && !r; d1++) {
+      r = byFaces.get(`${k0 + d0}|${k1 + d1}`)?.find((x) => Math.abs(x.c0 - b.c0) <= tol && Math.abs(x.c1 - b.c1) <= tol && b.lo <= x.hi + tol && b.hi >= x.lo - tol);
+    }
     if (r) {
       r.lo = Math.min(r.lo, b.lo); r.hi = Math.max(r.hi, b.hi);
       r.pieces.push([b.lo, b.hi]);
       if (b.ev === "poche" || (b.ev === "hatch" && r.ev === "outline")) r.ev = b.ev;
-      b.faces.forEach((f) => r.faces.add(f));
+      b.faces.forEach((f) => r!.faces.add(f));
     } else {
-      out.push({ fam: famIdx, c0: b.c0, c1: b.c1, lo: b.lo, hi: b.hi, ev: b.ev, faces: new Set(b.faces), pieces: [[b.lo, b.hi]] });
+      const n: RawRun = { fam: famIdx, c0: b.c0, c1: b.c1, lo: b.lo, hi: b.hi, ev: b.ev, faces: new Set(b.faces), pieces: [[b.lo, b.hi]] };
+      out.push(n);
+      const key = kOf(b.c0, b.c1);
+      const arr = byFaces.get(key) ?? [];
+      arr.push(n); byFaces.set(key, arr);
     }
   }
   return out;
+}
+
+/** Segments bucketed by the cells their (padded) bounding box covers, so
+ *  "which runs come within `reach` of here" costs a few cells, not all runs. */
+class LineGrid {
+  private cells = new Map<number, number[]>();
+  constructor(private lines: Array<[Point, Point]>, private cell: number) {
+    lines.forEach((l, i) => this.each(l, 0, (k) => { let b = this.cells.get(k); if (!b) this.cells.set(k, b = []); b.push(i); }));
+  }
+  private each([a, b]: [Point, Point], pad: number, f: (k: number) => void): void {
+    const x0 = Math.floor((Math.min(a[0], b[0]) - pad) / this.cell), x1 = Math.floor((Math.max(a[0], b[0]) + pad) / this.cell);
+    const y0 = Math.floor((Math.min(a[1], b[1]) - pad) / this.cell), y1 = Math.floor((Math.max(a[1], b[1]) + pad) / this.cell);
+    for (let gx = x0; gx <= x1; gx++) for (let gy = y0; gy <= y1; gy++) f(gkey(gx, gy));
+  }
+  /** Indices of lines whose cells touch `line` padded by `reach` (a superset). */
+  near(line: [Point, Point], reach: number): number[] {
+    const out = new Set<number>();
+    this.each(line, reach, (k) => { for (const i of this.cells.get(k) ?? []) out.add(i); });
+    return [...out];
+  }
 }
 
 /** Bridge collinear same-thickness runs across openings (gross), recording each gap. */
@@ -572,35 +613,35 @@ type GapKind = OpeningKind | "junction";
 function gapKind(fam: Family, c0: number, c1: number, a: number, b: number, geo: VectorGeometry, ev: Evidence, pxPerM: number): GapKind | null {
   const w = b - a, t = c1 - c0;
   if (w < MIN_OPENING_M * pxPerM) return "junction";
+  const cc = (c0 + c1) / 2;
+  // a door is a swing doors.ts read at the gap (the leaf's closed chord inside it)
+  for (const [p, q] of ev.doors ?? []) {
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    const mu = mx * fam.ux + my * fam.uy, mc = mx * -fam.uy + my * fam.ux;
+    if (mu >= a - 0.1 * w && mu <= b + 0.1 * w && Math.abs(mc - cc) <= t / 2 + 0.2 * w) return "door";
+  }
+  // glazing: lines along the wall inside the band, spanning most of the gap —
+  // their midpoints sit in the gap's own rectangle, so only its cells are read
   const { segs, meta } = geo;
-  const cu = (a + b) / 2, cc = (c0 + c1) / 2;
-  const [cx, cy] = toXY(fam, cu, cc);
-  const R = 1.2 * w;
-  let curves = 0, along = 0;
-  for (let gx = Math.floor((cx - R) / ev.cell); gx <= Math.floor((cx + R) / ev.cell); gx++) {
-    for (let gy = Math.floor((cy - R) / ev.cell); gy <= Math.floor((cy + R) / ev.cell); gy++) {
-      const bk = ev.segGrid.get(gkey(gx, gy));
-      if (!bk) continue;
-      for (const i of bk) {
-        const x0 = segs[4 * i], y0 = segs[4 * i + 1], x1 = segs[4 * i + 2], y1 = segs[4 * i + 3];
-        const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-        if (meta[i] & SEG_CURVE) { if (Math.hypot(mx - cx, my - cy) <= R) curves++; continue; }
-        const u0 = x0 * fam.ux + y0 * fam.uy, u1 = x1 * fam.ux + y1 * fam.uy;
-        const v0 = x0 * -fam.uy + y0 * fam.ux, v1 = x1 * -fam.uy + y1 * fam.ux;
-        if (Math.abs(v1 - v0) > 0.02 * w) continue;                     // not along the wall
-        const v = (v0 + v1) / 2;
-        if (v < c0 + 0.15 * t || v > c1 - 0.15 * t) continue;            // glazing sits inside the band, not on its faces
-        const cover = Math.min(b, Math.max(u0, u1)) - Math.max(a, Math.min(u0, u1));
-        if (cover >= 0.6 * w) along++;
-      }
+  const corners = [toXY(fam, a, c0), toXY(fam, b, c0), toXY(fam, a, c1), toXY(fam, b, c1)];
+  const gx0 = Math.floor(Math.min(...corners.map((p) => p[0])) / ev.cell), gx1 = Math.floor(Math.max(...corners.map((p) => p[0])) / ev.cell);
+  const gy0 = Math.floor(Math.min(...corners.map((p) => p[1])) / ev.cell), gy1 = Math.floor(Math.max(...corners.map((p) => p[1])) / ev.cell);
+  let along = 0;
+  for (let gx = gx0; gx <= gx1; gx++) for (let gy = gy0; gy <= gy1; gy++) {
+    const bk = ev.segGrid.get(gkey(gx, gy));
+    if (!bk) continue;
+    for (const i of bk) {
+      if (meta[i] & SEG_CURVE) continue;
+      const x0 = segs[4 * i], y0 = segs[4 * i + 1], x1 = segs[4 * i + 2], y1 = segs[4 * i + 3];
+      const v0 = x0 * -fam.uy + y0 * fam.ux, v1 = x1 * -fam.uy + y1 * fam.ux;
+      if (Math.abs(v1 - v0) > 0.02 * w) continue;                     // not along the wall
+      const v = (v0 + v1) / 2;
+      if (v < c0 + 0.15 * t || v > c1 - 0.15 * t) continue;            // glazing sits inside the band, not on its faces
+      const u0 = x0 * fam.ux + y0 * fam.uy, u1 = x1 * fam.ux + y1 * fam.uy;
+      const cover = Math.min(b, Math.max(u0, u1)) - Math.max(a, Math.min(u0, u1));
+      if (cover >= 0.6 * w) along++;
     }
   }
-  if (ev.doors) {
-    for (const [p, q] of ev.doors) {
-      const mu = ((p[0] + q[0]) / 2) * fam.ux + ((p[1] + q[1]) / 2) * fam.uy, mc = ((p[0] + q[0]) / 2) * -fam.uy + ((p[1] + q[1]) / 2) * fam.ux;
-      if (mu >= a - 0.1 * w && mu <= b + 0.1 * w && Math.abs(mc - cc) <= t / 2 + 0.2 * w) return "door";
-    }
-  } else if (curves >= 3) return "door";
   if (along >= 2) return "window";
   if (along === 1) return "opening";
   return null;
@@ -621,7 +662,11 @@ function bridge(runs: RawRun[], fam: Family, geo: VectorGeometry, ev: Evidence, 
       grew = false;
       // nearest collinear piece on either side first, so a gap is judged between neighbours
       let best = -1, bestGap = Infinity;
-      for (let j = 0; j < sorted.length; j++) {
+      // only pieces whose near face lies within a wall's thickness of this one's
+      const cMin = cur.c0 - MAX_THICK_M * pxPerM, cMax = cur.c1 + MAX_THICK_M * pxPerM;
+      let lo = 0, hi = sorted.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (sorted[m].c0 < cMin) lo = m + 1; else hi = m; }
+      for (let j = lo; j < sorted.length && sorted[j].c0 <= cMax; j++) {
         if (used[j] || refused.has(j)) continue;
         const r = sorted[j];
         const same = Math.abs(r.c0 - cur.c0) <= tol && Math.abs(r.c1 - cur.c1) <= tol;
@@ -669,7 +714,10 @@ function bridge(runs: RawRun[], fam: Family, geo: VectorGeometry, ev: Evidence, 
 /** Extend run ends to the centreline intersection at L corners (both runs end there). */
 function extendCorners(runs: Array<{ fam: Family; c: number; lo: number; hi: number; t: number }>, pxPerM: number): void {
   const reach = 0.05 * pxPerM;
-  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+  const maxT = Math.max(0, ...runs.map((r) => r.t));
+  const grid = new LineGrid(runs.map((r) => [toXY(r.fam, r.lo, r.c), toXY(r.fam, r.hi, r.c)] as [Point, Point]), 2 * pxPerM);
+  for (let i = 0; i < runs.length; i++) for (const j of grid.near([toXY(runs[i].fam, runs[i].lo, runs[i].c), toXY(runs[i].fam, runs[i].hi, runs[i].c)], maxT + reach)) {
+    if (j <= i) continue;
     const A = runs[i], B = runs[j];
     const cross = A.fam.ux * B.fam.uy - A.fam.uy * B.fam.ux;
     if (Math.abs(cross) < Math.sin(20 * deg)) continue;
@@ -679,13 +727,15 @@ function extendCorners(runs: Array<{ fam: Family; c: number; lo: number; hi: num
     const s = (dx * B.fam.uy - dy * B.fam.ux) / cross;         // along A from pA
     const X: Point = [pA[0] + s * A.fam.ux, pA[1] + s * A.fam.uy];
     const uA = X[0] * A.fam.ux + X[1] * A.fam.uy, uB = X[0] * B.fam.ux + X[1] * B.fam.uy;
-    // each run must END near X: within the other's half thickness (+reach) beyond its end
-    const endA = uA > A.hi ? uA - A.hi : uA < A.lo ? A.lo - uA : -1;
-    const endB = uB > B.hi ? uB - B.hi : uB < B.lo ? B.lo - uB : -1;
-    const fitA = endA >= 0 && endA <= B.t / 2 + reach, fitB = endB >= 0 && endB <= A.t / 2 + reach;
-    if (!fitA || !fitB) continue;
-    if (uA > A.hi) A.hi = uA; else A.lo = uA;
-    if (uB > B.hi) B.hi = uB; else B.lo = uB;
+    // at an L each run ENDS near X: short of it by up to the other's half
+    // thickness (it stops at the other's inner face) or past it by as much (the
+    // drafter drew the corner square as part of this wall). Both ends move to
+    // X, so each corner is counted once, on the centrelines.
+    const hiA = Math.abs(uA - A.hi) <= Math.abs(uA - A.lo), hiB = Math.abs(uB - B.hi) <= Math.abs(uB - B.lo);
+    const endA = Math.abs(uA - (hiA ? A.hi : A.lo)), endB = Math.abs(uB - (hiB ? B.hi : B.lo));
+    if (endA > B.t / 2 + reach || endB > A.t / 2 + reach) continue;
+    if (hiA) A.hi = uA; else A.lo = uA;
+    if (hiB) B.hi = uB; else B.lo = uB;
   }
 }
 
@@ -799,12 +849,16 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   // poché/hatch walls like a wall network. On a sheet that draws every wall
   // as an empty pair, long pairs meeting other pairs at both ends seed it.
   const accepted = kept.map((k) => k.r.ev !== "outline");
+  const keptLines = kept.map((k) => [toXY(k.fam, k.lo, k.c), toXY(k.fam, k.hi, k.c)] as [Point, Point]);
+  const keptGrid = new LineGrid(keptLines, 2 * pxPerM);
+  const endReach = Math.max(MAX_OPENING_M * pxPerM, maxT + JOIN_REACH_M * pxPerM);
   const endHits = (i: number, onlyAccepted: boolean): number => {
     const A = kept[i];
     let ends = 0;
     for (const u of [A.lo, A.hi]) {
       const p = toXY(A.fam, u, A.c);
-      const hit = kept.some((B, j) => {
+      const hit = keptGrid.near([p, p], endReach).some((j) => {
+        const B = kept[j];
         if (j === i || (onlyAccepted && !accepted[j])) return false;
         const seg: [Point, Point] = [toXY(B.fam, B.lo, B.c), toXY(B.fam, B.hi, B.c)];
         if (Math.abs(A.fam.ux * B.fam.uy - A.fam.uy * B.fam.ux) < Math.sin(20 * deg)) {
@@ -860,17 +914,20 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   const angled = (a: WallRun, b: WallRun) => Math.abs(Math.sin(dir(a) - dir(b))) >= Math.sin(20 * deg);
   // a short band lying across another wall's band is that wall's hatch or a
   // jamb line; a short band is a wall stub only when walls hold both its ends
+  const joinPx = (MAX_THICK_M + JOIN_REACH_M) * pxPerM;
+  const grid1 = new LineGrid(runs.map((r) => r.line), 2 * pxPerM);
   const inside = (r: WallRun, q: WallRun) => r.line.every((p) => ptSeg(p, q.line) <= (q.thicknessM / 2) * pxPerM + 1);
-  const held = (r: WallRun, i: number) => r.line.every((p) => runs.some((q, j) => j !== i && angled(r, q) && q.grossM > r.grossM &&
-    ptSeg(p, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM));
-  const stray = runs.map((r, i) => r.grossM < SHORT_RUN_M && (runs.some((q, j) => j !== i && q.grossM > r.grossM && inside(r, q)) || !held(r, i)));
+  const held = (r: WallRun, i: number) => r.line.every((p) => grid1.near([p, p], joinPx).some((j) => { const q = runs[j]; return j !== i && angled(r, q) && q.grossM > r.grossM &&
+    ptSeg(p, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM; }));
+  const stray = runs.map((r, i) => r.grossM < SHORT_RUN_M && (grid1.near(r.line, joinPx).some((j) => j !== i && runs[j].grossM > r.grossM && inside(r, runs[j])) || !held(r, i)));
   runs = runs.filter((r, i) => {
     if (!stray[i]) return true;
     withheld.push({ line: r.line, thicknessM: r.thicknessM, lengthM: r.grossM, reason: "short_unanchored: a band under 1 m not held by walls at both ends, or lying inside another wall — hatch, a jamb line or casework" });
     return false;
   });
-  const lonely = runs.map((r, i) => r.grossM < ISOLATED_MAX_M && !runs.some((q, j) => j !== i && angled(r, q) &&
-    segDist(r.line, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM));
+  const grid2 = new LineGrid(runs.map((r) => r.line), 2 * pxPerM);
+  const lonely = runs.map((r, i) => r.grossM < ISOLATED_MAX_M && !grid2.near(r.line, joinPx).some((j) => { const q = runs[j]; return j !== i && angled(r, q) &&
+    segDist(r.line, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM; }));
   // the drawing frame: double border lines a wall's width apart
   const margin = FRAME_MARGIN * Math.min(width, height);
   const onFrame = (r: WallRun) => r.line.every(([x, y]) => x < margin || y < margin || x > width - margin || y > height - margin);
@@ -887,7 +944,9 @@ export function wallTakeoff(geo: VectorGeometry, pxPerM: number, width: number, 
   // north arrow) meets only itself
   const comp = connected.map((_, i) => i);
   const find = (i: number): number => (comp[i] === i ? i : (comp[i] = find(comp[i])));
-  connected.forEach((r, i) => connected.forEach((q, j) => {
+  const grid3 = new LineGrid(connected.map((r) => r.line), 2 * pxPerM);
+  connected.forEach((r, i) => grid3.near(r.line, joinPx).forEach((j) => {
+    const q = connected[j];
     if (j > i && segDist(r.line, q.line) <= ((r.thicknessM + q.thicknessM) / 2 + JOIN_REACH_M) * pxPerM) comp[find(i)] = find(j);
   }));
   const box = new Map<number, [number, number, number, number]>();

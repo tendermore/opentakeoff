@@ -92,16 +92,25 @@ test("walls: centreline lengths, thickness classes, sides, gross and net of open
   assert.equal(r.committed, 0, "preview by default");
 });
 
-test("walls: a stated height gives area, and commit files one shape per run under its class", async () => {
+test("walls: commit files the gross run under its class and the net pieces under <class> NET; recommitting files nothing", async () => {
   const { s, key } = await open(pdf(building()));
   const r = await s.measureWalls(key, { commit: true, height_ft: 9 });
-  assert.equal(r.committed, r.runs.length);
-  const shapes = s.exportPayload().shapes;
-  assert.equal(shapes.length, r.runs.length);
-  assert.ok(shapes.every((x: any) => x.measure_role === "surface_area" && x.origin.actor === "agent" && x.origin.reviewed === false));
+  const shapes = s.exportPayload().shapes as any[];
+  const cond = (id: string) => s.summary().conditions.find((c: any) => c.id === id)!.finish_tag as string;
+  const gross = shapes.filter((x) => !cond(x.condition_id).endsWith(" NET"));
+  const net = shapes.filter((x) => cond(x.condition_id).endsWith(" NET"));
+  assert.equal(gross.length, r.runs.length, "one gross shape per run");
+  assert.ok(gross.every((x) => x.measure_role === "surface_area" && x.origin.actor === "agent" && x.origin.reviewed === false));
+  assert.ok(net.every((x) => x.measure_role === "linear"), "net pieces are lengths");
+  const netLf = net.reduce((a, x) => a + x.computed.perimeter_lf, 0);
+  near(netLf * 0.3048, r.totals.net_m, 0.05, "the NET pieces sum to the net length");
   const ext = r.classes.find((c) => c.side === "ext")!;
   near(ext.area_gross_m2!, ext.gross_m * 9 * 0.3048, 0.05, "area = gross length × stated height");
-  assert.ok(s.summary().conditions.some((c: any) => c.finish_tag === "WALL EXT 300"));
+  assert.equal(ext.area_net_m2, null, "net area needs the window's height, which no schedule gives here");
+  const again = await s.measureWalls(key, { commit: true, height_ft: 9 });
+  assert.equal(again.committed, 0, "nothing filed twice");
+  assert.equal(again.skipped_already_filed, r.committed);
+  assert.equal(s.exportPayload().shapes.length, shapes.length);
 });
 
 test("walls: a lone short band and a wall-type legend are not walls", async () => {
@@ -145,11 +154,11 @@ test("thickness classes: one partition type read as 95, 100 and 106 mm is one cl
 });
 
 test("sheet discipline: a ventilation plan refuses with the title's words; the architectural plan does not", async () => {
-  const vent = pdf(building(), ["1000 60 Td (VENTILASJON PLAN 2) Tj"]);
+  const vent = pdf(building(), ["/F1 20 Tf 1000 60 Td (VENTILASJON PLAN 2) Tj"]);
   const { s, key } = await open(vent);
-  await assert.rejects(s.measureWalls(key, {}), /mechanical sheet \(title block: "VENTILASJON PLAN 2"\)/);
+  await assert.rejects(s.measureWalls(key, {}), /mechanical sheet \(title block: "VENTILASJON PLAN/);
   await assert.rejects(s.countWindows(key, {}), /mechanical sheet/);
-  const arch = pdf(building(), ["1000 60 Td (PLANTEGNING 1. ETASJE) Tj"]);
+  const arch = pdf(building(), ["/F1 20 Tf 1000 60 Td (PLANTEGNING 1. ETASJE) Tj"]);
   const a = await open(arch);
   assert.ok((await a.s.measureWalls(a.key, {})).runs.length > 0);
   // a note sentence that mentions a trade names no drawing; a revision index is no sheet number

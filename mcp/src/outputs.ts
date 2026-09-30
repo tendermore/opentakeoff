@@ -257,6 +257,7 @@ export const measureWallsOutput = {
   withheld_truncated: z.number().int().optional(),
   committed: z.number().int(),
   shape_ids: z.array(z.string()).optional(),
+  skipped_already_filed: z.number().int().optional().describe("Runs already filed under the same tag at the same place — not filed again"),
   note: z.string(),
 };
 

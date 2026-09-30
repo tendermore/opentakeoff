@@ -7,8 +7,9 @@
 // times its scale. Measured as walls, every one of them is a confident wrong
 // number. The title block names the discipline in the drafter's own words
 // (English and Nordic), the drawing number carries a discipline code, and
-// every drawing on a sheet prints its own scale under its title. Nothing here
-// reads layers or any one project's naming.
+// every drawing on a sheet prints its own scale under its title. This module
+// reads only positioned text and the drawing number: no PDF layer names, no
+// geometry, and no one project's naming.
 import { scaleFromLabel } from "./sheets.ts";
 
 export type Discipline =
@@ -24,18 +25,36 @@ export interface DisciplineReading {
 
 interface Span { str: string; x0: number; y0: number; x1: number; y1: number }
 
-// Title words, English and Nordic. Each names what the drawing SHOWS, so a
-// title naming one of these is a sheet of that trade whatever else it says.
-const TITLE_TERMS: Array<[Discipline, RegExp]> = [
-  ["architectural", /\b(BRANNTEGNING|PLANTEGNING|FLOOR PLAN|ARKITEKT\w*|MØBLERINGSPLAN|FURNITURE PLAN)\b/],
+// Title words, English and Nordic. A trade word names what the drawing SHOWS
+// and wins over the generic plan words it usually sits beside ("ELECTRICAL
+// FLOOR PLAN", "PLANTEGNING VENTILASJON"); the plan words only answer
+// "architectural" when no trade is named.
+const ARCH_TERMS = /\b(BRANNTEGNING|PLANTEGNING|FLOOR PLAN|ARKITEKT\w*|MØBLERINGSPLAN|FURNITURE PLAN)\b/;
+const TRADE_TERMS: Array<[Discipline, RegExp]> = [
   ["demolition", /\b(RIVING|RIVEPLAN|RIVNINGSPLAN|DEMOLITION|DEMO PLAN)\b/],
-  ["mechanical", /\b(VENTILASJON\w*|LUFTBEHANDLING|KANALPLAN|HVAC|MECHANICAL|DUCTWORK|SHEET METAL|OPPVARMING|KJØLING|VARME(ANLEGG)?)\b/],
+  ["mechanical", /\b(VENTILASJON\w*|LUFTBEHANDLING|KANALPLAN|HVAC|MECHANICAL|DUCTWORK|SHEET METAL|OPPVARMING|KJØLING|VARMEANLEGG|VVS\w*)\b/],
   ["plumbing", /\b(SANITÆR\w*|RØRANLEGG|VANNFORSYNING|AVLØP\w*|PLUMBING|DOMESTIC WATER|SANITARY)\b/],
   ["fire_protection", /\b(SPRINKLER\w*|FIRE PROTECTION|FIRE SUPPRESSION)\b/],
   ["electrical", /\b(ELKRAFT|ELEKTRO\w*|EKOM|SVAKSTRØM|BELYSNING\w*|ELECTRICAL|LIGHTING|POWER PLAN|LOW VOLTAGE)\b/],
   ["structural", /\b(BÆRESYSTEM|FUNDAMENT\w*|ARMERING\w*|DEKKE OVER|STRUCTURAL|FRAMING PLAN|FOUNDATION PLAN)\b/],
   ["civil_landscape", /\b(LANDSKAP\w*|UTOMHUS\w*|SITUASJONSPLAN|VA-?PLAN|GRAVEPLAN|CIVIL|SITE PLAN|GRADING|LANDSCAPE)\b/],
 ];
+// A trade word naming a ROOM ("MECHANICAL ROOM", "ELEKTROROM",
+// "SPRINKLERSENTRAL") labels a space on an architectural plan, not the sheet.
+const ROOM_AFTER = /^\s*(ROOM|RM|CLOSET|CL|SHAFT|SPACE|YARD|SJAKT|ROM|SENTRAL|RAPPORT)\b/;
+const ROOM_SUFFIX = /(ROM|ROMMET|SENTRAL|SENTRALEN|SJAKT|SKAP)$/;
+
+function tradeOf(t: string): { d: Discipline; word: string } | undefined {
+  for (const [d, re] of TRADE_TERMS) {
+    const g = new RegExp(re.source, "g");
+    for (const m of t.matchAll(g)) {
+      const word = m[0], after = t.slice((m.index ?? 0) + word.length);
+      if (ROOM_SUFFIX.test(word) || ROOM_AFTER.test(after)) continue;
+      return { d, word };
+    }
+  }
+  return undefined;
+}
 
 // Device words a trade's legend lists (stems; English and Nordic).
 const LEGEND_TERMS: Array<[Discipline, string[]]> = [
@@ -58,40 +77,51 @@ const CODE_TERMS: Array<[Discipline, RegExp]> = [
   ["civil_landscape", /^(LARK|L|C)$/],
 ];
 
-/** Title text is at least this many times the sheet's median text height. */
+/** Title text is at least this many times the plan's running text height. */
 const TITLE_SIZE = 1.25;
 
 const up = (s: string) => s.toUpperCase().replace(/\s+/g, " ").trim();
+const median = (xs: number[]) => { const a = xs.filter((h) => h > 0).sort((p, q) => p - q); return a.length ? a[a.length >> 1] : 0; };
 
-/** The discipline the title block states. The title zone is the bottom-right
- *  corner or the right-edge strip where title blocks sit; the words there name
- *  the drawing. A drawing number's discipline code answers when the words do not. */
+/** The discipline the title block states. The title block is the bounded
+ *  bottom-right corner or right-edge strip; only title-size lines there count
+ *  (a room label or a legend line in running text never decides). A trade
+ *  named by any title line wins over the generic plan words; a drawing
+ *  number's discipline code answers when the words do not. */
 export function sheetDiscipline(spans: Span[], width: number, height: number, sheetNumber?: string | null): DisciplineReading {
-  const zone = spans.filter((s) => {
+  const inZone = (s: Span) => {
     const cx = (s.x0 + s.x1) / 2, cy = (s.y0 + s.y1) / 2;
-    return (cx >= width * 0.55 && cy >= height * 0.6) || cx >= width * 0.82;
-  });
-  // the largest title-block text first: the drawing title outranks a legend line
-  // a drawing title is set larger than the sheet's running text
-  const hs = spans.map((s) => s.y1 - s.y0).filter((h) => h > 0).sort((a, b) => a - b);
-  const medH = hs.length ? hs[hs.length >> 1] : 0;
-  // the bottom-right corner is the title block itself; along the right-edge
-  // strip plan text can reach in, so there only title-size text counts
-  const corner = (s: Span) => (s.x0 + s.x1) / 2 >= width * 0.55 && (s.y0 + s.y1) / 2 >= height * 0.75;
-  const bySize = zone.filter((s) => corner(s) || s.y1 - s.y0 >= TITLE_SIZE * medH).sort((a, b) => (b.y1 - b.y0) - (a.y1 - a.y0));
-  for (const s of bySize.slice(0, 40)) {
-    const t = up(s.str);
-    // a field label ("Sprinkleranlegg:") names no drawing
-    // a drawing title is a short line; a note or legend sentence that merely
-    // mentions a trade ("…see casework, plumbing fixture…") is not
-    if (t.length > 60 || /:\s*$/.test(t) || /[,;()]/.test(t) || t.split(" ").length > 6) continue;
+    return (cx >= width * 0.6 && cy >= height * 0.7) || cx >= width * 0.85;
+  };
+  const zone = spans.filter(inZone);
+  // title size is measured against the PLAN's running text (the title block
+  // itself may hold most of a sparse sheet's text). In the title-block corner
+  // a title line is at least the plan's small running text; along the right
+  // strip, where plan labels can reach in, it must stand out above the median.
+  const outside = spans.filter((s) => !inZone(s)).map((s) => s.y1 - s.y0).filter((h) => h > 0).sort((a, b) => a - b);
+  const runH = median(outside.length >= 20 ? outside : spans.map((s) => s.y1 - s.y0));
+  const smallH = outside.length >= 20 ? outside[Math.floor(outside.length / 4)] : runH;
+  const corner = (s: Span) => (s.x0 + s.x1) / 2 >= width * 0.6 && (s.y0 + s.y1) / 2 >= height * 0.7;
+  const bigEnough = (s: Span) => outside.length < 5 || s.y1 - s.y0 >= (corner(s) ? smallH : TITLE_SIZE * runH);
+  const titles = zone.filter(bigEnough).sort((a, b) => (b.y1 - b.y0) - (a.y1 - a.y0)).slice(0, 40);
+  let trade: DisciplineReading | undefined, arch: DisciplineReading | undefined;
+  for (const s of titles) {
+    // "(LEVEL 2)" and similar qualifiers are stripped, not a reason to skip
+    const t = up(s.str.replace(/\([^)]*\)/g, " "));
+    // a field label ("Sprinkleranlegg:") or a note sentence names no drawing
+    if (!t || t.length > 60 || /:\s*$/.test(t) || /[,;]/.test(t) || t.split(" ").length > 6) continue;
     // a notes or legend heading heads text, not a drawing
     if (/(NOTES?|NOTER|MERKNAD\w*|LEGEND|TEGNFORKLARING)\b|\bGENERAL\b/.test(t)) continue;
-    for (const [d, re] of TITLE_TERMS) if (re.test(t)) return { discipline: d, evidence: s.str.trim(), source: "title" };
+    const tr = tradeOf(t);
+    if (tr && !trade) trade = { discipline: tr.d, evidence: s.str.trim(), source: "title" };
+    if (!tr && !arch && ARCH_TERMS.test(t)) arch = { discipline: "architectural", evidence: s.str.trim(), source: "title" };
   }
+  if (trade) return trade;
+  if (arch) return arch;
   // a legend of one trade's devices (sockets, switches, diffusers …) in the
   // title zone names the sheet when its title does not
-  const words = new Set(zone.flatMap((s) => up(s.str).split(/[^A-ZÆØÅ]+/)));
+  // (legend lines at least the plan's small running text: fine print never decides)
+  const words = new Set(zone.filter((s) => s.y1 - s.y0 >= smallH).flatMap((s) => up(s.str).split(/[^A-ZÆØÅ]+/)));
   for (const [d, list] of LEGEND_TERMS) {
     const hits = list.filter((w) => [...words].some((x) => x.startsWith(w)));
     if (hits.length >= 3) return { discipline: d, evidence: `legend: ${hits.join(", ").toLowerCase()}`, source: "title" };
