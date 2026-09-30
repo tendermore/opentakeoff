@@ -71,7 +71,7 @@ export function layerNameTokens(raw: string): string[] {
  * convention ArchiCAD/Revit exports carry ("23-- Yttervegger", "242- Ikke-bærende
  * innervegger", "2411 Bærende innervegger betong", "862- Nettoareal"). A name
  * must follow the code: a bare "30" is a pen number as often as anything. */
-const NS3451_CODE_RE = /^([2-8]\d{1,3})(?:-{1,3}\s*|[\s_]+)[^\s\d_-]/;
+const NS3451_CODE_RE = /^([2-8]\d{1,3})[\s_-]+[^\s_-]/;
 
 /** NS 3451 code → role. Walls (23/24), stairs/rails/balconies (28) and the area
  * zones (86: the architect's own room outlines, the AIA "AREA"/"RM" family)
