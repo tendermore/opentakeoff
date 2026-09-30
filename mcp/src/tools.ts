@@ -300,6 +300,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   }, run("measure", async (a) => {
     if (a.kind === "area") {
       needPoints("measure", "area", a.points, 3);
+      if (a.condition && a.role === "floor_area") await session.prepareFloorCheck(a.sheet);   // the drawn-walls check reads the geometry
       return { kind: "area", ...(await session.measurePolygon(a.sheet, a.points, { condition: a.condition, role: a.role, arc_through: a.arc_through })) };
     }
     if (a.kind === "length") return { kind: "length", ...(await session.measureLine(a.sheet, a.points, { condition: a.condition, arc_through: a.arc_through, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
@@ -382,6 +383,8 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     if (a.action === "undo") return { action: "undo", ...(await session.undoLast(a.n)) };
     need("edit_takeoff", a.action, a, "shape_id");
     if (a.action === "delete") return { action: "delete", ...(await session.deleteShape(a.shape_id)) };
+    const edited = session.shapes.find((x) => x.id === a.shape_id);
+    if (edited) await session.prepareFloorCheck(edited.sheet_id);
     return { action: "edit", ...(await session.editShape(a.shape_id, { verts: a.points, condition: a.condition, role: a.role, label: a.label, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
   }));
 
@@ -544,6 +547,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
       case "revise": {
         need("proposal", "revise", a, "proposal_id", "shapes");
         const shapes = a.shapes.map(({ points, ...rest }: any) => ({ ...rest, verts: points }));
+        for (const sh of shapes) if (sh.role === "floor_area") await session.prepareFloorCheck(sh.sheet);
         return { action: "revise", ...(await session.reviseProposal(a.proposal_id, shapes)) };
       }
       case "withdraw":

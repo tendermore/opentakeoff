@@ -97,7 +97,7 @@ Fields:
 
 ## `takeoff_rooms`
 
-Rooms from the plan's own linework. detect (default): every room label on the sheet is flooded through the sealed engine — ink flood, walls-only masks, net and drawn candidates, printed-area check — and each room returns label, area, printed area, method and confidence; every skipped room is counted with its reason in withheld. at: one room at a point. Commit with condition (one tag) or assign_from_schedule (each room's own schedule row). Then check with view_sheet overlay:true.
+Rooms from the plan's own linework. detect (default): every room label on the sheet is flooded through the sealed engine — ink flood, walls-only masks, net and drawn candidates, printed-area check — and each room returns label, area, printed area, method and confidence; every skipped room is counted with its reason in withheld. A room with no printed area to check it (US sheets; European sheets without area stamps, which seed from room names) must follow the drawn walls instead: every edge along wall faces except across an opening, and no wall inside. Such rooms return check drawn_walls with wall_coverage; the rest are withheld in off_walls[] with the edge that left the walls. The same check refuses a floor commit from any tool (OFF_DRAWN_WALLS). A call stops after 100 s (not_tried; call again to continue). at: one room at a point. Commit with condition (one tag) or assign_from_schedule (each room's own schedule row). Then check with view_sheet overlay:true.
 
 Registered only when the One-Click gate is lifted (`OPENTAKEOFF_ONE_CLICK=1`).
 

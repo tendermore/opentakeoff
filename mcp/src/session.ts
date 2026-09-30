@@ -44,6 +44,8 @@ import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
 import { wallSegIndices } from "../../web/src/lib/wallpairs.ts";
 import { snapEdges } from "../../web/src/lib/edgesnap.ts";
+import { NORDIC_TEXT_RE } from "../../web/src/lib/sheetvocab.ts";
+import { checkOnWalls, closeOpenings, toInsideFace, hasWallFaces, COVERED as WALL_COVERED, type WallCheck, type DoorReach } from "../../web/src/lib/wallcheck.ts";
 import { buildNet, netRoomAt } from "../../web/src/lib/netroom.js";
 import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/drawnrooms.ts";
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
@@ -387,11 +389,16 @@ export interface Shape {
  * number. */
 export type FloorCheck =
   | { status: "verified"; by: "printed_area"; printed_m2: number }
-  | { status: "unverified"; reason: "no_printed_areas_on_sheet" | "no_printed_area_inside" | "no_scale" };
+  /** No printed area to compare with: the outline runs along drawn wall faces
+   * (wallcheck.ts) — `coverage` is the share of its length that does. */
+  | { status: "verified"; by: "drawn_walls"; coverage: number }
+  /** no_wall_linework: no printed area to compare with, and the sheet draws no
+   * wall faces the drawn-walls check can read (a scan, single-line walls). */
+  | { status: "unverified"; reason: "no_printed_areas_on_sheet" | "no_printed_area_inside" | "no_scale" | "no_wall_linework" };
 
-/** The one-line form tool replies carry: "printed_area" or "unverified: <reason>". */
+/** The one-line form tool replies carry: "printed_area", "drawn_walls" or "unverified: <reason>". */
 export const checkText = (check: FloorCheck | undefined): string | undefined =>
-  !check ? undefined : check.status === "verified" ? "printed_area" : `unverified: ${check.reason}`;
+  !check ? undefined : check.status === "verified" ? check.by : `unverified: ${check.reason}`;
 
 /** The frozen pre-cut snapshot of a cutout parent (canvas resolveCutout's
  * parent_prev) — durable on the deduct's origin, read back by delete. */
@@ -563,6 +570,9 @@ interface SheetState {
   /** Walls-only masks for unlayered sheets (wallpairs.ts), doorways sealed, each with the per-segment
    * flag of the lines it was built from; scale baked in like `mask`. See ensureWallMasks. */
   wallMasks?: { mo: MaskObj; faces: Uint8Array }[];
+  /** Wall faces the drawn-walls check reads (wallcheck.ts): `pairs` = paired wall lines, `faces` = those
+   * plus filled poché; built for scale `upp` (the pairing thresholds are metres). */
+  wallFaces?: { upp: number; faces: Uint8Array; pairs: Uint8Array; ids: Uint32Array };
   /** Hinged doors read off their swings (doors.ts); scale baked in like `mask`.
    * null = no vector linework or no scale to read them with. */
   doors?: { doors: Door[]; rejected: RejectedSwing[] } | null;
@@ -727,6 +737,22 @@ const sheetSummary = (s: SheetState): SheetSummary => ({
 const WHITE_FILL_LUM = 250;
 /** How far (working-raster cells) a walls-flood edge may move onto the wall face it parallels. */
 const WALL_SNAP_CELLS = 3;
+/** A room name as a sheet prints it: starts with a letter, one short line
+ * ("Sov", "Bad/vask", "Stue/kjøkken", "Tekn.rom"); running notes are longer. */
+const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
+/** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
+ * floods in well under a second; one still running after this is flooding a
+ * whole sheet through a leak, and is no room's outline. */
+const SEED_BUDGET_MS = 10_000;
+/** Per-call budget (OPENTAKEOFF_CALL_BUDGET_MS): a sandboxed agent's command
+ * times out at 120 s, so a call stops before that and reports the labels it
+ * did not reach (not_tried); a repeat call continues. */
+const CALL_BUDGET_MS = 100_000;
+/** A host-set budget (ms) overrides the default; 0 turns it off. */
+const budgetMs = (env: string, fallback: number): number => {
+  const v = process.env[env];
+  return v === undefined || v === "" ? fallback : Number(v) || 0;
+};
 
 export class Session {
   file: string | null = null;
@@ -1606,6 +1632,80 @@ export class Session {
     throw new UserError(`PRINTED_AREA_DISAGREES: this outline measures ${round2(traced)} m² but the room area printed inside it says ${printed}. Not committed. The outline leaks through an opening, stops at furniture or text, or misses part of the room: fix it on a close-up (view_sheet with overlay), or report the room as not measured with both numbers.`);
   }
 
+  /** The wall faces of a sheet for the drawn-walls check, from its vector
+   * geometry at its scale; null before prepareFloorCheck has read the geometry,
+   * or without a scale. Filled poché counts as wall face except white fills,
+   * which as often mask a fixture as draw a wall (see ensureWallMasks). */
+  private wallFacesOf(s: SheetState): { faces: Uint8Array; pairs: Uint8Array; ids: Uint32Array } | null {
+    if (!s.geo || s.upp == null) return null;
+    if (s.wallFaces?.upp !== s.upp) {
+      const geo = s.geo;
+      const pairs = wallSegIndices(geo.segs, geo.meta, 1 / (s.upp * 0.3048));
+      const faces = Uint8Array.from(pairs);
+      for (const sp of geo.subpaths ?? []) if (sp.flags & SEG_FILLONLY && sp.fillLum < WHITE_FILL_LUM) faces.fill(1, sp.i0, sp.i1);
+      const ids: number[] = [];
+      for (let i = 0; i < faces.length; i++) if (faces[i] || pairs[i]) ids.push(i);
+      s.wallFaces = { upp: s.upp, faces, pairs, ids: Uint32Array.from(ids) };
+    }
+    return s.wallFaces;
+  }
+
+  /** Read what the drawn-walls check needs (geometry, doors) before a floor
+   * outline commits: every tool that commits floor outlines awaits this, so
+   * commit() — which is synchronous — always has it. */
+  async prepareFloorCheck(name: string): Promise<void> {
+    const s = this.sheet(name);
+    await this.ensureGeometry(s);
+    if (s.upp != null) await this.ensureDoors(name);
+  }
+
+  /** A floor outline with no printed area to check it must follow the drawn
+   * walls (wallcheck.ts): along wall faces for most of every edge, leaving them
+   * only across an opening, and holding no wall inside. Verified when it does;
+   * refused with the numbers when it does not. `null` when the geometry was
+   * never read (a direct Session call that skipped prepareFloorCheck); the
+   * printed-area result stands then. */
+  private checkAgainstDrawnWalls(s: SheetState, vertsPx: Point[]): FloorCheck | null {
+    const walls = this.wallFacesOf(s);
+    if (!walls || !s.geo) return null;
+    if (!hasWallFaces(walls.faces)) return { status: "unverified", reason: "no_wall_linework" };
+    const r = this.wallCheck(s, vertsPx);
+    if (r.pass) return { status: "verified", by: "drawn_walls", coverage: r.coverage };
+    throw new UserError(`OFF_DRAWN_WALLS: ${Session.wallCheckText(r)} Not committed. There is no printed room area to check this outline against, so it must follow the drawn walls: fix it on a close-up (view_sheet with overlay), or report the room as not measured.`);
+  }
+
+  private wallCheck(s: SheetState, vertsPx: Point[]): WallCheck {
+    const walls = this.wallFacesOf(s)!;
+    return checkOnWalls(vertsPx as [number, number][], s.geo!.segs, s.geo!.meta, walls.faces, walls.pairs, 1 / (s.upp! * 0.3048), (s.doors?.doors ?? []) as DoorReach[], walls.ids);
+  }
+
+  /** A traced outline put onto the drawing's walls before it is judged: each
+   * edge snapped onto the wall face it parallels (within `tolPx`; 0 for an
+   * outline built from the vector lines themselves), moved in to the inside
+   * finished face, and closed across its openings along the wall line. */
+  private onWalls(s: SheetState, ring: Point[], tolPx: number): { ring: Point[]; w: WallCheck } {
+    const walls = this.wallFacesOf(s)!, geo = s.geo!, pxPerM = 1 / (s.upp! * 0.3048);
+    const onFace = tolPx > 0 ? snapEdges(ring as [number, number][], geo.segs, geo.meta, pxPerM, tolPx, { allowed: walls.faces }) : ring as [number, number][];
+    const refined = closeOpenings(toInsideFace(onFace, geo.segs, geo.meta, walls.faces, pxPerM, walls.ids), pxPerM) as Point[];
+    return { ring: refined, w: this.wallCheck(s, refined) };
+  }
+
+  private static wallCheckText(r: WallCheck): string {
+    return r.reason === "wall_inside"
+      ? `this outline holds ${r.inside_wall_m} m of drawn wall inside it — two or more rooms measured as one, or an outline across a wall.`
+      : r.weakest
+        ? `edge ${r.weakest.edge} of this outline (${r.weakest.length_m} m) runs along drawn walls for ${Math.round(r.weakest.coverage * 100)}% of its length (needs ${Math.round(WALL_COVERED * 100)}%; the whole outline ${Math.round(r.coverage * 100)}%) — it stops at furniture or text, or crosses open floor.`
+        : "this outline has no edge long enough to lie along a wall.";
+  }
+
+  /** Every floor commit's check: the room area printed inside the outline
+   * where there is one; the drawn walls where there is none. */
+  private checkFloor(s: SheetState, vertsPx: Point[], areaSf: number | undefined): FloorCheck {
+    const printed = this.checkAgainstPrintedArea(s, vertsPx, areaSf);
+    if (printed.status === "verified" || printed.reason === "no_scale") return printed;
+    return this.checkAgainstDrawnWalls(s, vertsPx) ?? printed;
+  }
+
   /** One floor, counted once: a floor outline may not claim the floor another
    * outline of the same condition already claims (beyond the hairline share
    * two rooms traced to a shared wall can have — scopeCollision.ts's
@@ -1624,7 +1724,7 @@ export class Session {
   }
 
   private commit(s: SheetState, tag: string, role: MeasureRole, vertsPx: Point[], computed: Shape["computed"], origin?: Shape["origin"], flood?: FloodEvidence): Shape {
-    const check = role === "floor_area" ? this.checkAgainstPrintedArea(s, vertsPx, computed.area_sf) : undefined;
+    const check = role === "floor_area" ? this.checkFloor(s, vertsPx, computed.area_sf) : undefined;
     if (role === "floor_area") this.refuseOverlap(s, tag, vertsPx);
     // Flood provenance + confidence (RFC #60) stamp HERE, exactly where the
     // assignment provenance already stamps: a commit path that hands over its
@@ -1707,10 +1807,22 @@ export class Session {
     // contours wobble) and NO vertex snapping — a scan has no true endpoints,
     // and pulling room corners onto the title block's few vector endpoints
     // would corrupt the ring.
-    const ring = raster
+    let ring = raster
       ? traceRegion(f, RASTER_RDP_EPS)
       : snapVertices(traceRegion(f), (px, py, d) => (s.snap ? nearestSnap(s.snap, px, py, d) : null), SNAP_TOL);
     if (ring.length < 3) throw new UserError("Couldn't trace that space into a polygon.");
+    // a floor with no printed area inside: onto the drawn walls, as detect does,
+    // when that outline follows them (the commit checks it either way)
+    if (!raster && opts.role === "floor_area" && s.upp != null) {
+      await this.prepareFloorCheck(name);
+      const walls = this.wallFacesOf(s);
+      let unprinted = false;
+      try { unprinted = this.checkAgainstPrintedArea(s, ring, ringArea(ring) * s.upp * s.upp).status === "unverified"; } catch { /* a printed area disagrees: that check decides */ }
+      if (walls && hasWallFaces(walls.faces) && unprinted) {
+        const on = this.onWalls(s, ring, WALL_SNAP_CELLS / ((await this.maskWithLayers(name, opts.layers))?.ws || 1));
+        if (on.w.pass) ring = on.ring;
+      }
+    }
     const areaPx2 = ringArea(ring);
     const perimPx = closedMetrics(ring).perim;
     if (s.upp == null) {
@@ -1763,7 +1875,14 @@ export class Session {
     }
     this.flushCommits("one_click");
     const mixed = this.scaleWarningFor(s, ring);
-    const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
+    // a preview states what the commit would record, or why it would refuse
+    let check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
+    if (!shape_id && opts.role === "floor_area") {
+      try { check = checkText(this.checkFloor(s, ring, area_sf)); } catch (error) {
+        if (!(error instanceof UserError)) throw error;
+        check = `would be refused: ${error.message.split(" Not committed.")[0]}`;
+      }
+    }
     return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id } : {}), ...(check ? { check } : {}), ...(mixed ? { warning: mixed } : {}) };
   }
 
@@ -1836,29 +1955,36 @@ export class Session {
     // labels with BBOXES: same tokenization as roomLabelSeeds, but the ladder
     // and the bubble test need the label's box, not just its anchor
     const labels: { str: string; bbox: LabelBBox }[] = [];
+    const names: { str: string; bbox: LabelBBox }[] = [];
     for (const sp of s.spans) {
       const text = (sp.str || "").trim();
       // a whole-number stamp ("12 m²") would otherwise read as room number "12"
       if (AREA_STAMP_RE.test(text)) { labels.push({ str: text, bbox: sp }); continue; }
       const num = text.split(/\s+/).find((tok) => ROOM_LABEL_RE.test(tok));
       if (num) labels.push({ str: num, bbox: sp });
+      else if (ROOM_NAME_RE.test(text)) names.push({ str: text, bbox: sp });
     }
     // A sheet that tags its rooms with printed areas follows the European
     // convention: there, bare 2–3 digit numbers are dimensions and levels far
     // more often than room numbers, and a numbered room also carries a stamp.
+    // A European sheet without stamps names its rooms instead ("Sov", "Bad",
+    // "Kontor"): its bare numbers are still dimensions and levels, so it seeds
+    // from the words, and the drawn-walls check decides which of them sit in a
+    // room. US sheets number their rooms; the numbers stay the seeds there.
     const stamped = labels.filter((l) => printedAreaM2(l.str) != null);
     if (stamped.length >= 3) labels.splice(0, labels.length, ...stamped);
+    else if (s.spans.some((sp) => NORDIC_TEXT_RE.test(sp.str || ""))) labels.splice(0, labels.length, ...stamped, ...names);
 
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0 };
-    // Time limits (host-set, off by default): a per-room budget turns a trace
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, implausible: 0, unresolved: 0, area_disagrees: 0, off_walls: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0 };
+    // Time limits (defaults above; a host may set or, with 0, lift them): a per-room budget turns a trace
     // that runs away into "no outline here"; a per-call budget stops the sweep
     // and reports the labels not reached, which a repeat call picks up — labels
     // inside a room this sheet already measured are skipped, never re-measured.
-    const seedBudgetMs = Number(process.env.OPENTAKEOFF_SEED_BUDGET_MS) || 0;
-    const callBudgetMs = Number(process.env.OPENTAKEOFF_CALL_BUDGET_MS) || 0;
+    const seedBudgetMs = budgetMs("OPENTAKEOFF_SEED_BUDGET_MS", SEED_BUDGET_MS);
+    const callBudgetMs = budgetMs("OPENTAKEOFF_CALL_BUDGET_MS", CALL_BUDGET_MS);
     const callDeadline = callBudgetMs ? Date.now() + callBudgetMs : 0;
     // a room counts as measured when the agent committed a floor shape around
     // this label and no other: a hand-traced or whole-floor outline holds many
@@ -1870,7 +1996,8 @@ export class Session {
       .filter((r) => labels.filter((l) => pointInPoly(...labelAt(l), r)).length === 1);
     const disagreements: { label: string; printed_m2: number; traced_m2: number; seed: [number, number] }[] = [];
     const unresolved: { label: string; reason: string; area_sf: number; perimeter_lf: number; seed: [number, number] }[] = [];
-    type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence | null; method: "one_click_v1" | "net_v1" | "drawn_v1"; netFaces?: number; netStarved?: boolean; merged: string[] };
+    type Cand = { label: string; ring: Point[]; areaPx2: number; perimPx: number; seed: readonly [number, number] | number[]; ev: FloodEvidence | null; method: "one_click_v1" | "net_v1" | "drawn_v1"; netFaces?: number; netStarved?: boolean; merged: string[]; walls?: WallCheck };
+    const offWalls: { label: string; reason: string; seed: [number, number] }[] = [];
     const byRing = new Map<string, Cand>();
     const order: Cand[] = [];
     // one mask, one mppf for the whole sweep — the raster mask carries no
@@ -1878,12 +2005,20 @@ export class Session {
     // is passed explicitly there, exactly as oneClick does
     const sweepMppf = raster ? (s.upp ? mask.ws / s.upp : 0) : (mask.mppf || 0);
     // flattened sheets: a second, walls-only mask for rooms the ink flood cuts short at furniture
-    const wallMasks = !raster && !opts.layers && s.upp != null && stamped.length ? await this.ensureWallMasks(name) : [];
+    const wallMasks = !raster && !opts.layers && s.upp != null ? await this.ensureWallMasks(name) : [];
     const wallMask = wallMasks[0]?.mo ?? null;
+    // no printed area to choose between candidates: the drawn walls choose
+    if (!raster && s.upp != null) await this.prepareFloorCheck(name);
+    const walls = raster ? null : this.wallFacesOf(s);
+    const judgeWalls = !!walls && hasWallFaces(walls.faces);
     for (const lb of labels) {
       if (callDeadline && Date.now() > callDeadline) { withheld.not_tried++; continue; }
       const [cx, cy] = labelAt(lb);
       if (measuredRings.some((r) => pointInPoly(cx, cy, r))) { withheld.already_measured++; continue; }
+      // more text inside a room already found on the drawn walls (its name's
+      // neighbours: a finish, a height) floods to that room again: counted there
+      const home = printedAreaM2(lb.str) == null ? order.find((c) => c.walls && pointInPoly(cx, cy, c.ring)) : undefined;
+      if (home) { home.merged.push(lb.str); withheld.duplicate++; continue; }
       const traceWith = (m: MaskObj, mppf: number) => {
       let ring: Point[] | null = null, ev: FloodEvidence | null = null, seed: [number, number] | null = null;
       let sawBubble = false, sawDegenerate = false, sawUnowned = false;
@@ -1939,6 +2074,49 @@ export class Session {
       let { ring, ev, seed } = t;
       const { sawBubble, sawDegenerate, sawUnowned } = t;
       let method: Cand["method"] = "one_click_v1", netFaces: number | undefined, netStarved: boolean | undefined;
+      let wallsResult: WallCheck | undefined;
+      // No printed area: every engine's outline, snapped onto the wall faces it
+      // parallels, until one follows the drawn walls (wallcheck.ts). The ink
+      // flood first; the walls-only floods where furniture stopped it; then
+      // the wall network and the drafter's closed figures at the same probes.
+      if (printed == null && judgeWalls && s.upp != null) {
+        const onWalls = (r: Point[] | null, tolPx: number): { ring: Point[]; w: WallCheck } | null => {
+          if (!r || r.length < 3) return null;
+          const { ring: snapped, w } = this.onWalls(s, r, tolPx);
+          wallsResult = w.pass || !wallsResult ? w : wallsResult;
+          return w.pass ? { ring: snapped, w } : null;
+        };
+        let hit = t.ring ? onWalls(t.ring, WALL_SNAP_CELLS / (mask.ws || 1)) : null;
+        for (const wm of wallMasks) {
+          if (hit) break;
+          const w = traceWith(wm.mo, wm.mo.mppf || 0);
+          hit = onWalls(w.ring, WALL_SNAP_CELLS / (wm.mo.ws || 1));
+          if (hit) ({ ev, seed } = w);
+          if (!ring && w.ring) ({ ring, ev, seed } = w);
+        }
+        if (!hit) {
+          const pxPerFt = 1 / s.upp;
+          const { net, drawn } = await this.roomEngines(s);
+          for (const probe of seedLadderPx(lb.bbox)) {
+            if (callDeadline && Date.now() > callDeadline) break;
+            try {
+              const r = netRoomAt(net, probe[0], probe[1], pxPerFt) as { ring: Point[]; holes?: Point[][]; areaPx: number; faces: number; starved: boolean } | null;
+              if (r && !r.holes?.length && r.ring.length >= 3 && pointInPoly((lb.bbox.x0 + lb.bbox.x1) / 2, (lb.bbox.y0 + lb.bbox.y1) / 2, r.ring) && (hit = onWalls(r.ring, 0))) {
+                ev = null; seed = probe; method = "net_v1"; netFaces = r.faces; netStarved = r.starved; break;
+              }
+            } catch { /* an engine failure at one probe is a missing candidate */ }
+            const d = roomAtPoint(drawn, probe[0], probe[1]);
+            if (d && (hit = onWalls(d.verts, 0))) { ev = null; seed = probe; method = "drawn_v1"; break; }
+          }
+        }
+        if (hit) ring = hit.ring;
+        else if (ring && seed) {
+          // an outline, and none of them follows the drawn walls: withheld with the numbers
+          withheld.off_walls++;
+          offWalls.push({ label: lb.str, reason: Session.wallCheckText(wallsResult!), seed: [round1(seed[0]), round1(seed[1])] });
+          continue;
+        }
+      }
       // neither flood agrees with the printed area: the canvas's other two room
       // engines, the wall network and the drafter's own closed figures, at the
       // same probes — kept only when they agree, so they add rooms, never guesses
@@ -1975,6 +2153,7 @@ export class Session {
       const cand: Cand = {
         label: lb.str, ring, areaPx2: ringArea(ring), perimPx: closedMetrics(ring).perim,
         seed, ev, method, ...(netFaces != null ? { netFaces, netStarved } : {}), merged: [],
+        ...(printed == null && judgeWalls && wallsResult?.pass ? { walls: wallsResult } : {}),
       };
       byRing.set(key, cand);
       order.push(cand);
@@ -2057,6 +2236,7 @@ export class Session {
             // measured, is withheld, not a failed sweep
             if (!(error instanceof UserError)) throw error;
             if (error.message.startsWith("PRINTED_AREA_DISAGREES")) withheld.area_disagrees++;
+            else if (error.message.startsWith("OFF_DRAWN_WALLS")) withheld.off_walls++;
             else if (error.message.startsWith("OVERLAPS_MEASURED")) withheld.overlaps_measured++;
             else throw error;
             return null;
@@ -2069,8 +2249,10 @@ export class Session {
           shape.label = c.label;
           shape_id = shape.id;
         }
-        const check = checkText(this.shapes.find((x) => x.id === shape_id)?.check);
-        return { ...common, area_sf, perimeter_lf, ...(shape_id ? { shape_id, condition: tag } : {}), ...(check ? { check } : {}) };
+        // a preview states the check the commit would record
+        const check = shape_id ? checkText(this.shapes.find((x) => x.id === shape_id)?.check)
+          : printed != null ? "printed_area" : c.walls ? "drawn_walls" : undefined;
+        return { ...common, area_sf, perimeter_lf, ...(c.walls ? { wall_coverage: c.walls.coverage } : {}), ...(shape_id ? { shape_id, condition: tag } : {}), ...(check ? { check } : {}) };
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
@@ -2084,7 +2266,7 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.not_tried;
+    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.off_walls + withheld.not_tried;
     return {
       detected: rooms.length,
       rooms,
@@ -2098,9 +2280,11 @@ export class Session {
       ...(assign ? { unresolved } : {}),
       // printed-area disagreements: seed + both numbers, the question to put to the plan
       ...(disagreements.length ? { area_disagrees: disagreements } : {}),
+      // no printed area and no outline that follows the drawn walls: seed + why
+      ...(offWalls.length ? { off_walls: offWalls } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -4531,7 +4715,7 @@ export class Session {
     // as a new one — otherwise a refused room could be committed small and
     // reshaped into the wrong outline
     const recheck = role === "floor_area" && (patch.verts !== undefined || patch.role !== undefined || patch.condition !== undefined);
-    const check = recheck ? this.checkAgainstPrintedArea(s, vertsPx, "area_sf" in computed ? computed.area_sf : undefined) : role === "floor_area" ? cur.check : undefined;
+    const check = recheck ? this.checkFloor(s, vertsPx, "area_sf" in computed ? computed.area_sf : undefined) : role === "floor_area" ? cur.check : undefined;
     if (recheck) this.refuseOverlap(s, condTagAfter, vertsPx, cur.id);
 
     const before: Shape = structuredClone(cur);

@@ -15,6 +15,8 @@
 // returned vertex rings by point-in-polygon sampling, not by asking the engine
 // whether it thinks it overlapped.
 import { test } from "node:test";
+// pinned fixture results must not depend on how loaded the machine is
+process.env.OPENTAKEOFF_CALL_BUDGET_MS = "0";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -99,7 +101,10 @@ test("no two regions the engine hands over on one sheet share floor", async (t) 
   }
 
   const usable = rings.filter((r) => r.verts?.length >= 3);
-  assert.ok(usable.length >= 20, `only ${usable.length} regions came back — the sweep did not run`);
+  // RE-PINNED 20 -> 10 for the drawn-walls check: this sheet prints no room
+  // areas, and detect_rooms now hands over only the outlines that follow the
+  // drawn walls (7 of them) — the clicks still come back as previews
+  assert.ok(usable.length >= 10, `only ${usable.length} regions came back — the sweep did not run`);
   const sweepable = usable.filter((r) => r.sf < OVERSIZE_SF);
 
   const hits: { a: Ring; b: Ring; sf: number }[] = [];
