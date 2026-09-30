@@ -49,7 +49,7 @@ import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/d
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
 import { fingerprintSymbol, matchSymbol, buildNegative, SWEEP_TOL_PX, type SweepOptions, type SymbolFingerprint, type SymbolMatchResult, type SweepMatch, type SweepWithheld, type SweepRejected, type SymbolNegative } from "../../web/src/lib/symbolsweep.ts";
 import { labelPlacements, type PlacementLabel } from "../../web/src/lib/symbollabels.ts";
-import { wingRotations, ladderHalfSizes, evaluateLadder, pickCandidate, nearestInk, type SeedCandidate } from "../../web/src/lib/symbolseed.ts";
+import { wingRotations, ladderHalfSizes, evaluateLadder, pickCandidate, nearestInk, steadyRuns, runLevel, type SeedCandidate } from "../../web/src/lib/symbolseed.ts";
 import { buildSnapGrid, nearestSnap, closedMetrics, openLen, pointInPoly } from "../../web/src/lib/geometry.js";
 // The canvas's three-point arc (Curve mode): a curved wall is a circle, so an
 // agent states the bow point and the server lays the unique arc through it.
@@ -3897,10 +3897,14 @@ export class Session {
     if (snappedTo) flags.push(`Nothing repeating sat at your point, so the example was taken at the nearest drawn symbol (${round1(snappedTo[0])}, ${round1(snappedTo[1])}); check the blue mark is the thing you meant.`);
     if (cand.segments < 8) flags.push(`The example is only ${cand.segments} segment(s) of linework — other objects may share it; look at every mark.`);
     // a larger seed that still repeats but finds far fewer: this seed is probably a fragment other things share
-    const bigger = candidates
+    // a larger seed whose count holds as it grows is usually the whole symbol: say so, by level
+    const steadier = steadyRuns(candidates).filter((r) => r[0].segments > cand.segments && r.every((x) => x.points.length < cand.points.length));
+    const steady = steadier.length ? candidates[runLevel(steadier.reduce((a, b) => (b.length > a.length ? b : a))) - 1] : null;
+    const bigger = steady ? null : candidates
       .filter((c) => c.segments >= cand.segments * 1.1 && c.points.length >= 3 && c.points.length * 3 <= cand.points.length)
       .reduce<SeedCandidate | null>((a, b) => (!a || b.points.length > a.points.length ? b : a), null);
-    if (bigger) flags.push(`A larger seed (level ${bigger.level}) still repeats but finds only ${bigger.points.length} against ${cand.points.length} here — the extra marks may be look-alikes sharing part of the symbol; if the picture shows marks off the symbol, pass level:${bigger.level}.`);
+    if (steady) flags.push(`Level ${steady.level} finds ${steady.points.length}, and the seed sizes around it agree — a larger seed whose count holds as it grows is usually the whole symbol, so the ${cand.points.length - steady.points.length} extra mark(s) here are likely look-alikes sharing part of it. Look, and pass level:${steady.level} if so.`);
+    else if (bigger) flags.push(`A larger seed (level ${bigger.level}) still repeats but finds only ${bigger.points.length} against ${cand.points.length} here — the extra marks may be look-alikes sharing part of the symbol; if the picture shows marks off the symbol, pass level:${bigger.level}.`);
     if (cand.points.length === 1) flags.push("Only the example itself matched: it may be unique, or the point sits on a variant — try another level or another example.");
     if (!cand.complete) flags.push("The sweep hit its work ceiling: this count is a floor, not a total.");
     if (partial) flags.push("Not every seed size was tried within the time budget.");

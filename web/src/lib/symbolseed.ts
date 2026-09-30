@@ -167,14 +167,56 @@ export function evaluateLadder(segs: number[], click: Point, halfSizes: number[]
   return { candidates, partial };
 }
 
-/** The candidate to show first: the most specific seed (most segments) that keeps at
- * least four fifths of the placements of the best one. Three guards keep the count off a
+/** Runs of consecutive seeds whose counts agree — each within STEADY_RATIO of the
+ * seed before it, every one repeating at least STEADY_MIN times. The module's own
+ * premise, measured: a fragment's count falls as the seed grows, a seed that swallows
+ * wall collapses toward the example, and in between — the whole symbol — the count
+ * holds while the seed grows. */
+export function steadyRuns(c: SeedCandidate[]): SeedCandidate[][] {
+  const n = (x: SeedCandidate) => x.points.length;
+  const runs: SeedCandidate[][] = [];
+  let cur: SeedCandidate[] = [];
+  for (const x of c) {
+    const prev = cur[cur.length - 1];
+    if (n(x) >= STEADY_MIN && prev && Math.max(n(x), n(prev)) <= STEADY_RATIO * Math.min(n(x), n(prev))) { cur.push(x); continue; }
+    if (cur.length >= 2) runs.push(cur);
+    cur = n(x) >= STEADY_MIN ? [x] : [];
+  }
+  if (cur.length >= 2) runs.push(cur);
+  return runs;
+}
+
+/** The seed a steady run stands for: the most specific one that still finds at
+ * least the run's median count (the larger seeds of a run can lose an instance or
+ * two whose surroundings differ). */
+export function runLevel(run: SeedCandidate[]): number {
+  const counts = run.map((x) => x.points.length).sort((a, b) => a - b);
+  const median = counts[counts.length >> 1];
+  return run.filter((x) => x.points.length >= median).reduce((a, b) => (b.segments > a.segments ? b : a)).level;
+}
+
+// Adjacent seeds agree when their counts differ by at most a quarter: an instance or
+// two whose surroundings differ drops out as the seed grows, a look-alike family does
+// not. Three repeats is the least that makes a count a pattern rather than a pair.
+const STEADY_RATIO = 1.25;
+const STEADY_MIN = 3;
+
+/** The candidate to show first. The longest steady run (ties: the one that finds
+ * more) — the range of seed sizes over which the count holds is the whole symbol;
+ * the largest count is not, since every fragment of the symbol finds at least as
+ * many. With no steady run, the most specific seed that keeps at least four fifths of
+ * the placements of the best one. Three guards keep that fallback off a
  * fragment other things share (a bowl's ellipse is also a stair newel): seeds under
  * eight segments are only used when nothing larger repeats, a seed whose next
  * larger sibling still repeats but finds a quarter of its count or less is a cliff edge, not a
  * plateau (a sibling that finds only the example is wall, and ends the plateau), and a count far beyond the ladder's own middle is the fragment regime. */
 export function pickCandidate(c: SeedCandidate[]): number {
   if (!c.length) return 0;
+  const runs = steadyRuns(c);
+  if (runs.length) {
+    const top = (r: SeedCandidate[]) => Math.max(...r.map((x) => x.points.length));
+    return runLevel(runs.reduce((a, b) => (b.length > a.length || (b.length === a.length && top(b) > top(a)) ? b : a)));
+  }
   const n = (x: SeedCandidate) => x.points.length;
   const cliff = (x: SeedCandidate) => {
     const next = c.find((y) => y.level > x.level && y.segments > x.segments);
