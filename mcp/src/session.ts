@@ -2101,7 +2101,10 @@ export class Session {
       // The wall network and the drafter's closed figures are not tried: with
       // no printed area to confirm them they added as many wrong rooms as
       // right ones (dev no-stamp sheets).
-      if (printed == null && judgeWalls && s.upp != null) {
+      // (`printed` above is set only where the walls-only masks exist; the room's
+      // own printed area decides whether the walls have to)
+      const unprinted = printedAreaM2(lb.str) == null;
+      if (unprinted && judgeWalls && s.upp != null) {
         const onWalls = (r: Point[] | null, tolPx: number): { ring: Point[]; w: WallCheck } | null => {
           if (!r || r.length < 3) return null;
           const { ring: snapped, w } = this.onWalls(s, r, tolPx);
@@ -2162,7 +2165,7 @@ export class Session {
       const cand: Cand = {
         label: lb.str, ring, areaPx2: ringArea(ring), perimPx: closedMetrics(ring).perim,
         seed, ev, method, ...(netFaces != null ? { netFaces, netStarved } : {}), merged: [],
-        ...(printed == null && judgeWalls && wallsResult?.pass ? { walls: wallsResult } : {}),
+        ...(unprinted && judgeWalls && wallsResult?.pass ? { walls: wallsResult } : {}),
       };
       byRing.set(key, cand);
       order.push(cand);
