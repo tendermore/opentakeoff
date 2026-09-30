@@ -10,7 +10,7 @@
 // size — and the shape says it was not checked against a printed area.
 import type { MaskObj, Point, VectorGeometry } from "../../web/src/lib/oneclick.ts";
 import { snapVertices, ringArea, buildMask, MASK_MAX_DIM, SEG_FILLONLY } from "../../web/src/lib/oneclick.ts";
-import { coverZones, zoneCuts, zoneRing, wallFaceSegs, dropWallIslands, type CoverLabel, type CoverZone } from "../../web/src/lib/floorcover.ts";
+import { coverZones, zoneCuts, zoneRing, zoneRectAt, wallFaceSegs, dropWallIslands, type CoverLabel, type CoverZone } from "../../web/src/lib/floorcover.ts";
 import { RENDER_SCALE } from "../../web/src/lib/sheets.ts";
 import { ROLE_CODE, ROLE_HIDDEN } from "../../web/src/lib/layers.ts";
 import { printedAreaM2, roomLabelSeeds, isTotalStamp } from "../../web/src/lib/detectRooms.ts";
@@ -34,7 +34,11 @@ const HOLE_M2 = 0.5, HOLE_FRAC = 0.03;
 const ZONE_SNAP_CELLS = 3;
 /** How many unlabelled floor pieces a reply lists (largest first); the total covers all. */
 const MAX_PIECES = 30;
-/** Stamps prefixed as totals ("BRA 59,7 m²") are not one room's area (checkAgainstPrintedArea's rule). */
+/** A zone filling less of its extent than this (an L-shaped corridor, a hall round a core) is clouded where its
+ *  labels are, not over its whole extent, which would lie over the rooms measured inside it. */
+const CLOUD_FILL = 0.5;
+/** Unlabelled pieces smaller than this (m²) are listed, not clouded. */
+const CLOUD_MIN_M2 = 1;
 
 /** Per segment, 1 = a wall face (wallFaceSegs) among the ink `mask` stops a flood at — cached per mask. */
 const wallSegCache = new WeakMap<MaskObj, Uint8Array>();
@@ -117,9 +121,18 @@ export interface CoverSheet {
    * outline there — refine puts a ring onto the walls (onWalls), judge says whether it follows them. Absent
    * elsewhere, where cover's own walled-zone gate stands. */
   drawnWalls?: { refine: (ring: Point[]) => Point[]; judge: (ring: Point[]) => { pass: boolean; reason: string } };
+  /** the closed-leaf chord of every door on the sheet (doors.ts), image px: what joins an unlabelled piece to measured
+   *  floor. Absent or null where no doors could be read; then every unlabelled piece is reported. */
+  doors?: [Point, Point][] | null;
   /** commit one zone (Session.commit + label); throws UserError on refusal */
   commit: (ring: Point[], areaSf: number, perimLf: number, seed: Point, label: string, combined?: boolean) => { id: string; check?: string };
 }
+
+/** Why a room label is flagged, stable for callers that word it themselves (the reason says it in English). */
+export type CoverCode =
+  | "open_to_outside" | "unplaced_label" | "untraceable" | "surrounds_void" | "label_outside_outline"
+  | "area_differs" | "several_printed_sum_differs" | "several_labels_no_printed_area" | "total_stamp_inside"
+  | "too_small" | "off_drawn_walls" | "not_walled" | "overlaps_measured" | "refused" | "ready_to_commit";
 
 export interface CoverRoom {
   label: string;
@@ -134,6 +147,12 @@ export interface CoverRoom {
   /** share of the zone's edge that is wall or a measured room, % */
   walls_pct?: number;
   reason?: string;
+  /** flagged: the reason as a stable code */
+  code?: CoverCode;
+  /** the outline traced from the zone, m², where the reason compares it */
+  outline_m2?: number;
+  /** several printed areas in one zone: their sum, m² */
+  sum_m2?: number;
   at: [number, number];
   /** a flagged zone's extent, image px */
   bbox?: [number, number, number, number];
@@ -190,6 +209,31 @@ export function coverLabels(spans: TextSpan[], roomTags: RoomTagIn[] = []): { mo
   return { mode: "room_numbers", labels, totals: [] };
 }
 
+/** What cover would cloud on the marked plan: the flagged rooms of one zone (or the part of it round them), or
+ *  one unlabelled piece a door or an opening reaches. rect: image px. */
+export interface CoverCloud {
+  kind: "not_measured" | "no_label";
+  rect: [number, number, number, number];
+  rooms?: CoverRoom[];
+  piece?: { m2: number; at: [number, number] };
+}
+const overlapShare = (a: number[], b: number[]) => {
+  const i = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  return i / Math.max(1e-9, Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])));
+};
+
+/** A commit refusal's code, from the UserError's own prefix (session.ts). */
+function refusalCode(message: string): CoverCode {
+  if (message.startsWith("OVERLAPS_MEASURED")) return "overlaps_measured";
+  if (message.startsWith("PRINTED_AREA_DISAGREES")) return "area_differs";
+  if (message.startsWith("OFF_DRAWN_WALLS")) return "off_drawn_walls";
+  return "refused";
+}
+const roundNums = (n: { outline_m2?: number; sum_m2?: number }) => ({
+  ...(n.outline_m2 !== undefined ? { outline_m2: round2(n.outline_m2) } : {}),
+  ...(n.sum_m2 !== undefined ? { sum_m2: round2(n.sum_m2) } : {}),
+});
+
 /** The sheet's remaining floor as zones, with the wall and cut rasters it was split on. */
 export function coverPartition(sh: Omit<CoverSheet, "commit" | "nearestSnap" | "snap">) {
   const pxPerM = 1 / (sh.upp * 0.3048);
@@ -220,7 +264,8 @@ export function coverPartition(sh: Omit<CoverSheet, "commit" | "nearestSnap" | "
     cuts = zoneCuts(segs, meta, wallSeg, walls, pxPerM, gone);
     for (let i = 0; i < cuts.length; i++) if (M.mask[i] & 1 && !(walls.mask[i] & 1)) cuts[i] = 1;
   }
-  const res = coverZones({ walls, cuts, measured: sh.measured.map((m) => m.ring), labels, pxPerM, leakM2 });
+  const texts = sh.spans.filter((sp) => (sp.str || "").trim()).map((sp) => [(sp.x0 + sp.x1) / 2, (sp.y0 + sp.y1) / 2] as Point);
+  const res = coverZones({ walls, cuts, measured: sh.measured.map((m) => m.ring), labels, pxPerM, leakM2, doors: sh.doors ?? null, texts });
   return { mode, labels, stamped, walls, cuts, res: { ...res, totals } };
 }
 
@@ -239,8 +284,10 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     rooms.push({ label: l.text, ...named(k), ...printedOf(k), status: "measured", ...(hit ? { shape_id: hit.id } : {}), at: pt([l.x, l.y]) });
   }
   let flaggedM2 = 0;
-  const flag = (k: number, z: CoverZone | null, reason: string) => {
-    rooms.push({ label: labels[k].text, ...named(k), ...printedOf(k), status: "flagged", ...(z ? { zone_m2: round2(z.m2), walls_pct: Math.round(z.wallShare * 100), bbox: z.bbox.map(round1) as [number, number, number, number] } : {}), reason, at: pt([labels[k].x, labels[k].y]) });
+  const flaggedIn = new Map<CoverZone, number[]>();   // zone → indices into rooms, for the clouds
+  const flag = (k: number, z: CoverZone | null, reason: string, code: CoverCode, nums: { outline_m2?: number; sum_m2?: number } = {}) => {
+    if (z) flaggedIn.set(z, [...(flaggedIn.get(z) ?? []), rooms.length]);
+    rooms.push({ label: labels[k].text, ...named(k), ...printedOf(k), status: "flagged", ...(z ? { zone_m2: round2(z.m2), walls_pct: Math.round(z.wallShare * 100), bbox: z.bbox.map(round1) as [number, number, number, number] } : {}), reason, code, ...roundNums(nums), at: pt([labels[k].x, labels[k].y]) });
   };
   const assigned = new Set<number>();
   for (const z of res.zones) {
@@ -248,7 +295,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     if (!z.leaks) flaggedM2 += z.m2;   // subtracted again below when the zone commits
     const list = z.labels.map((k) => labels[k].text).join(", ");
     if (z.leaks) {
-      for (const k of z.labels) flag(k, null, `the floor round this label is open to the outside of the building (${z.labels.length > 1 ? `shared by ${list}` : "an opening the drawing does not close"}) — not a room outline`);
+      for (const k of z.labels) flag(k, null, `the floor round this label is open to the outside of the building (${z.labels.length > 1 ? `shared by ${list}` : "an opening the drawing does not close"}) — not a room outline`, "open_to_outside");
       continue;
     }
     // a zone is traced a cell or two inside the wall faces: its edges go onto the faces they parallel
@@ -263,27 +310,28 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     if (z.labels.length > 1) {
       const sum = z.labels.reduce((a, k) => a + (labels[k].m2 ?? 0), 0);
       const why = `zone holds ${z.labels.length} ${stamped ? "printed areas" : "room labels"} (${list}) and nothing drawn separates them`;
-      if (!stamped) { for (const k of z.labels) flag(k, z, `${why}; zone ${round2(z.m2)} m² — no printed areas to check a combined zone against`); continue; }
+      if (!stamped) { for (const k of z.labels) flag(k, z, `${why}; zone ${round2(z.m2)} m² — no printed areas to check a combined zone against`, "several_labels_no_printed_area"); continue; }
       // ONE combined row, when that is honest: every printed area inside is a room's own (no total), all of
       // them sit inside the outline, the outline holds nothing it does not measure, and it agrees with their SUM
       const ring = outline([sum]);
       const traced = ring.length >= 3 ? m2(ringArea(ring)) : 0;
-      const refuse = ring.length < 3 ? "the zone could not be traced to an outline"
-        : res.totals.some((t) => pointInPoly(t.x, t.y, ring)) ? "a printed total (BRA/BTA …) sits in it, so its printed areas are not all rooms"
-        : z.labels.some((k) => !pointInPoly(labels[k].x, labels[k].y, ring)) ? "not every printed area sits inside its outline"
-        : surrounds(ring) ? `its outline surrounds ${round2(surrounds(ring))} m² that is not part of it`
-        : !printedAgrees(traced, sum) ? `zone ${round2(traced)} m² does not agree with their sum ${round2(sum)} m²` : null;
-      if (refuse) { for (const k of z.labels) flag(k, z, `${why}; ${refuse}`); continue; }
+      const refuse: [string, CoverCode] | null = ring.length < 3 ? ["the zone could not be traced to an outline", "untraceable"]
+        : res.totals.some((t) => pointInPoly(t.x, t.y, ring)) ? ["a printed total (BRA/BTA …) sits in it, so its printed areas are not all rooms", "total_stamp_inside"]
+        : z.labels.some((k) => !pointInPoly(labels[k].x, labels[k].y, ring)) ? ["not every printed area sits inside its outline", "label_outside_outline"]
+        : surrounds(ring) ? [`its outline surrounds ${round2(surrounds(ring))} m² that is not part of it`, "surrounds_void"]
+        : !printedAgrees(traced, sum) ? [`zone ${round2(traced)} m² does not agree with their sum ${round2(sum)} m²`, "several_printed_sum_differs"] : null;
+      const nums = { sum_m2: sum, ...(ring.length >= 3 ? { outline_m2: traced } : {}) };
+      if (refuse) { for (const k of z.labels) flag(k, z, `${why}; ${refuse[0]}`, refuse[1], nums); continue; }
       const names = z.labels.map((k) => labels[k].name ?? nameFor(labels[k], sh.spans));
       const label = names.every(Boolean) ? names.join(" + ") : z.labels.map((k) => labels[k].text).join(" + ");
-      if (!opts.commit) { for (const k of z.labels) flag(k, z, `${why}; the zone agrees with their sum ${round2(sum)} m² — pass condition to commit it as one combined row`); continue; }
+      if (!opts.commit) { for (const k of z.labels) flag(k, z, `${why}; the zone agrees with their sum ${round2(sum)} m² — pass condition to commit it as one combined row`, "ready_to_commit", nums); continue; }
       try {
         const c = sh.commit(ring, round2(ringArea(ring) * sh.upp * sh.upp), round2(closedMetrics(ring).perim * sh.upp), [labels[z.labels[0]].x, labels[z.labels[0]].y], label, true);
         flaggedM2 -= z.m2;
         for (const k of z.labels) rooms.push({ label: labels[k].text, ...named(k), ...printedOf(k), status: "combined", shape_id: c.id, check: c.check, zone_m2: round2(traced), combined_with: z.labels.filter((o) => o !== k).map((o) => labels[o].text), at: pt([labels[k].x, labels[k].y]) });
       } catch (error) {
         if (!(error instanceof UserError)) throw error;
-        for (const k of z.labels) flag(k, z, `${why}; ${error.message.split(". ")[0]}`);
+        for (const k of z.labels) flag(k, z, `${why}; ${error.message.split(". ")[0]}`, refusalCode(error.message), nums);
       }
       continue;
     }
@@ -293,29 +341,27 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     const walls = !stamped && sh.drawnWalls ? sh.drawnWalls : null;
     const traceRing = outline(l.m2 != null ? [l.m2] : []);
     const ring = walls && traceRing.length >= 3 ? walls.refine(traceRing) : traceRing;
-    if (ring.length < 3) { flag(k, z, "zone could not be traced to an outline"); continue; }
+    if (ring.length < 3) { flag(k, z, "zone could not be traced to an outline", "untraceable"); continue; }
     const traced = m2(ringArea(ring));
+    const out = { outline_m2: traced };
     const enclosed = surrounds(ring);
-    if (enclosed) { flag(k, z, `zone ${round2(z.m2)} m² surrounds ${round2(enclosed)} m² that is not part of it (a room or space inside) — its outline would count that too`); continue; }
+    if (enclosed) { flag(k, z, `zone ${round2(z.m2)} m² surrounds ${round2(enclosed)} m² that is not part of it (a room or space inside) — its outline would count that too`, "surrounds_void", out); continue; }
     if (stamped) {
       // the printed area must sit inside the outline it vouches for (commit() checks the same, and a zone
       // that only brushes its label — a thin strip under the text — would commit unverified)
-      if (!pointInPoly(l.x, l.y, ring)) { flag(k, z, `the printed ${l.text} sits outside the zone's outline (${round2(traced)} m²) — a strip beside the label, not its room`); continue; }
-      if (!printedAgrees(traced, l.m2!)) { flag(k, z, `zone ${round2(traced)} m² vs printed ${l.text} — the zone runs past the room or stops short of it`); continue; }
+      if (!pointInPoly(l.x, l.y, ring)) { flag(k, z, `the printed ${l.text} sits outside the zone's outline (${round2(traced)} m²) — a strip beside the label, not its room`, "label_outside_outline", out); continue; }
+      if (!printedAgrees(traced, l.m2!)) { flag(k, z, `zone ${round2(traced)} m² vs printed ${l.text} — the zone runs past the room or stops short of it`, "area_differs", out); continue; }
     } else if (walls) {
       // the drawn-walls check judges the outline's shape, not whether it is a room's size: a wall cavity or a
       // symbol box follows its "walls" perfectly (0.01 m² pieces did on the no-stamp dev sheets)
-      if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`); continue; }
+      if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`, "too_small", out); continue; }
       const w = walls.judge(ring);
-      if (!w.pass) { flag(k, z, `zone ${round2(traced)} m²: ${w.reason} — no printed area to check it against`); continue; }
+      if (!w.pass) { flag(k, z, `zone ${round2(traced)} m²: ${w.reason} — no printed area to check it against`, "off_drawn_walls", out); continue; }
     } else {
-      if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`); continue; }
-      if (z.wallShare < WALLED_SHARE) { flag(k, z, `zone ${round2(traced)} m² is bounded by walls along only ${Math.round(z.wallShare * 100)}% of its edge — no printed area to check it against`); continue; }
+      if (traced < MIN_ROOM_M2) { flag(k, z, `zone ${round2(traced)} m² is smaller than a room`, "too_small", out); continue; }
+      if (z.wallShare < WALLED_SHARE) { flag(k, z, `zone ${round2(traced)} m² is bounded by walls along only ${Math.round(z.wallShare * 100)}% of its edge — no printed area to check it against`, "not_walled", out); continue; }
     }
-    if (!opts.commit) {
-      rooms.push({ label: l.text, ...named(k), ...printedOf(k), status: "flagged", zone_m2: round2(traced), reason: stamped ? "zone agrees with the printed area — pass condition to commit it" : "zone passes the walls check — pass condition to commit it", at: pt([l.x, l.y]) });
-      continue;
-    }
+    if (!opts.commit) { flag(k, z, stamped ? "zone agrees with the printed area — pass condition to commit it" : "zone passes the walls check — pass condition to commit it", "ready_to_commit", out); continue; }
     const areaSf = round2(ringArea(ring) * sh.upp * sh.upp);
     const perimLf = round2(closedMetrics(ring).perim * sh.upp);
     try {
@@ -324,15 +370,35 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
       rooms.push({ label: l.text, ...named(k), ...printedOf(k), status: "committed", shape_id: c.id, ...(c.check ? { check: c.check } : {}), zone_m2: round2(traced), walls_pct: Math.round(z.wallShare * 100), at: pt([l.x, l.y]) });
     } catch (error) {
       if (!(error instanceof UserError)) throw error;
-      flag(k, z, error.message.split(". ")[0]);
+      flag(k, z, error.message.split(". ")[0], refusalCode(error.message), out);
     }
   }
   labels.forEach((l, k) => {
-    if (!assigned.has(k) && !res.measuredLabels.includes(k)) flag(k, null, "the label sits on wall or linework with no floor round it");
+    if (!assigned.has(k) && !res.measuredLabels.includes(k)) flag(k, null, "the label sits on wall or linework with no floor round it", "unplaced_label");
   });
 
   const unlabeled = res.unlabeled.slice().sort((a, b) => b.m2 - a.m2);
   const unlabeledM2 = unlabeled.reduce((a, z) => a + z.m2, 0);
+  const noAccess = res.noAccess.slice().sort((a, b) => b.m2 - a.m2);
+  const noAccessM2 = noAccess.reduce((a, z) => a + z.m2, 0);
+  const piece = (z: CoverZone) => ({ m2: round2(z.m2), at: pt(z.at), bbox: z.bbox.map(round1) as [number, number, number, number] });
+  // where to cloud (session.ts draws them on mark): a flagged zone once, over its extent; a zone that fills
+  // little of its extent round each of its labels instead, labels whose rectangles overlap sharing one
+  const clouds: CoverCloud[] = [];
+  const rectAt = (z: CoverZone, at: Point) => zoneRectAt(z, at[0], at[1], res.mw, res.mh, res.ws).map(round1) as [number, number, number, number];
+  const fills = (z: CoverZone) => z.m2 >= CLOUD_FILL * m2((z.bbox[2] - z.bbox[0]) * (z.bbox[3] - z.bbox[1]));
+  for (const [z, ks] of flaggedIn) {
+    if (fills(z)) { clouds.push({ kind: "not_measured", rect: z.bbox.map(round1) as [number, number, number, number], rooms: ks.map((k) => rooms[k]) }); continue; }
+    const mine: CoverCloud[] = [];
+    for (const k of ks) {
+      const r = rectAt(z, rooms[k].at);
+      const same = mine.find((c) => overlapShare(c.rect, r) > 0.5);
+      if (same) { same.rect = [Math.min(same.rect[0], r[0]), Math.min(same.rect[1], r[1]), Math.max(same.rect[2], r[2]), Math.max(same.rect[3], r[3])]; same.rooms!.push(rooms[k]); }
+      else mine.push({ kind: "not_measured", rect: r, rooms: [rooms[k]] });
+    }
+    clouds.push(...mine);
+  }
+  for (const z of unlabeled) if (z.m2 >= CLOUD_MIN_M2) clouds.push({ kind: "no_label", rect: fills(z) ? z.bbox.map(round1) as [number, number, number, number] : rectAt(z, z.at), piece: piece(z) });
   const counts = {
     labels: labels.length,
     measured: rooms.filter((r) => r.status === "measured").length,
@@ -341,6 +407,7 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     flagged: rooms.filter((r) => r.status === "flagged").length,
   };
   return {
+    clouds,
     sheet: sh.key,
     labels_by: mode,
     rooms,
@@ -348,10 +415,13 @@ export function coverSheet(sh: CoverSheet, opts: { commit: boolean }) {
     unmeasured_floor: {
       in_flagged_zones_m2: round2(Math.max(0, flaggedM2)),
       unlabeled_m2: round2(unlabeledM2),
-      unlabeled: unlabeled.slice(0, MAX_PIECES).map((z) => ({ m2: round2(z.m2), at: pt(z.at), bbox: z.bbox.map(round1) as [number, number, number, number] })),
+      unlabeled: unlabeled.slice(0, MAX_PIECES).map((z) => ({ ...piece(z), code: "no_room_label" as const, ...(z.access ? { access: z.access } : {}) })),
       ...(unlabeled.length > MAX_PIECES ? { unlabeled_not_listed: unlabeled.length - MAX_PIECES } : {}),
+      no_access_m2: round2(noAccessM2),
+      no_access: noAccess.slice(0, MAX_PIECES).map((z) => ({ ...piece(z), code: "no_access" as const })),
+      ...(noAccess.length > MAX_PIECES ? { no_access_not_listed: noAccess.length - MAX_PIECES } : {}),
     },
-    note: `${counts.measured} room label(s) already measured, ${counts.committed} committed now, ${counts.combined} committed inside combined zones, ${counts.flagged} flagged with a reason. ${stamped ? "A zone commits only when it holds exactly one printed area and agrees with it, or — when nothing is drawn between several rooms — as ONE combined row whose area agrees with the sum of their printed areas (check printed_sum; the split between them is not measured)." : `No printed room areas on this sheet: a zone commits only with one named room number inside it and ${sh.drawnWalls ? "the drawn-walls check passing (check drawn_walls)" : "walls bounding nearly all of it; the drawn-walls check does not apply to a sheet that is not metric (check unverified: units_not_metric)"}.`} Unmeasured floor: ${round2(Math.max(0, flaggedM2))} m² in flagged zones, ${round2(unlabeledM2)} m² enclosed with no room label (shafts, stair voids and unlabelled rooms among them — look before measuring).`,
+    note: `${counts.measured} room label(s) already measured, ${counts.committed} committed now, ${counts.combined} committed inside combined zones, ${counts.flagged} flagged with a reason. ${stamped ? "A zone commits only when it holds exactly one printed area and agrees with it, or — when nothing is drawn between several rooms — as ONE combined row whose area agrees with the sum of their printed areas (check printed_sum; the split between them is not measured)." : `No printed room areas on this sheet: a zone commits only with one named room number inside it and ${sh.drawnWalls ? "the drawn-walls check passing (check drawn_walls)" : "walls bounding nearly all of it; the drawn-walls check does not apply to a sheet that is not metric (check unverified: units_not_metric)"}.`} Unmeasured floor: ${round2(Math.max(0, flaggedM2))} m² in flagged zones, ${round2(unlabeledM2)} m² enclosed with no room label (unlabelled rooms, stair voids and shafts among them; access says how each is reached — look before measuring).${noAccess.length ? ` ${round2(noAccessM2)} m² in ${noAccess.length} small enclosed piece(s) with no room label, no door or opening touching them and no text (no_access) could not be reached from measured floor — likely shafts or voids; check with view_sheet before dismissing. They are not clouded.` : ""}`,
   };
 }
 

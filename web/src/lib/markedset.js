@@ -50,6 +50,7 @@ import { NOTE_PT, layoutNote, noteBox, lineBaseline } from "./markupText.js";
 import { dimLabel } from "./units";
 import { sourcePageMode, sourceStampNote, noCanvasForRasterMessage } from "./markedsetSource.js";
 import { markedSetText, formatNumber } from "./markedsetLocale.js";
+import { floorCoverage, liveCoverItems, coverNoteLines, placeCloudNotes } from "./coverClouds.js";
 
 const COBALT = "#1f3fc7";
 const DEDUCT_RED = "#b03a26";
@@ -705,7 +706,46 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
     // highlights draw FIRST (behind) so their translucent fill never dims the
     // linework of clouds/callouts/text above — same z-order as the canvas.
     const marksHere = [...(marksBy.get(sh.key) || [])].sort((a, b) => (a.type === "highlight" ? 0 : 1) - (b.type === "highlight" ? 0 : 1));
+    // cover clouds (coverClouds.js): what is still unmeasured NOW — a label a floor shape covers drops out, a
+    // cloud with none left is not drawn (unless an RFI or a condition is linked to it: then it prints as a plain
+    // cloud) — each note placed clear of the others, the quantity chips and the printed labels where it can be.
+    // A malformed cover cloud prints as a plain cloud; it never stops the export.
+    const coverNotes = new Map();
+    try {
+      const here = shapesBy.get(sh.key) || [];
+      const coverage = floorCoverage(here, sh.key);
+      const cover = marksHere.filter((m) => m.source === "cover" && m.cover && m.type === "cloud" && m.rect);
+      if (cover.length) {
+        const size = 8, pad = 3 / ptScale, lh = (size + 4) / ptScale, maxW = 220;
+        const obstacles = [];
+        for (const s of here) {
+          const pts = (s.verts_norm || []).map(([nx, ny]) => [nx * W, ny * H]);
+          if (!pts.length || !["floor_area", "deduct", "linear", "surface_area"].includes(s.measure_role)) continue;
+          const [cx, cy] = s.measure_role === "floor_area" || s.measure_role === "deduct" ? centroid(pts) : (([x, y]) => [x, y - 14])(pts[Math.floor((pts.length - 1) / 2)]);
+          const cw = (font.widthOfTextAtSize(winAnsiSafe(shapeChip(s, condById[s.condition_id], M, T)), 7.5) + 8) / ptScale;
+          obstacles.push([cx - cw / 2, cy - 6 / ptScale, cx + cw / 2, cy + 6 / ptScale]);
+        }
+        const notes = [];
+        for (const m of cover) {
+          const live = liveCoverItems(m, coverage);
+          const kind = m.cover.kind === "no_label" ? "no_label" : "not_measured";
+          if (!live.length) { if (!m.rfi_id && !m.condition_id && Array.isArray(m.cover.items) && m.cover.items.some((it) => Array.isArray(it?.at))) coverNotes.set(m.id, null); continue; }
+          const lines = coverNoteLines(kind, live, M, T, (t) => bold.widthOfTextAtSize(winAnsiSafe(t), size), maxW).map(winAnsiSafe);
+          const [[nx0, ny0], [nx1, ny1]] = m.rect;
+          const rect = [Math.min(nx0, nx1) * W, Math.min(ny0, ny1) * H, Math.max(nx0, nx1) * W, Math.max(ny0, ny1) * H];
+          const anchor = [live[0].at[0] * W, live[0].at[1] * H];
+          // the printed label itself stays readable where it can: a note avoids covering it
+          for (const it of live) obstacles.push([it.at[0] * W - 1.5 * lh, it.at[1] * H - lh / 2, it.at[0] * W + 1.5 * lh, it.at[1] * H + lh / 2]);
+          const w = Math.max(...lines.map((t) => bold.widthOfTextAtSize(t, size))) / ptScale + 2 * pad;
+          notes.push({ id: m.id, lines, w, h: lines.length * lh, rect, anchor });
+        }
+        const placed = placeCloudNotes(notes, obstacles, [W, H], 4 / ptScale);
+        notes.forEach((n, k) => coverNotes.set(n.id, { lines: n.lines, size, pad, lh, ...placed[k] }));
+      }
+    } catch { coverNotes.clear(); }
+    const coverInk = [];
     for (const m of marksHere) {
+      if (coverNotes.get(m.id) === null) continue;   // a cover cloud over floor measured since: nothing left to flag
       // linked RFI number marker (ASCII) — drawn UNCONDITIONALLY, even when the
       // markup has no note (a linked cloud can be textless), so the link always
       // prints. Helvetica can't draw ⬢, so it's the number, not the glyph.
@@ -767,8 +807,10 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
         let d = `M${P(cb.start)}`;
         for (const [c1, c2, end] of cb.segments) d += ` C${P(c1)} ${P(c2)} ${P(end)}`;
         pg.drawSvgPath(d + " Z", { x: 0, y: 0, borderColor: mcol, borderWidth: 1.3 * mw, borderOpacity: 0.95, ...(mdash ? { borderDashArray: mdash } : {}) });
-        const t = lbl(m.text);
+        const note = coverNotes.get(m.id);
+        const t = lbl(note ? "" : m.text);
         if (t) text(t, Math.min(nx0, nx1) * W, Math.min(ny0, ny1) * H - 10 / ptScale, 8, mcol, bold);
+        if (note) coverInk.push({ note, col: mcol });   // drawn above every cloud, after the loop
         // revision-delta triangle at the top-right corner — clear of the
         // top-left RFI label and the centered note. Absent m.rev → nothing.
         if (Number.isFinite(m.rev) && m.rev > 0) {
@@ -916,6 +958,15 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
           } catch { /* corrupt image data or a bad provenance record — skip this one, never fail the whole marked set */ }
         }
       }
+    }
+    // cover notes on a white backing (an image-px box through imageDrawParams, rotation-safe like noteBlock),
+    // with a leader to their cloud when they sit outside it
+    for (const { note, col } of coverInk) {
+      if (note.leader) line(note.leader[0][0], note.leader[0][1], note.leader[1][0], note.leader[1][1], col, 0.7, 0.9);
+      const [bx0, by0, bx1, by1] = note.box;
+      const dp = imageDrawParams(toPage, bx0, by0, bx1 - bx0, by1 - by0);
+      pg.drawRectangle({ x: dp.x, y: dp.y, width: dp.width, height: dp.height, rotate: degrees(dp.rotateDeg), color: dark ? rgb(0.08, 0.1, 0.12) : rgb(1, 1, 1), opacity: 0.9, borderColor: col, borderWidth: 0.6 });
+      note.lines.forEach((ln, k) => text(ln, bx0 + note.pad, by0 + (k + 1) * note.lh - note.pad - 1 / ptScale, note.size, col, bold));
     }
     // approval seals burn in ABOVE the markups, exactly as the canvas layers
     // them: the estimator's APPROVED ring, the agent's AGENT diamond. Radius

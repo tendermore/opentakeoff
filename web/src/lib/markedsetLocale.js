@@ -64,6 +64,9 @@ const en = {
   creditRfis: (n) => `${n} agent-raised RFI${plural(n, "", "s")} pending acceptance`,
   floorChecks: (checked, total) => `${checked} of ${total} floor area${plural(total, "", "s")} checked against a printed room area or the drawn walls${checked < total ? `, ${total - checked} unverified` : ""}`,
   credit: (machine, parts) => `${machine ? "Machine-traced" : "Agent-raised"} via OpenTakeoff MCP — ${parts}`,
+  // takeoff_rooms cover's clouds (coverClouds.js)
+  coverNotMeasured: (rooms) => `Not measured: ${rooms}`,
+  coverNoLabel: (area) => `No room label: ${area}`,
 };
 
 const nb = {
@@ -123,6 +126,8 @@ const nb = {
   creditRfis: (n) => `${n} RFI fra agent venter på godkjenning`,
   floorChecks: (checked, total) => `${checked} av ${total} gulvarealer kontrollert mot påskrevet romareal eller tegnede vegger${checked < total ? `, ${total - checked} ikke kontrollert` : ""}`,
   credit: (machine, parts) => `${machine ? "Maskinsporet" : "Opprettet av agent"} via OpenTakeoff MCP — ${parts}`,
+  coverNotMeasured: (rooms) => `Ikke målt: ${rooms}`,
+  coverNoLabel: (area) => `Uten romnavn: ${area}`,
 };
 
 export const MARKED_SET_LOCALES = { en, nb };

@@ -15,7 +15,9 @@
 // an opening between two wall ends (netroom's line-end closure) — and never
 // anywhere else. Pieces with no label fold back into the one labelled piece
 // they touch (a counter pocket is not a room). Where nothing drawn separates
-// two labels, the zone stays whole and says so.
+// two labels, the zone stays whole and says so. An enclosed piece with no
+// label that no door or opening touches, holding no text and no bigger than a
+// shaft or stair well, is kept apart from the unlabelled floor (no access).
 //
 // This module only partitions. It does not decide what may be committed — the
 // caller holds the zone against the printed area (checkAgainstPrintedArea) or,
@@ -52,6 +54,13 @@ export const OPENING_MIN_M = 0.6;
 export const OPENING_MAX_M = 2.1;
 /** Collinear within this lateral offset (m). */
 const OPENING_LATERAL_M = 0.1;
+/** The largest enclosed piece that may be a void rather than floor (m²): a lift or service shaft is under
+ *  3 m × 3 m, a stair well about 2.5 m × 6 m for two flights, so 20 m² holds every shaft and stair opening.
+ *  Anything bigger with no door, opening or text is still reported as floor to look at. */
+export const VOID_MAX_M2 = 20;
+/** A door's closed-leaf chord is looked past for the floor on each side up to this far (m): the thickest wall a
+ *  door hangs in (doors.ts OPENING_WALL_M) plus the frame and swing clearance. */
+export const DOOR_REACH_M = 0.8;
 /** Building footprint: measured and labelled floor closed over this radius
  *  (m), so the walls between rooms and a small unlabelled space between them
  *  fall inside the building, while paper a metre and a half away does not. */
@@ -83,6 +92,11 @@ export interface CoverInput {
   pxPerM: number;
   /** a zone larger than this (m²) is not a room but the paper round the building */
   leakM2: number;
+  /** the closed-leaf chord of every door the sheet draws (doors.ts `opening`), image px; null or empty when
+   *  no door could be read — then no piece can be judged unreachable, and every unlabelled piece is reported */
+  doors?: [Point, Point][] | null;
+  /** where the sheet prints text (span centres, image px): a piece holding any is never set apart as no access */
+  texts?: Point[];
 }
 
 export interface CoverZone {
@@ -103,12 +117,20 @@ export interface CoverZone {
   unsplit?: boolean;
   /** floor folded in across drawn lines (furniture pockets, door swings, stair flights), m² */
   mergedM2?: number;
+  /** an unlabelled piece: how measured floor reaches it — across a drawn line only ("open"), through a door or
+   *  an opening onto measured floor ("door", "opening"); or, when it does not: a door through the outer wall
+   *  ("exterior"), a door from floor nothing measured reaches ("unreached"), no door or opening but printed text
+   *  inside or a void's size exceeded ("none"). Absent where the sheet's doors could not be read. */
+  access?: "open" | "door" | "opening" | "exterior" | "unreached" | "none";
 }
 
 export interface CoverResult {
   zones: CoverZone[];
-  /** enclosed floor inside the building footprint holding no label */
+  /** enclosed floor inside the building footprint holding no label, each with how it is reached (access) */
   unlabeled: CoverZone[];
+  /** enclosed, no label, no door or opening touching it, no printed text, no bigger than a void: could not be
+   *  reached from measured floor — likely a shaft or a void, to be checked before it is dismissed */
+  noAccess: CoverZone[];
   /** indices of labels that sit inside a measured outline */
   measuredLabels: number[];
   /** mask geometry, for tracing */
@@ -342,7 +364,115 @@ export function coverZones(inp: CoverInput): CoverResult {
       if (inside >= 0.8 * z.cells.length) unlabeled.push(z);
     }
   }
-  return { zones, unlabeled, measuredLabels, mw, mh, ws };
+  // Who can walk in. A piece split off a labelled zone is joined to that room's floor across a drawn line
+  // only ("open"). A piece with no label anywhere in it is reached from measured floor through a door whose
+  // far side is measured floor, through a run of at least an opening's width along measured floor with no
+  // wall between, or through other floor reached so — a labelled room or another piece, door to door or by
+  // such an opening ("door", "opening"). A piece with a door that measured floor does not reach is still
+  // floor someone may have left out: through the outer wall ("exterior"), or from floor nothing measured
+  // reaches ("unreached"). Only a piece that no door and no opening touches at all, that holds no printed
+  // text and is no bigger than a void can be (VOID_MAX_M2) is set apart as no access. Without doors to
+  // read, nothing is.
+  const noAccess: CoverZone[] = [];
+  if (inp.doors?.length && unlabeled.length) {
+    const FLOOR = comps.length, OUTSIDE = -2;
+    const parent = Array.from({ length: comps.length + 1 }, (_, k) => k);
+    const find = (k: number): number => (parent[k] === k ? k : (parent[k] = find(parent[k])));
+    const join = (a: number, b: number) => { parent[find(a)] = find(b); };
+    const via = new Map<number, "door" | "opening">();
+    const doored = new Set<number>(), exterior = new Set<number>();
+    // doors: the first floor past the chord on each side, walking through the wall's thickness and the
+    // slivers of floor a doorway's own linework (reveals, a threshold) leaves between the leaf and the room
+    const reach = Math.max(2, Math.round(DOOR_REACH_M * pxPerM * ws));
+    const minCells = MIN_PIECE_M2 / cellM2;
+    // the outside (open to the sheet edge, or larger than any room) joins nothing: nobody measured is there
+    const outsideComp = new Map<number, boolean>();
+    const isOutside = (c: number) => {
+      let o = outsideComp.get(c);
+      if (o === undefined) outsideComp.set(c, o = zoneOf(comps[c], []).leaks);
+      return o;
+    };
+    const sideOf = (x: number, y: number, nx: number, ny: number): number => {
+      for (let d = 1; d <= reach; d++) {
+        const cx = Math.round(x + nx * d), cy = Math.round(y + ny * d);
+        if (cx < 0 || cy < 0 || cx >= mw || cy >= mh) return -1;
+        const i = cy * mw + cx;
+        if (state[i] === TAKEN) return FLOOR;
+        if (id[i] >= 0 && comps[id[i]].length >= minCells) return isOutside(id[i]) ? OUTSIDE : id[i];
+      }
+      return -1;
+    };
+    for (const [a, b] of inp.doors) {
+      const ax = a[0] * ws, ay = a[1] * ws, bx = b[0] * ws, by = b[1] * ws, L = Math.hypot(bx - ax, by - ay);
+      if (!L) continue;
+      const nx = -(by - ay) / L, ny = (bx - ax) / L;
+      for (const t of [0.3, 0.5, 0.7]) {
+        const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+        const p = sideOf(x, y, nx, ny), q = sideOf(x, y, -nx, -ny);
+        for (const [c, o] of [[p, q], [q, p]]) {
+          if (c < 0 || c === FLOOR) continue;
+          doored.add(c);
+          if (o === OUTSIDE) exterior.add(c);
+          else if (o >= 0 && !via.has(c)) via.set(c, "door");
+        }
+        if (p >= 0 && q >= 0) join(p, q);
+      }
+    }
+    // openings: measured floor right against a labelled room or a piece (no wall ink between), an opening's
+    // width long
+    const minRun = OPENING_MIN_M * pxPerM * ws;
+    const opensOntoMeasured = (c: number) => {
+      let run = 0;
+      for (const i of comps[c]) {
+        const x = i % mw;
+        for (const j of [x > 0 ? i - 1 : -1, x < mw - 1 ? i + 1 : -1, i - mw, i + mw]) {
+          if (j < 0 || j >= N || id[j] === c) continue;
+          if (state[j] === TAKEN || (state[j] === FREE && nearTaken(j, i, state, mw, mh, r + 1))) { run++; break; }
+        }
+        if (run >= minRun) return true;
+      }
+      return false;
+    };
+    const candidates = new Set<number>([...zones.filter((z) => !z.leaks), ...unlabeled].map((z) => id[z.cells[0]]));
+    for (const c of candidates) if (opensOntoMeasured(c)) { join(c, FLOOR); if (!via.has(c)) via.set(c, "opening"); }
+    // printed text inside a piece says someone drew something there: never set it apart unseen
+    const texted = new Set<number>();
+    for (const [tx, ty] of inp.texts ?? []) {
+      const cx = Math.round(tx * ws), cy = Math.round(ty * ws);
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x >= 0 && y >= 0 && x < mw && y < mh && id[y * mw + x] >= 0) texted.add(id[y * mw + x]);
+      }
+    }
+    const rootsWith = (set: Set<number>) => new Set([...set].map(find));
+    const extRoots = rootsWith(exterior), doorRoots = rootsWith(doored);
+    const kept: CoverZone[] = [];
+    for (const z of unlabeled) {
+      const c = id[z.cells[0]], root = find(c);
+      if (byComp.has(c)) kept.push({ ...z, access: "open" });
+      else if (root === find(FLOOR)) kept.push({ ...z, access: via.get(c) ?? "door" });
+      else if (extRoots.has(root)) kept.push({ ...z, access: "exterior" });
+      else if (doorRoots.has(root)) kept.push({ ...z, access: "unreached" });
+      else if (texted.has(c) || z.m2 > VOID_MAX_M2) kept.push({ ...z, access: "none" });
+      else noAccess.push(z);
+    }
+    unlabeled.splice(0, unlabeled.length, ...kept);
+  }
+  return { zones, unlabeled, noAccess, measuredLabels, mw, mh, ws };
+}
+
+/** Is measured floor the first thing within `reach` cells of j, looking away from i (across the sliver band)? */
+function nearTaken(j: number, i: number, state: Uint8Array, mw: number, mh: number, reach: number): boolean {
+  const dx = (j % mw) - (i % mw), dy = ((j / mw) | 0) - ((i / mw) | 0);
+  let x = j % mw, y = (j / mw) | 0;
+  for (let s = 0; s < reach; s++) {
+    x += dx; y += dy;
+    if (x < 0 || y < 0 || x >= mw || y >= mh) return false;
+    const v = state[y * mw + x];
+    if (v === TAKEN) return true;
+    if (v !== FREE) return false;
+  }
+  return false;
 }
 
 /** Is there wall or measured floor within `reach` cells of j, looking away from i? */
@@ -618,6 +748,38 @@ export function zoneRing(z: CoverZone, mw: number, mh: number, ws: number): Poin
   const region = new Uint8Array(lw * lh);
   for (const i of toLocal(z.cells)) region[i] = 1;
   return traceRegion({ region, mw: lw, mh: lh, ws }).map(([x, y]) => [x + x0 / ws, y + y0 / ws] as Point);
+}
+
+/** A rectangle side grows while this share of its new row or column is the zone's floor. */
+const RECT_FILL = 0.95;
+
+/** The rectangle of a zone's floor round a point (image px): grown a cell at a time on every side while the
+ *  new row or column is the zone's own floor. In an L-shaped corridor it is the leg the point is in; in a hall
+ *  the open part round it. [x0, y0, x1, y1], image px. */
+export function zoneRectAt(z: CoverZone, x: number, y: number, mw: number, mh: number, ws: number): [number, number, number, number] {
+  const { x0, y0, lw, lh, toLocal } = localBox(z.cells, mw, mh, 0);
+  const inZ = new Uint8Array(lw * lh);
+  const local = toLocal(z.cells);
+  for (const i of local) inZ[i] = 1;
+  // start at the zone cell nearest the point
+  const px = x * ws - x0, py = y * ws - y0;
+  let start = local[0], bd = Infinity;
+  for (const i of local) { const d = (i % lw - px) ** 2 + (((i / lw) | 0) - py) ** 2; if (d < bd) { bd = d; start = i; } }
+  let a = start % lw, b = (start / lw) | 0, c = a, d = b;
+  const full = (x0_: number, y0_: number, x1_: number, y1_: number) => {
+    if (x0_ < 0 || y0_ < 0 || x1_ >= lw || y1_ >= lh) return false;
+    let n = 0, t = 0;
+    for (let yy = y0_; yy <= y1_; yy++) for (let xx = x0_; xx <= x1_; xx++) { t++; n += inZ[yy * lw + xx]; }
+    return n >= RECT_FILL * t;
+  };
+  for (let grew = true; grew;) {
+    grew = false;
+    if (full(a - 1, b, a - 1, d)) { a--; grew = true; }
+    if (full(c + 1, b, c + 1, d)) { c++; grew = true; }
+    if (full(a, b - 1, c, b - 1)) { b--; grew = true; }
+    if (full(a, d + 1, c, d + 1)) { d++; grew = true; }
+  }
+  return [(a + x0) / ws, (b + y0) / ws, (c + 1 + x0) / ws, (d + 1 + y0) / ws];
 }
 
 /** Wall-face thickness band (m) and the shortest face that vouches for a wall — wallpairs.ts's defaults. */
