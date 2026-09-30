@@ -1438,3 +1438,38 @@ test("row door/window schedules: the title names the kind; a mark two schedules 
   assert.equal(x1.status, "resolved");
   if (x1.status === "resolved") assert.deepEqual([x1.item?.kind, x1.item?.cells.WIDTH], ["window", "3' - 0\""]);
 });
+
+test("row door schedules REFUSE or withhold inconsistent rows — never return a wrong row count", () => {
+  const t = (str: string, x: number, y: number): GraphSpan => ({ str, x, y, w: str.length * 5, h: 8 });
+  // a hardware-set caption ("DOOR 001") and a multi-line cell's fragment ("4")
+  // band into the table beside the real key column: withheld by name
+  const sheet: SheetSpans = { key: "h.pdf#1", spans: [
+    t("DOOR SCHEDULE", 40, 20),
+    t("NO.", 40, 50), t("WIDTH", 120, 50), t("HEIGHT", 200, 50), t("REMARKS", 280, 50),
+    ...["001", "002", "003", "004"].flatMap((k, i) => [t(k, 40, 70 + i * 30), t("3'-0\"", 120, 70 + i * 30), t("7'-0\"", 200, 70 + i * 30)]),
+    t("4", 130, 80), t("4", 130, 110),
+    t("DOOR 001", 300, 95),
+  ] };
+  const g = buildSheetGraph([sheet]);
+  const door = g.tables.find((x) => x.kind === "door")!;
+  assert.deepEqual(door.rows.map((r) => r.key), ["001", "002", "003", "004"]);
+  assert.ok(g.notes.some((n) => /WITHHELD/.test(n)), "the withheld rows are named");
+  // a single row under a stray header is refused, not returned as a schedule
+  const lone: SheetSpans = { key: "l.pdf#1", spans: [
+    t("NO.", 40, 50), t("SIZE", 120, 50), t("FINISH", 200, 50), t("REMARKS", 280, 50),
+    t("5", 40, 70), t("3'-0\"", 120, 70),
+  ] };
+  const g2 = buildSheetGraph([lone]);
+  assert.equal(g2.tables.filter((x) => x.kind === "door" || x.kind === "window" || x.kind === "door-window").length, 0);
+  assert.ok(g2.notes.some((n) => /REFUSED/.test(n)));
+});
+
+test("a title-block title set over two lines is read as one ('AREA A PLUMBING' / 'PLANS')", () => {
+  const W = 1000, H = 700;
+  const t = (str: string, x: number, y: number, h = 8): GraphSpan => ({ str, x, y, w: str.length * h * 0.6, h });
+  const r = classifySheetRole({ key: "p", width: W, height: H, spans: [
+    t("SEE MECHANICAL SCHEDULE SHEET", 60, 200), t("Sheet Title:", 720, 590, 6),
+    t("AREA A PLUMBING", 720, 610, 16), t("PLANS", 720, 630, 16), t("ACCESSORY SCHEDULE", 620, 400, 16),
+  ] });
+  assert.equal(r.role, "plan");
+});
