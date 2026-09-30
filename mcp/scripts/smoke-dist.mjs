@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { TOOL_NAMES, TOOL_STAGES } from "../src/staging.ts";
+import { TOOL_NAMES } from "../src/toolnames.ts";
 import { WIKI_PAGES, WIKI_VERSION } from "../src/wiki.generated.ts";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,9 +29,9 @@ for (const [family, name] of schemaSpecs) {
 
 function send(child, message) { child.stdin.write(`${JSON.stringify(message)}\n`); }
 
-async function runSmoke(root, staged) {
+async function runSmoke(root) {
   const child = spawn(process.execPath, [resolve(root, "dist/server.js")], {
-    cwd: root, env: { ...process.env, OPENTAKEOFF_MCP_STAGED_TOOLS: staged ? "1" : "0" },
+    cwd: root, env: process.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = ""; let stderr = "";
@@ -46,7 +46,7 @@ async function runSmoke(root, staged) {
     failureReject?.(error instanceof Error ? error : new Error(String(error)));
     if (!expectClose && child.exitCode === null && !child.killed) child.kill();
   };
-  const timeout = setTimeout(() => fail(new Error(`Timed out waiting for ${staged ? "staged" : "flat"} dist smoke; stderr:\n${stderr}`)), 30_000);
+  const timeout = setTimeout(() => fail(new Error(`Timed out waiting for dist smoke; stderr:\n${stderr}`)), 30_000);
   child.once("error", (error) => fail(error));
   child.once("close", (code, signal) => {
     if (!expectClose) fail(new Error(`Distribution server exited before smoke completed (code ${code}, signal ${signal}); stderr:\n${stderr}`));
@@ -83,8 +83,7 @@ async function runSmoke(root, staged) {
     send(child, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
     const listed = await responseFor(2);
     const names = listed.tools.map((tool) => tool.name).sort();
-    const expectedTools = staged ? [...TOOL_STAGES.setup, "open_tool_stage"].sort() : [...TOOL_NAMES];
-    assert.deepEqual(names, expectedTools, `${staged ? "staged" : "flat"} tool surface`);
+    assert.deepEqual(names, [...TOOL_NAMES], "tool surface");
     send(child, { jsonrpc: "2.0", id: 3, method: "resources/list", params: {} });
     const resources = (await responseFor(3)).resources;
     assert.ok(resources.some((resource) => resource.uri === "takeoff://protocol"));
@@ -125,6 +124,6 @@ try {
     cpSync(sourceDist, resolve(root, "dist"), { recursive: true }); cpSync(resolve(packageDir, "package.json"), resolve(root, "package.json"));
     symlinkSync(resolve(packageDir, "node_modules"), resolve(root, "node_modules"), "junction");
   }
-  const flat = await runSmoke(root, false); const staged = await runSmoke(root, true);
-  console.log(`Distribution smoke: flat ${flat.tools} tools, staged ${staged.tools} tools, ${flat.schemas} protocol schemas, ${flat.wiki} wiki pages verified over stdio from ${root}.`);
+  const flat = await runSmoke(root);
+  console.log(`Distribution smoke: ${flat.tools} tools, ${flat.schemas} protocol schemas, ${flat.wiki} wiki pages verified over stdio from ${root}.`);
 } finally { if (!suppliedRoot) rmSync(root, { recursive: true, force: true }); }

@@ -33,14 +33,11 @@ node --test evals/mcp-workflow-bench/score.test.mjs
 ```
 
 The output directory must be new; the runner refuses to overwrite an existing
-directory. It contains separate flat and staged records, timings, source-
-inspection PNGs, exported JSON/PDF artifacts, process-preservation checks, and
-a reproducibility summary. The runner sets `OPENTAKEOFF_ONE_CLICK=0` in both
-processes, records staged tool lists and expected refusals, scores both
-exports, and requires flat/staged canonical equality. Round-trip comparison
-uses an exact payload comparison; the independent flat/staged comparison uses
-the semantic normalization in `run.mjs`'s `canonicalExport` function, which
-ignores only minted IDs and documented timestamps.
+directory. It contains the workflow's records, timings, source-inspection
+PNGs, exported JSON/PDF artifacts, process-preservation checks, and a
+reproducibility summary. The runner sets `OPENTAKEOFF_ONE_CLICK=0` in both
+processes, records the tool list and expected refusals, and scores the export.
+Round-trip comparison through a fresh process uses an exact payload comparison.
 The summary reports total explicit JSON-RPC requests (initialize plus logged
 requests), non-tool requests, and tool calls; notifications are excluded.
 `score.mjs` accepts a candidate editable export and the reference path can be

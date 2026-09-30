@@ -156,11 +156,15 @@ export interface ViewMarks {
   struck?: [number, number][];
   /** Reference points — the sweep's seed, an anchor. Violet double ring. */
   ring?: [number, number][];
+  /** Numbered placements — count_symbol's marks: green = counted, grey = already
+   * counted under the condition, blue = the example. The label is drawn beside it. */
+  numbered?: { at: [number, number]; label: string; kind: "counted" | "already" | "seed" | "withheld" | "loose" }[];
 }
 
 const MARK_QUESTION = "#ff8c00";
 const MARK_STRUCK = "#e10ee1";
 const MARK_RING = "#7a00e6";
+const NUMBERED_COLOR = { counted: "#0a8f2e", already: "#808080", seed: "#1a4de6", withheld: "#ff8c00", loose: "#9b30d9" } as const;
 
 function polyCircle(ctx: Ctx2D, x: number, y: number, r: number): void {
   ctx.beginPath();
@@ -205,6 +209,15 @@ export function drawMarks(ctx: Ctx2D, toCanvas: ToCanvas, marks: ViewMarks, long
     ctx.strokeStyle = MARK_RING;
     polyCircle(ctx, x, y, r);
     polyCircle(ctx, x, y, r * 0.6);
+    drawn++;
+  }
+  for (const m of marks.numbered ?? []) {
+    const [x, y] = toCanvas(m.at[0], m.at[1]);
+    ctx.strokeStyle = NUMBERED_COLOR[m.kind];
+    ctx.fillStyle = NUMBERED_COLOR[m.kind];
+    polyCircle(ctx, x, y, r);
+    ctx.font = `bold ${Math.round(r * 1.5)}px sans-serif`;
+    ctx.fillText(m.label, x + r * 1.1, y - r * 0.6);
     drawn++;
   }
   return drawn;

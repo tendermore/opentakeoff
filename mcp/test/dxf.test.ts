@@ -66,14 +66,14 @@ const shoelace = (pts: [number, number][]) => Math.abs(pts.reduce((a, [x0, y0], 
 test("export_dxf: a measured room lands as a closed LWPOLYLINE on OT-<TAG>, area = report SF, schema-valid reply", async () => {
   const client = await pair();
   const dir = await mkdtemp(path.join(tmpdir(), "ot-dxf-"));
-  await callOk(client, "load_plan", { path: PLAN });
+  await callOk(client, "open_drawings", { action: "load", path: PLAN });
   await callOk(client, "set_scale", { sheet: KEY, use_detected: true });
   // a 40 ft × 25 ft rectangle at upp 1/36: 1440 × 900 px
-  const poly = await callOk(client, "measure_polygon", { sheet: KEY, verts: [[200, 200], [1640, 200], [1640, 1100], [200, 1100]], condition: "LVT-1" });
+  const poly = await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[200, 200], [1640, 200], [1640, 1100], [200, 1100]], condition: "LVT-1" });
   assert.ok(Math.abs(poly.area_sf - 1000) < 0.01, `1000 SF, got ${poly.area_sf}`);
 
   const out = path.join(dir, "a101.dxf");
-  const r = await callOk(client, "export_dxf", { path: out });
+  const r = await callOk(client, "export", { action: "dxf", path: out });
   z.object(exportDxfOutput).parse(r);
   assert.equal(r.sheet, KEY);
   assert.equal(r.sheet_number, "A-101");
@@ -105,7 +105,7 @@ test("export_dxf: a measured room lands as a closed LWPOLYLINE on OT-<TAG>, area
   assert.ok(near(r.extents.min[0], Math.min(...xs)) && near(r.extents.min[1], Math.min(...ys)) && near(r.extents.max[0], Math.max(...xs)) && near(r.extents.max[1], Math.max(...ys)), `extents ${JSON.stringify(r.extents)} vs ring`);
 
   // metres, by title-block number, re-export over our own file without overwrite
-  const m = await callOk(client, "export_dxf", { path: out, sheet: "a-101", units: "m" });
+  const m = await callOk(client, "export", { action: "dxf", path: out, sheet: "a-101", units: "m" });
   assert.equal(m.units, "m");
   const [ringM] = entities(await readFile(out, "utf8"));
   assert.ok(Math.abs(shoelace(ringM.pts) - 1000 * 0.3048 * 0.3048) < 1e-6);
@@ -115,19 +115,19 @@ test("export_dxf refusals: no plan, no scale, ambiguous sheet, unknown sheet, a 
   const client = await pair();
   const dir = await mkdtemp(path.join(tmpdir(), "ot-dxf-"));
   const out = path.join(dir, "x.dxf");
-  assert.match(await callErr(client, "export_dxf", { path: out }), /No plan loaded/);
+  assert.match(await callErr(client, "export", { action: "dxf", path: out }), /No plan loaded/);
 
-  await callOk(client, "load_plan", { path: PLAN });
-  assert.match(await callErr(client, "export_dxf", { path: out }), /No sheet carries committed shapes/);
-  assert.match(await callErr(client, "export_dxf", { path: out, sheet: KEY }), /no scale/);
-  assert.match(await callErr(client, "export_dxf", { path: out, sheet: "Z-999" }), /Z-999/);
+  await callOk(client, "open_drawings", { action: "load", path: PLAN });
+  assert.match(await callErr(client, "export", { action: "dxf", path: out }), /No sheet carries committed shapes/);
+  assert.match(await callErr(client, "export", { action: "dxf", path: out, sheet: KEY }), /no scale/);
+  assert.match(await callErr(client, "export", { action: "dxf", path: out, sheet: "Z-999" }), /Z-999/);
 
   // a stranger's file at path is protected; overwrite:true replaces it
   await writeFile(out, "not ours\n");
   await callOk(client, "set_scale", { sheet: KEY, use_detected: true });
-  await callOk(client, "measure_polygon", { sheet: KEY, verts: [[200, 200], [900, 200], [900, 900]], condition: "CPT-1" });
-  assert.match(await callErr(client, "export_dxf", { path: out }), /not an OpenTakeoff export/);
-  await callOk(client, "export_dxf", { path: out, overwrite: true });
+  await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[200, 200], [900, 200], [900, 900]], condition: "CPT-1" });
+  assert.match(await callErr(client, "export", { action: "dxf", path: out }), /not an OpenTakeoff export/);
+  await callOk(client, "export", { action: "dxf", path: out, overwrite: true });
   await assertWritable(out, "dxf");   // now recognized as ours: no throw
 });
 
@@ -137,16 +137,16 @@ test("recalibrated void geometry agrees with report and DXF, and scale undo vali
   const server = buildServer(session); await server.connect(st);
   const client = new Client({ name: "phase1-dxf", version: "0" }); await client.connect(ct);
   try {
-    await callOk(client, "load_plan", { path: PLAN });
+    await callOk(client, "open_drawings", { action: "load", path: PLAN });
     await callOk(client, "set_scale", { sheet: KEY, upp: 1 / 36 });
-    const poly = await callOk(client, "measure_polygon", { sheet: KEY, verts: [[0,0],[720,0],[720,720],[0,720]], condition: "TILE-1" });
-    await callOk(client, "cut_out", { parent_shape_id: poly.shape_id, verts: [[180,180],[540,180],[540,540],[180,540]] });
+    const poly = await callOk(client, "measure", { kind: "area", sheet: KEY, points: [[0,0],[720,0],[720,720],[0,720]], condition: "TILE-1" });
+    await callOk(client, "derive", { action: "deduct", parent_shape_id: poly.shape_id, points: [[180,180],[540,180],[540,540],[180,540]] });
     await callOk(client, "set_scale", { sheet: KEY, upp: 1 / 18 });
     const cad = entities(session.exportDxf(KEY).build.dxf).filter((e) => e.type === "LWPOLYLINE");
     const area = cad.reduce((n, e) => n + (e.layer.endsWith("-HOLE") ? -1 : 1) * shoelace(e.pts), 0);
     assert.equal(area, 1200);
     assert.equal((session.exportReport() as any).totals.total_sf, area);
-    const undo = await callOk(client, "undo_last", {});
+    const undo = await callOk(client, "edit_takeoff", { action: "undo" });
     assert.equal(undo.steps[0].op, "scale");
     assert.equal(session.summary().totals.total_sf, 300);
   } finally { await client.close(); await server.close(); }

@@ -2,15 +2,14 @@
 // keep their original numbers; they are deliberately outside this allowlist.
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { TOOL_NAMES, ALL_TOOL_NAMES, stagesFor } from "../src/staging.ts";
+import { TOOL_NAMES, ALL_TOOL_NAMES } from "../src/toolnames.ts";
 
 const DOCS = ["../../README.md", "../../FEATURES.md", "../../AGENT_BRIEF.md",
   "../../README.zh-Hans.md", "../../README.ja.md", "../../README.ko.md",
   "../../docs/USER_GUIDE.md", "../README.md", "../../docs/MCP.md", "../../docs/AGENT_GUIDE.md",
 ].map((p) => fileURLToPath(new URL(p, import.meta.url)));
-const RE = /<!--(tool-count(?:-all|-setup)?)-->(\d+)<!--\/\1-->/g;
-const counts = { "tool-count": TOOL_NAMES.length, "tool-count-all": ALL_TOOL_NAMES.length,
-  "tool-count-setup": stagesFor(false).setup.length };
+const RE = /<!--(tool-count(?:-all)?)-->(\d+)<!--\/\1-->/g;
+const counts = { "tool-count": TOOL_NAMES.length, "tool-count-all": ALL_TOOL_NAMES.length };
 const write = process.argv.includes("--write");
 let stale = 0, seen = 0;
 // Release metadata must agree before --write can mutate generated counts. The
@@ -30,10 +29,10 @@ for (const file of DOCS) {
   // A correct generated count must not hide a second stale prose claim.
   const unmarked = [...text.replace(RE, "GENERATED").matchAll(/\b\d+ (?:MCP tools|tools|tool schemas)\b/g)];
   if (unmarked.length) {
-    console.error(`${file}: ungenerated tool counts: ${unmarked.map(m => m[0]).join(", ")} — mark default/all/setup counts explicitly`);
+    console.error(`${file}: ungenerated tool counts: ${unmarked.map(m => m[0]).join(", ")} — mark default/all counts explicitly`);
     process.exitCode = 1;
   }
 }
-console.log(`${seen} marker(s), ${stale} ${write ? "rewritten" : "stale"}, ${TOOL_NAMES.length} default / ${ALL_TOOL_NAMES.length} gated / ${counts["tool-count-setup"]} setup tools`);
+console.log(`${seen} marker(s), ${stale} ${write ? "rewritten" : "stale"}, ${TOOL_NAMES.length} default / ${ALL_TOOL_NAMES.length} gated tools`);
 // Run in this process so --write also reaches the schema-backed inventory.
 await import("./check-tool-inventory.mjs");

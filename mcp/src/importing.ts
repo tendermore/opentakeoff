@@ -27,7 +27,7 @@ const mergeTakeoffImport = mergeJs as unknown as (
 ) => { payload: Record<string, unknown>; note: MergeNote };
 
 export async function importTakeoff(session: Session, filePath: string) {
-  if (!session.file) throw new UserError("No plan loaded — call load_plan first (the import lands on the loaded document).");
+  if (!session.file) throw new UserError("No plan loaded — call open_drawings {action: \"load\"} first (the import lands on the loaded document).");
   let text: string;
   try {
     text = await readFile(filePath, "utf8");
@@ -123,6 +123,6 @@ export async function importTakeoff(session: Session, filePath: string) {
     note: (note.replaced
       ? "Empty session — the import IS the takeoff now. Unreviewed machine shapes stay pencil; verify with view_sheet overlay:true."
       : "Merged: same finish tags joined your conditions, new ids appended, duplicates skipped (re-import is idempotent), this session's calibration won per sheet.")
-      + (rulesImported ? ` ${rulesImported} correction rule(s) arrived — apply_rules re-runs them.` : ""),
+      + (rulesImported ? ` ${rulesImported} correction rule(s) arrived — schedule {action: "apply_rules"} re-runs them.` : ""),
   };
 }

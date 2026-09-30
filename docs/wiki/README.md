@@ -14,6 +14,7 @@ a plan. These are documentation resources, not additional measurement tools.
 | What do floor SF, wall SF, base LF and review mean? | [Domain knowledge](domain.md) | `takeoff://wiki/domain` |
 | How do I change this repository and verify a PR? | [Repository guide](repo-guide.md) | `takeoff://wiki/repo-guide` |
 | What tools and required inputs does the runtime expose? | [Generated tool index](../MCP_TOOL_INDEX.md) | `takeoff://wiki/tool-index` |
+| What does each tool and action do, in depth? | [Tool reference](tools.md) | `takeoff://wiki/tools` |
 
 For detailed canvas instructions, use the [human guide](../USER_GUIDE.md).
 For a full takeoff session, use the [agent guide](../AGENT_GUIDE.md).

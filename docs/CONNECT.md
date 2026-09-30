@@ -105,8 +105,5 @@ runs, and [MCP.md](MCP.md) walks the whole tool surface.
 - **Updates.** `npx -y opentakeoff-mcp` runs the package from npm. To make sure you're on
   the newest release, use `opentakeoff-mcp@latest` in the command; to pin one, use a
   version, e.g. `opentakeoff-mcp@0.9.90`.
-- **Staged tools.** Some clients cope better with a smaller tool list. Set
-  `OPENTAKEOFF_MCP_STAGED_TOOLS=1` in the server's environment to start with the setup tools
-  only; details in [`mcp/README.md`](../mcp/README.md#staged-tool-exposure-opt-in).
 - **Building from source or running in Docker:** [`MCP.md`](MCP.md#setup) and
   [`mcp/README.md`](../mcp/README.md).

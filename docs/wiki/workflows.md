@@ -28,7 +28,7 @@ Source: [Human stitching instructions](../USER_GUIDE.md#stitching-a-floor-split-
 
 ## Agent: source to reviewed handoff
 
-1. `load_plan` → inspect sheets/revisions → `set_scale` on each measured sheet.
+1. `open_drawings {action: "load"}` → inspect sheets/revisions → `set_scale` on each measured sheet.
    Confirm the relevant detail's scale, which may differ from the overall plan.
 2. Read source text and vectors; inspect the matching region with `view_sheet`.
    Use each room's schedule evidence for its finish. Missing/ambiguous evidence
@@ -36,7 +36,7 @@ Source: [Human stitching instructions](../USER_GUIDE.md#stitching-a-floor-split-
 3. `propose_takeoff` names a batch; it creates no geometry. Measure small batches
    with the appropriate area, run, surface or count tool.
 4. Inspect overlays and actual boundaries, openings, jambs and deductions.
-   `edit_shape` corrects pending shapes. Physical base gaps use explicit runs;
+   `edit_takeoff {action: "edit"}` corrects pending shapes. Physical base gaps use explicit runs;
    stepped wall faces use separate height bands. See the [geometry workflow](../GEOMETRY_WORKFLOW.md).
 
 ### Trace a room the way an estimator does
@@ -49,7 +49,7 @@ total, is what fails. These rules are what the references are drawn to:
    fixtures, equipment, hatch patterns, dimension strings, text and leaders
    never define the boundary; the finish runs under casework and fixtures.
 2. Corners sit where two adjacent wall-face strokes meet. Read the strokes with
-   `get_sheet_vectors` over a tight region and put each vertex on a stroke; do
+   `sheet_context {action: "vectors"}` over a tight region and put each vertex on a stroke; do
    not trace a hatch edge or a raster guess.
 3. At every **door or cased opening** the ring follows the face to the jamb,
    turns into the opening, runs across it on the **wall centerline** (midway
@@ -65,20 +65,20 @@ total, is what fails. These rules are what the references are drawn to:
    wall, split on the drawn transition line or the partition's centerline.
 7. Take the finish from the schedule row; a plan tag alone is a cross-check.
 8. After each ring, `view_sheet` a tight crop with `overlay: true` at a high
-   `px` and look at every corner and notch before the next room; `edit_shape`
+   `px` and look at every corner and notch before the next room; `edit_takeoff {action: "edit"}`
    fixes what the crop shows. A full-sheet render cannot audit a ring.
 9. A **curved wall is a circle**: the architect drew it with a center and a
    radius. Never chord it and never hand-place a run of points along it. Give
    the bow one point anywhere on the wall face between the arc's two ends and
-   list that point's index in `arc_through` on `measure_polygon`,
-   `measure_line` or `measure_surface`; the server lays the unique circle
+   list that point's index in `arc_through` on `measure {kind: "area"}`,
+   `measure {kind: "length"}` or `measure {kind: "surface"}`; the server lays the unique circle
    through the three and bakes it to vertices, exactly as the canvas's Curve
-   mode does. `get_sheet_vectors` flags curve chords in its `meta` byte (bit 1)
+   mode does. `sheet_context {action: "vectors"}` flags curve chords in its `meta` byte (bit 1)
    — a window full of them is a radius wall, so read the bow from a render.
 
 When something is genuinely ambiguous, follow the rule most literally, carry it,
 and say so in the shape's label or an annotation. Do not stop.
-5. `takeoff_summary` and `export_report` check quantities and material coverage.
+5. `summary` and `export {action: "report"}` check quantities and material coverage.
    Shorten notes through `list_annotations` → `edit_annotation` where permitted.
 6. Export editable takeoff JSON and a marked-set PDF, reopen the JSON against
    the same source, and check the handoff. Leave agent work pending for the

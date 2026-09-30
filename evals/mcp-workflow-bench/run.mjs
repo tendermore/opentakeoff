@@ -24,7 +24,7 @@ const reference = JSON.parse(readFileSync(referencePath, "utf8"));
 const plan = resolve(root, reference.source.path);
 const planHash = createHash("sha256").update(readFileSync(plan)).digest("hex");
 if (planHash !== reference.source.sha256) throw new Error(`fixture hash changed: expected ${reference.source.sha256}, got ${planHash}`);
-// Sheet id as load_plan reports it: the bare file name unless the reference names a page beyond the first.
+// Sheet id as open_drawings load reports it: the bare file name unless the reference names a page beyond the first.
 const sheetId = reference.source.page === undefined || reference.source.page === 1
   ? basename(reference.source.path)
   : `${basename(reference.source.path)}#${reference.source.page}`;
@@ -69,13 +69,13 @@ function bounded(promise, label, milliseconds = timeoutMs) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function openClient(staged, dir) {
+async function openClient(dir) {
   const stderrChunks = [];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
     cwd: root,
-    env: { ...process.env, OPENTAKEOFF_ONE_CLICK: "0", OPENTAKEOFF_MCP_STAGED_TOOLS: staged ? "1" : "0" },
+    env: { ...process.env, OPENTAKEOFF_ONE_CLICK: "0" },
     stderr: "pipe",
   });
   transport.stderr?.on("data", (chunk) => stderrChunks.push(String(chunk)));
@@ -103,12 +103,11 @@ function expectedProductRefusal(response, label, pattern) {
   if (!pattern.test(responseText(response))) throw new Error(`${label} refusal did not contain ${pattern}: ${responseText(response)}`);
 }
 
-async function workflow(staged, dir) {
-  const session = await openClient(staged, dir);
+async function workflow(dir) {
+  const session = await openClient(dir);
   const calls = [];
   const counts = new Map();
   const expectedRefusals = [];
-  const stageOpens = [];
   let sequence = 0;
   const record = async (kind, params, action, expect = "success", refusalPattern) => {
     const started = performance.now();
@@ -122,7 +121,7 @@ async function workflow(staged, dir) {
     const elapsedMs = performance.now() - started;
     response.transportError = transportError;
     const failed = Boolean(response.isError);
-    const safe = externalizeImages(response, dir, `${staged ? "staged" : "flat"}-${sequence}-${kind}`);
+    const safe = externalizeImages(response, dir, `flat-${sequence}-${kind}`);
     const row = { kind, params, elapsed_ms: elapsedMs, isError: failed, transport_error: transportError, value: parseResult(response), response: safe };
     sequence += 1;
     calls.push(row);
@@ -130,7 +129,6 @@ async function workflow(staged, dir) {
       const name = params.name;
       counts.set(name, (counts.get(name) ?? 0) + 1);
       if (expect === "product-refusal") expectedRefusals.push({ tool: name, reason: responseText(response) });
-      if (name === "open_tool_stage") stageOpens.push(params.arguments.stage);
     }
     if (expect === "product-refusal") expectedProductRefusal(response, params.name, refusalPattern ?? /set_scale/);
     if (expect === "success" && (failed || transportError)) throw new Error(`${kind} failed: ${responseText(response)}`);
@@ -142,35 +140,24 @@ async function workflow(staged, dir) {
     const resources = await record("resources/list", {}, () => session.client.listResources());
     const resourceRows = resources.value?.resources ?? resources.response?.resources ?? [];
     if (resourceRows[0]?.uri) await record("resources/read", { uri: resourceRows[0].uri }, () => session.client.readResource({ uri: resourceRows[0].uri }));
-    if (staged) {
-      const initialNames = new Set(tools.response?.tools?.map((tool) => tool.name) ?? []);
-      if (initialNames.has("measure_polygon")) throw new Error("staged setup unexpectedly exposed measure_polygon");
-      await tool("open_tool_stage", { stage: "measure" });
-      const measuredTools = await record("tools/list", {}, () => session.client.listTools());
-      if (!measuredTools.response?.tools?.some((tool) => tool.name === "measure_polygon")) throw new Error("opening measure stage did not expose measure_polygon");
-    }
-    const loaded = await tool("load_plan", { path: plan });
+    const loaded = await tool("open_drawings", { action: "load", path: plan });
     const loadedSheetIds = (loaded.value?.sheets ?? []).map((entry) => entry.sheet);
-    if (!loadedSheetIds.includes(sheetId)) throw new Error(`load_plan sheets ${JSON.stringify(loadedSheetIds)} do not include expected sheet ${sheetId}`);
+    if (!loadedSheetIds.includes(sheetId)) throw new Error(`open_drawings load sheets ${JSON.stringify(loadedSheetIds)} do not include expected sheet ${sheetId}`);
     const sheet = sheetId;
-    await tool("sheet_info", { sheet });
-    await tool("read_sheet_text", { sheet });
-    await tool("get_sheet_vectors", { sheet });
+    await tool("open_drawings", { action: "info", sheet });
+    await tool("find_text", { action: "read", sheet });
+    await tool("sheet_context", { action: "vectors", sheet });
     await tool("view_sheet", { sheet, px: 1400 });
-    await tool("measure_polygon", { sheet, verts: reference.rooms[0].verts_px, condition: "SYNTH-FLOOR", role: "floor_area" }, "product-refusal");
+    await tool("measure", { kind: "area", sheet, points: reference.rooms[0].verts_px, condition: "SYNTH-FLOOR", role: "floor_area" }, "product-refusal");
     await tool("set_scale", { sheet, upp: reference.scale.feet_per_image_px });
     await tool("propose_takeoff", estimatorTrace
       ? { label: `${reference.reference_id} known-answer run`, rationale: "Scripted conformance run of the frozen reference rings; tool/workflow conformance only, not an agent trace." }
       : { label: "Synthetic four-room wall-face areas", rationale: "Analytic inset wall faces from demo/sample-plan.pdf; scripted conformance fixture." });
-    for (const room of reference.rooms) await tool("measure_polygon", { sheet, verts: room.verts_px, condition: room.finish ?? "SYNTH-FLOOR", role: "floor_area" });
-    if (staged) {
-      await tool("open_tool_stage", { stage: "revise" });
-      await record("tools/list", {}, () => session.client.listTools());
-    }
-    const listed = await tool("list_shapes", { sheet });
+    for (const room of reference.rooms) await tool("measure", { kind: "area", sheet, points: room.verts_px, condition: room.finish ?? "SYNTH-FLOOR", role: "floor_area" });
+    const listed = await tool("edit_takeoff", { action: "list", sheet });
     const shapeRows = listed.value?.shapes ?? [];
     if (shapeRows.length !== reference.rooms.length) throw new Error(`expected ${reference.rooms.length} committed shapes, got ${shapeRows.length}`);
-    for (let i = 0; i < shapeRows.length; i += 1) await tool("edit_shape", { shape_id: shapeRows[i].id, label: reference.rooms[i].label });
+    for (let i = 0; i < shapeRows.length; i += 1) await tool("edit_takeoff", { action: "edit", shape_id: shapeRows[i].id, label: reference.rooms[i].label });
     await tool("view_sheet", { sheet, overlay: true, px: 1400 });
     if (estimatorTrace) {
       // A real sheet renders far larger than the 1400px budget can show in one shot (St. Cloud is
@@ -189,14 +176,10 @@ async function workflow(staged, dir) {
     }
     const duplicates = await tool("scope_duplicates", { sheet });
     if ((duplicates.value?.collisions?.length ?? 0) || (duplicates.value?.duplicates?.length ?? 0) || duplicates.value?.shared_floor_sf !== 0) throw new Error("scope_duplicates reported overlap in clean fixture");
-    if (staged) {
-      await tool("open_tool_stage", { stage: "handoff" });
-      await record("tools/list", {}, () => session.client.listTools());
-    }
-    await tool("takeoff_summary");
-    await tool("export_report", { path: resolve(dir, "report.json"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });
-    await tool("export_marked_pdf", { path: resolve(dir, "marked.pdf"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });
-    await tool("export_takeoff", { path: resolve(dir, "export_takeoff.json"), overwrite: true });
+    await tool("summary");
+    await tool("export", { action: "report", path: resolve(dir, "report.json"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });
+    await tool("export", { action: "marked_pdf", path: resolve(dir, "marked.pdf"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });
+    await tool("export", { action: "takeoff", path: resolve(dir, "export_takeoff.json"), overwrite: true });
     const exportPayload = JSON.parse(readFileSync(resolve(dir, "export_takeoff.json"), "utf8"));
     const report = JSON.parse(readFileSync(resolve(dir, "report.json"), "utf8"));
     const pdf = readFileSync(resolve(dir, "marked.pdf"));
@@ -213,11 +196,11 @@ async function workflow(staged, dir) {
       if (!proposalIds.has(shape.origin?.proposal_id)) throw new Error(`shape ${shape.id} references missing proposal ${shape.origin?.proposal_id}`);
     }
     const scored = scoreCandidate(exportPayload, reference);
-    if (!scored.pass) throw new Error(`${staged ? "staged" : "flat"} export failed scorer: ${JSON.stringify(scored)}`);
+    if (!scored.pass) throw new Error(`export failed scorer: ${JSON.stringify(scored)}`);
     const serverVersion = session.client.getServerVersion?.() ?? null;
     const toolCalls = calls.filter((row) => row.kind === "tools/call").length;
     const nonToolRequests = calls.filter((row) => row.kind !== "tools/call").length + 1;
-    return { connected_ms: session.connectedMs, protocol_requests: calls.length + 1, non_tool_requests: nonToolRequests, tool_calls: toolCalls, per_tool_counts: Object.fromEntries(counts), expected_refusals: expectedRefusals, stage_opens: stageOpens, tools: tools.response?.tools?.map((row) => row.name) ?? [], server_version: serverVersion, scorer: scored };
+    return { connected_ms: session.connectedMs, protocol_requests: calls.length + 1, non_tool_requests: nonToolRequests, tool_calls: toolCalls, per_tool_counts: Object.fromEntries(counts), expected_refusals: expectedRefusals, tools: tools.response?.tools?.map((row) => row.name) ?? [], server_version: serverVersion, scorer: scored };
   } finally {
     try { await session.close(); }
     finally {
@@ -227,23 +210,9 @@ async function workflow(staged, dir) {
   }
 }
 
-function canonicalExport(payload) {
-  const strip = (value, keys) => Object.fromEntries(Object.entries(value ?? {}).filter(([key]) => !keys.has(key)));
-  return {
-    schema: payload.schema,
-    units: payload.units,
-    sheets: (payload.sheets ?? []).map((sheet) => strip(sheet, new Set())).sort((a, b) => a.sheet_id.localeCompare(b.sheet_id)),
-    conditions: (payload.conditions ?? []).map((condition) => strip(condition, new Set(["id", "created_at"]))).sort((a, b) => a.finish_tag.localeCompare(b.finish_tag)),
-    shapes: (payload.shapes ?? []).map((shape) => ({ ...strip(shape, new Set(["id", "condition_id"])), origin: strip(shape.origin, new Set(["proposal_id", "created_at", "updated_at"])) })).sort((a, b) => a.label.localeCompare(b.label)),
-    markups: payload.markups ?? [],
-    proposals: (payload.proposals ?? []).map((proposal) => strip(proposal, new Set(["id", "created_at"]))).sort((a, b) => a.label.localeCompare(b.label)),
-    approvals: (payload.approvals ?? []).map((approval) => strip(approval, new Set(["id", "shape_id", "created_at"]))),
-  };
-}
-
 async function freshProcess(dir) {
   mkdirSync(dir, { recursive: true });
-  const session = await openClient(false, dir);
+  const session = await openClient(dir);
   const calls = [];
   const request = async (name, arguments_) => {
     const started = performance.now();
@@ -255,10 +224,10 @@ async function freshProcess(dir) {
     return response;
   };
   try {
-    await request("load_plan", { path: plan });
-    await request("import_takeoff", { path: resolve(out, "flat/export_takeoff.json") });
-    await request("takeoff_summary", {});
-    await request("export_takeoff", { path: resolve(dir, "export_takeoff.json"), overwrite: true });
+    await request("open_drawings", { action: "load", path: plan });
+    await request("export", { action: "import", path: resolve(out, "flat/export_takeoff.json") });
+    await request("summary", {});
+    await request("export", { action: "takeoff", path: resolve(dir, "export_takeoff.json"), overwrite: true });
     const original = JSON.parse(readFileSync(resolve(out, "flat/export_takeoff.json"), "utf8"));
     const roundtrip = JSON.parse(readFileSync(resolve(dir, "export_takeoff.json"), "utf8"));
     assert.deepStrictEqual(roundtrip, original, "fresh-process export changed payload fields");
@@ -269,18 +238,13 @@ async function freshProcess(dir) {
 }
 
 const runs = {};
-for (const staged of [false, true]) {
-  const dir = resolve(out, staged ? "staged" : "flat");
-  mkdirSync(dir);
-  runs[staged ? "staged" : "flat"] = await workflow(staged, dir);
-}
+const flatDir = resolve(out, "flat");
+mkdirSync(flatDir);
+runs.flat = await workflow(flatDir);
 const fresh = await freshProcess(resolve(out, "fresh-process"));
-const flatExport = JSON.parse(readFileSync(resolve(out, "flat/export_takeoff.json"), "utf8"));
-const stagedExport = JSON.parse(readFileSync(resolve(out, "staged/export_takeoff.json"), "utf8"));
-const crossModeEqual = JSON.stringify(canonicalExport(flatExport)) === JSON.stringify(canonicalExport(stagedExport));
-if (Object.values(runs).some((run) => run.scorer?.pass !== true) || !crossModeEqual || !fresh.preservation.canonical_equal) throw new Error("benchmark acceptance checks failed");
+if (Object.values(runs).some((run) => run.scorer?.pass !== true) || !fresh.preservation.canonical_equal) throw new Error("benchmark acceptance checks failed");
 const summary = { benchmark: "scripted MCP workflow conformance", node_version: process.version, server_path: serverPath, reference_path: referenceRelPath, reference_id: reference.reference_id, source_sha256: planHash, analytic_reference: !estimatorTrace, independently_human_reviewed: reference.review?.human_reviewed === true, boundary: estimatorTrace
     ? "real-plan estimator-trace reference traced from PDF vectors by an agent, human review pending; a scripted known-answer run proves tool/workflow conformance only, not agent accuracy"
-    : "synthetic analytic fixture; no claim of real-plan accuracy or human review", cross_mode_canonical_equal: crossModeEqual, runs, fresh_process: fresh };
+    : "synthetic analytic fixture; no claim of real-plan accuracy or human review", runs, fresh_process: fresh };
 writeFileSync(resolve(out, "summary.json"), JSON.stringify(summary, null, 2));
 console.log(JSON.stringify({ out, summary }, null, 2));

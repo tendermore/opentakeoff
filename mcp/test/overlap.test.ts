@@ -84,17 +84,17 @@ test("no two regions the engine hands over on one sheet share floor", async (t) 
     return JSON.parse(txt);
   };
 
-  await call("load_plan", { path: PLAN });
+  await call("open_drawings", { action: "load", path: PLAN });
   const sc = await call("set_scale", { sheet: KEY, use_detected: true });
   const sfPerPx = (sc.upp as number) ** 2;
 
   const rings: Ring[] = [];
-  const det = await call("detect_rooms", { sheet: KEY, return_verts: true });
+  const det = await call("takeoff_rooms", { action: "detect", sheet: KEY, return_verts: true });
   for (const r of det.rooms as { label: string; verts: number[][]; area_sf: number }[]) {
     rings.push({ name: `detect:${r.label}`, verts: r.verts, sf: r.area_sf });
   }
   for (const [name, x, y] of HAND) {
-    const r = await call("one_click", { sheet: KEY, x, y, return_verts: true });
+    const r = await call("takeoff_rooms", { action: "at", sheet: KEY, at: [x, y], return_verts: true });
     if (r.status === "ok" && r.verts) rings.push({ name: `click:${name}`, verts: r.verts, sf: r.area_sf });
   }
 

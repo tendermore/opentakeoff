@@ -4,7 +4,7 @@
 
 > 이 번역의 일부 기능 설명은 영어판보다 오래되었을 수 있습니다. 현재 사용 가능 여부는 [영어 README](README.md)와 [공통 Wiki](docs/wiki/README.md)를 확인하세요.
 
-> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `one_click` / `detect_rooms` MCP verbs are **not registered** (a default build ships <!--tool-count-->53<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure_polygon` over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
+> **One-Click Area is temporarily gated.** The flood engine is being re-validated against a wider plan corpus. Until that finishes the One-Click tool is off the canvas rail (`O` reports the gate) and the `takeoff_rooms` MCP tool is **not registered** (a default build ships <!--tool-count-->33<!--/tool-count--> tools). Trace rooms with **Area** (`A`) in the canvas and `measure` (`kind: "area"`) over MCP; every other tool, sweep and derivation is unchanged. A build lifts the gate with `VITE_ONE_CLICK=1` (canvas) / `OPENTAKEOFF_ONE_CLICK=1` (server). Sections and videos below that show One-Click describe the engine as it returns — see [`docs/design/ONE_CLICK_GATE.md`](docs/design/ONE_CLICK_GATE.md).
 
 **사람과 AI 에이전트 모두를 위해 만들어진 최초의 물량 산출 캔버스.**
 
@@ -94,8 +94,8 @@ CSV / JSON으로 내보낼 수 있습니다.
 
 동일한 엔진이 [MCP](https://modelcontextprotocol.io)를 구사합니다. [`mcp/`](mcp/README.md)는
 MCP 클라이언트가 구동할 수 있는 stdio 서버로, 명령 하나면 실행됩니다 — `npx -y opentakeoff-mcp`.
-`load_plan`, `read_sheet_text`, `set_scale`, `one_click`, `view_sheet`, `takeoff_summary`,
-`export_takeoff` 등을 제공합니다.
+`open_drawings`, `find_text`, `set_scale`, `takeoff_rooms`, `measure`, `count`, `view_sheet`, `summary`,
+`export` 등을 제공합니다.
 
 에이전트는 도면을 열고, 표제란을 읽고, 축척을 채택하고(조용히 적용되는 일은 없습니다), 실을
 클릭하고, 보정된 측정 그리드가 있는 렌더링 이미지(`view_sheet`)로 자기 작업을 검증한 뒤,

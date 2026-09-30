@@ -49,14 +49,6 @@ async function connect() {
   return client;
 }
 
-async function connectWithOptions(opts: { stagedTools?: boolean }) {
-  const [ct, st] = InMemoryTransport.createLinkedPair();
-  await buildServer(new Session(), opts).connect(st);
-  const client = new Client({ name: "resources-test", version: "0.0.0" });
-  await client.connect(ct);
-  return client;
-}
-
 async function connectWithSession() {
   const session = new Session();
   const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -105,17 +97,6 @@ test("empty session: protocol index and every embedded schema are listed and exa
     });
   }
   assert.deepEqual(structuredClone({ index: session.index(), shapes: session.shapes, conditions: session.conditions, approvals: session.approvals, rfis: session.rfis }), before, "resource reads do not mutate session state");
-});
-
-test("protocol resources remain available in staged mode", async () => {
-  const client = await connectWithOptions({ stagedTools: true });
-  const { resources } = await client.listResources();
-  assert.deepEqual(
-    PROTOCOL_SCHEMAS.map(protocolUri).filter((uri) => !resources.some((resource) => resource.uri === uri)),
-    [],
-  );
-  const read: any = await client.readResource({ uri: protocolUri(PROTOCOL_SCHEMAS[0]) });
-  assert.equal(read.contents[0].mimeType, "application/schema+json");
 });
 
 test("protocol URI allowlist rejects unknown and traversal-looking addresses", async () => {
@@ -236,7 +217,7 @@ test("empty session: knowledge and the sheet index list; sheet index reads sensi
   const index = JSON.parse(read.contents[0].text);
   assert.equal(index.file, null);
   assert.deepEqual(index.sheets, []);
-  assert.match(index.hint, /load_plan/);
+  assert.match(index.hint, /open_drawings/);
 
   await assert.rejects(client.readResource({ uri: "takeoff://sheet/1" }), /No plan loaded/, "sheet read before load names the fix");
 });
@@ -247,7 +228,7 @@ test("loaded session: list_changed fires, sheets browse as index â†’ metadata â†
   let listChanged = 0;
   client.setNotificationHandler(ResourceListChangedNotificationSchema, () => { listChanged++; });
 
-  const res: any = await client.callTool({ name: "load_plan", arguments: { path: PLAN } });
+  const res: any = await client.callTool({ name: "open_drawings", arguments: { action: "load", path: PLAN } });
   assert.ok(!res.isError, "load_plan succeeded");
   assert.equal(listChanged, 1, "load_plan announced the new resource surface");
 
@@ -293,7 +274,7 @@ test("loaded session: list_changed fires, sheets browse as index â†’ metadata â†
 
 test("bad URIs fail with named errors, not crashes", async () => {
   const client = await connect();
-  await client.callTool({ name: "load_plan", arguments: { path: PLAN } });
+  await client.callTool({ name: "open_drawings", arguments: { action: "load", path: PLAN } });
 
   await assert.rejects(client.readResource({ uri: "takeoff://sheet/99" }), /No sheet 99/);
   await assert.rejects(client.readResource({ uri: "takeoff://sheet/99/image" }), /No sheet 99/);

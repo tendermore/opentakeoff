@@ -74,6 +74,9 @@ export interface SweepOptions {
   rotations?: boolean;
   /** Also try mirrored placements (default true). */
   mirror?: boolean;
+  /** Extra rotation angles in degrees, on top of the four right angles: a plan
+   * wing drawn at 30° to the sheet holds the same fixtures turned 30°. */
+  angles?: number[];
   /** Endpoint match tolerance, image px (default 2 — CAD jitter, not drift). */
   tolPx?: number;
   /** Commit bar: score ≥ this is a match (default 0.92). */
@@ -239,11 +242,18 @@ interface Xform { rotation: number; mirrored: boolean; m: [number, number, numbe
  * rotations first, 0° first — ties in dedupe resolve toward the plainest
  * reading. Matrices act on centroid-relative coords in image space (y down);
  * rotation is CW degrees in that frame. */
-function transformsFor(rotations: boolean, mirror: boolean): Xform[] {
+function transformsFor(rotations: boolean, mirror: boolean, angles: number[] = []): Xform[] {
   const rots: [number, [number, number, number, number]][] = [
     [0, [1, 0, 0, 1]], [90, [0, -1, 1, 0]], [180, [-1, 0, 0, -1]], [270, [0, 1, -1, 0]],
   ];
-  const use = rotations ? rots : rots.slice(0, 1);
+  // Any-angle rotations (a wing drawn at 30° to the sheet): the same CW-in-image-space
+  // matrix as the four right angles, for a stated angle in degrees.
+  const turn = (deg: number): [number, [number, number, number, number]] => {
+    const r = (deg * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
+    return [Math.round(deg * 10) / 10, [c, -s, s, c]];
+  };
+  const base = rotations ? rots : rots.slice(0, 1);
+  const use = [...base, ...angles.filter((a) => !base.some(([d]) => Math.abs(d - a) < 0.5)).map(turn)];
   const out: Xform[] = use.map(([rotation, m]) => ({ rotation, mirrored: false, m }));
   if (mirror) {
     // reflect x, then rotate: m' = R · diag(-1, 1)
@@ -753,7 +763,7 @@ export function matchSymbol(fp: SymbolFingerprint, segs: number[], opts: MatchOp
   const scoreHigh = opts.scoreHigh ?? SWEEP_SCORE_HIGH;
   const scoreLow = opts.scoreLow ?? SWEEP_SCORE_LOW;
   const maxCandidates = opts.maxCandidates ?? SWEEP_CANDIDATE_CEILING;
-  const xforms = transformsFor(opts.rotations ?? true, opts.mirror ?? true);
+  const xforms = transformsFor(opts.rotations ?? true, opts.mirror ?? true, opts.angles ?? []);
   const n = segs.length >> 2;
   if (scale !== 1 && opts.excludeCenter) {
     throw new Error("excludeCenter is a point on the SEED sheet and means nothing on a target sheet at a different scale — omit it when sweeping across sheets (there is no seed there to shadow).");
@@ -1097,6 +1107,12 @@ export function matchSymbol(fp: SymbolFingerprint, segs: number[], opts: MatchOp
     s.score >= scoreHigh && (!guardOn || (extraOf.get(s) ?? 0) <= extraBar);
   for (const s of survivors) {
     if (!isMatch(s)) continue;
+    // the shadow rule among matches too: survivors run best-first, so a match
+    // within half a symbol of one already counted UNDER ANOTHER TRANSFORM is that
+    // instance read a second way (a door swing matches itself mirrored), not a
+    // second one; the same transform that close is an abutting instance (a tile
+    // lattice) and counts
+    if (matches.some((m) => (m.rotation !== s.rotation || m.mirrored !== s.mirrored) && Math.hypot(m.at[0] - s.at[0], m.at[1] - s.at[1]) <= suppressR)) continue;
     const ev = extraOf.get(s) ?? 0;
     // disclosure: a match carrying substantial extra ink is a variant SUSPECT
     // — named on the row so it is looked at first, never hidden in the count

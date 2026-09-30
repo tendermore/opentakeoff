@@ -40,7 +40,7 @@ const segLen = (s: number[]): number => Math.hypot(s[2] - s[0], s[3] - s[1]);
 
 test("sheet_context: full sheet — counts reconcile, arrays align, region echoes the clamp", async () => {
   const client = await pair();
-  await call(client, "load_plan", { path: PLAN });
+  await call(client, "open_drawings", { action: "load", path: PLAN });
 
   // an oversized region clamps to the sheet and the reply SAYS so
   const r = await call(client, "sheet_context", { sheet: KEY, region: { x0: -500, y0: -500, x1: 99999, y1: 99999 } });
@@ -69,7 +69,7 @@ test("sheet_context: full sheet — counts reconcile, arrays align, region echoe
 
 test("sheet_context: clip keeps exactly the segments that intersect the region", async () => {
   const client = await pair();
-  await call(client, "load_plan", { path: PLAN });
+  await call(client, "open_drawings", { action: "load", path: PLAN });
   const full = (await call(client, "sheet_context", { sheet: KEY })).data;
 
   // a window around room 101's label — found from the text layer, not
@@ -103,7 +103,7 @@ test("sheet_context: clip keeps exactly the segments that intersect the region",
 
 test("sheet_context: the cap keeps the LONGEST segments and confesses the rest", async () => {
   const client = await pair();
-  await call(client, "load_plan", { path: PLAN });
+  await call(client, "open_drawings", { action: "load", path: PLAN });
   const full = (await call(client, "sheet_context", { sheet: KEY, max_segments: 20000 })).data;
   const capped = (await call(client, "sheet_context", { sheet: KEY, max_segments: 5 })).data;
 
@@ -124,7 +124,7 @@ test("sheet_context: the cap keeps the LONGEST segments and confesses the rest",
 
 test("sheet_context: min_len_px is a real floor, and the degenerate region refuses", async () => {
   const client = await pair();
-  await call(client, "load_plan", { path: PLAN });
+  await call(client, "open_drawings", { action: "load", path: PLAN });
 
   const strict = (await call(client, "sheet_context", { sheet: KEY, min_len_px: 1e9 })).data;
   assert.equal(strict.vectors.kept, 0);
@@ -141,13 +141,13 @@ test("sheet_context: min_len_px is a real floor, and the degenerate region refus
 
 test("sheet_context: frame agreement with the write path — a context wall bounds a one_click room", async () => {
   const client = await pair();
-  await call(client, "load_plan", { path: PLAN });
+  await call(client, "open_drawings", { action: "load", path: PLAN });
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
 
   // trace room 101 through the flood, then ask sheet_context about the ring's
   // bbox: the flood's boundary linework must be present as vector segments in
   // the SAME coordinates — the two tools are two views of one frame.
-  const clicked = (await call(client, "one_click", { sheet: KEY, x: 600, y: 1084, return_verts: true })).data;
+  const clicked = (await call(client, "takeoff_rooms", { action: "at", sheet: KEY, at: [600, 1084], return_verts: true })).data;
   assert.ok(clicked.verts?.length >= 4);
   const xs = clicked.verts.map((v: number[]) => v[0]), ys = clicked.verts.map((v: number[]) => v[1]);
   const region = { x0: Math.min(...xs) - 10, y0: Math.min(...ys) - 10, x1: Math.max(...xs) + 10, y1: Math.max(...ys) + 10 };
