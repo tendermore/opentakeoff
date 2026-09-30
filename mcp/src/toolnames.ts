@@ -10,12 +10,8 @@ export const ALL_TOOL_NAMES: readonly string[] = Object.freeze([
   "open_drawings", "set_scale", "sheet_context", "view_sheet", "find_text",
   "takeoff_rooms", "count", "measure", "derive", "schedule", "edit_takeoff",
   "summary", "export",
-  // estimator workflow — per-verb until they are consolidated too
-  "propose_takeoff", "revise_proposal", "withdraw_proposal", "propose_condition_edit", "withdraw_condition_edit",
-  "edit_condition", "edit_materials", "duplicate_condition", "split_condition", "scope_duplicates", "scope_merge",
-  "mark_verdict", "delete_verdict",
-  "create_rfi", "list_rfis", "resolve_rfi", "delete_rfi",
-  "annotate", "edit_annotation", "link_annotation", "list_annotations",
+  // estimator workflow
+  "conditions", "proposal", "review", "rfi", "annotate",
 ].sort());
 
 /** The surface a DEFAULT build registers: ALL_TOOL_NAMES minus the gated

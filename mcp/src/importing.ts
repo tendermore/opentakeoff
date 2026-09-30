@@ -52,7 +52,7 @@ export async function importTakeoff(session: Session, filePath: string) {
   session.markups = (payload.markups as Markup[]) ?? [];
   // approvals (#176): transport, not minting — an estimator seal arriving by
   // file stays an estimator seal (the actor field is the authority; only
-  // mark_verdict MINTS, and only agent). The same load gate the canvas
+  // review {action: "mark"} MINTS, and only agent). The same load gate the canvas
   // hydrate runs (sanitizeApprovals) applies before anything lands, so one
   // corrupt record in a hand-edited file can't wedge the session.
   session.approvals = sanitizeApprovals(payload.approvals);

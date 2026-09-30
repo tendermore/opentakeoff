@@ -86,7 +86,7 @@ every signal the engine can see came back clean, not that the trace is right. A 
 `view_sheet { overlay: true }` prompt.
 
 **Your work is pencil until a person inks it.** Everything you commit lands in the canvas as a
-dashed proposal. `mark_verdict` lets you sign work you checked as a graphite `AGENT` diamond; the
+dashed proposal. `review {action: "mark"}` lets you sign work you checked as a graphite `AGENT` diamond; the
 green `APPROVED` seal has exactly one code path and it is the toolbar button under a human hand.
 `edit_takeoff {action: "edit"}` refuses a shape a human already affirmed, and self-revision bumps
 `origin.agent_edits` rather than touching the human-correction fields—merging those would
@@ -166,8 +166,8 @@ rooms share 34 LF of wall would be a wrong number with a machine's confidence be
   store or PDF revision history. A browser `.otk` archive carries current takeoff/plan data,
   but also omits those histories. Never claim an archive or current takeoff reconstructs past
   revisions; see the [tested transport boundaries](../protocol/COMPATIBILITY.md#executable-transport-matrix).
-- **The estimator's `APPROVED` seal.** `mark_verdict` takes no actor argument, so there is no
-  input to misuse; `delete_verdict` refuses a human seal outright.
+- **The estimator's `APPROVED` seal.** `review {action: "mark"}` takes no actor argument, so there is no
+  input to misuse; `review {action: "delete"}` refuses a human seal outright.
 - **Confirming a scale.** Only a human act in the canvas clears `confirmed: false`.
 - **Minting a correction rule.** `schedule {action: "apply_rules"}` re-runs the rules an estimator taught the canvas,
   and rules arrive only through `export {action: "import"}`. A rule *is* an estimator's correction, so minting
@@ -177,15 +177,15 @@ rooms share 34 LF of wall would be a wrong number with a machine's confidence be
 
 ## 6. The tool surface
 
-Every client gets all <!--tool-count-->33<!--/tool-count--> tool schemas on `tools/list`; there is no staged
+Every client gets all <!--tool-count-->17<!--/tool-count--> tool schemas on `tools/list`; there is no staged
 exposure. The task tools are few and short: `open_drawings`, `set_scale`, `sheet_context`,
 `view_sheet`, `find_text`, `takeoff_rooms` (gated), `count`, `measure`, `derive`, `schedule`,
-`edit_takeoff`, `summary` and `export`. Each takes one flat object—an `action` (or `kind`) plus
+`edit_takeoff`, `summary` and `export`, and for the estimator workflow `conditions`,
+`proposal`, `review`, `rfi` and `annotate`. Each takes one flat object—an `action` (or `kind`) plus
 the fields that action uses—and replies with one JSON object that names it. A field an action
 needs but the schema cannot require is refused with the tool, the action and the field named.
 The runtime descriptions say which action to reach for; the engine detail behind each one lives
-in the [tool reference](wiki/tools.md) (`takeoff://wiki/tools`). The estimator-workflow tools—
-proposals, conditions and materials, verdicts, RFIs, annotations—keep their per-verb names.
+in the [tool reference](wiki/tools.md) (`takeoff://wiki/tools`).
 
 ## 7. A worked session
 
@@ -244,7 +244,7 @@ next."*
 | *That space isn't enclosed on the plan linework — the fill spilled.* | a real gap: an open doorway, a break in the wall | seed a more enclosed spot, or `measure {kind: "area"}` it |
 | *Landed in dense linework (hatching or text).* | the seed landed on a text block or heavy hatch | `view_sheet` a crop, pick open floor, re-seed |
 | a ring not fully inside the parent (`derive {action: "deduct"}`) | an edge-crossing cut is a boundary correction, not a hole | fix the parent with `edit_takeoff {action: "edit"}` instead |
-| `measure {kind: "surface"}` refuses with no height | wall SF = traced LF × the condition's height | `edit_condition { height_ft }`, then retrace |
+| `measure {kind: "surface"}` refuses with no height | wall SF = traced LF × the condition's height | `conditions {action: "edit", height_ft}`, then retrace |
 | an export refuses a path | OpenTakeoff didn't write that file, and overwriting it would destroy someone's work | pass `overwrite: true`, or pick another path |
 | a `schedule {action: "sweep_row"}` key that won't anchor | a fingerprint is never guessed from text alone; a device drawn to its own size and tagged by a leader is counted BY LABEL instead (`anchor: null`, `counted_by: "label"`), and a key that appears only in notes refuses with that reason | read `label_only` and `view_sheet` each placement before pricing it; for a refused key, `find_text` the tag, `view_sheet` the marker, count by hand |
 
@@ -279,10 +279,10 @@ Follow [Geometry from source to review](GEOMETRY_WORKFLOW.md) when tracing a rea
 ## Geometry review cleanup
 
 Use the [generated tool index](MCP_TOOL_INDEX.md) for the
-<!--tool-count-->33<!--/tool-count--> default tools, their actions and required arguments.
+<!--tool-count-->17<!--/tool-count--> default tools, their actions and required arguments.
 The [geometry workflow](GEOMETRY_WORKFLOW.md) is the source-to-handoff route.
 
-- Shorten a note with `list_annotations` then `edit_annotation`; empty text clears
+- Shorten a note with `annotate {action: "list"}` then `annotate {action: "edit"}`; empty text clears
   it and `edit_takeoff {action: "undo"}` restores it. An RFI-linked note requires review in the browser
   register. Text edits never create approval or change measured geometry.
 - A positive overlap below 0.01 SF remains flagged with a note; machine-precision

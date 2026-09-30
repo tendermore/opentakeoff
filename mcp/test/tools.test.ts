@@ -59,7 +59,8 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
 // The task-level tools: one flat input object each, a short description, and
 // the coordinate contract stated ONCE — in the initialize instructions — rather
 // than on every tool.
-const TASK_TOOLS = ["open_drawings", "set_scale", "sheet_context", "view_sheet", "find_text", "takeoff_rooms", "count", "measure", "derive", "schedule", "edit_takeoff", "summary", "export"];
+const TASK_TOOLS = ["open_drawings", "set_scale", "sheet_context", "view_sheet", "find_text", "takeoff_rooms", "count", "measure", "derive", "schedule", "edit_takeoff", "summary", "export",
+  "conditions", "proposal", "review", "rfi", "annotate"];
 
 test("tools/list: exactly TOOL_NAMES; the coordinate contract lives once, in the instructions", async () => {
   const client = await pair({});   // a DEFAULT build: the gate is up, TOOL_NAMES is what ships
@@ -280,7 +281,7 @@ test("export_marked_pdf: refuses an empty session, then writes a real 2-page PDF
 
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
   await call(client, "takeoff_rooms", { action: "detect", sheet: KEY, condition: "CPT-1" });
-  await call(client, "annotate", { sheet: KEY, type: "cloud", text: "verify substrate", condition: "CPT-1", rect: [[500, 900], [800, 1200]] });
+  await call(client, "annotate", { action: "add", sheet: KEY, type: "cloud", text: "verify substrate", condition: "CPT-1", rect: [[500, 900], [800, 1200]] });
 
   const r = await call(client, "export", { action: "marked_pdf" });
   assert.equal(r.isError, false);
@@ -331,7 +332,7 @@ test("measure_surface: refuses without a height (minting nothing), commits LF ×
 
   // knob path: edit_condition height_ft, then measure without an explicit height
   await call(client, "measure", { kind: "surface", sheet: KEY, points: [[0, 0], [96, 0]], condition: "CT-W2", height_ft: 10 });
-  const knob = await call(client, "edit_condition", { condition: "CT-W2", height_ft: 8 });
+  const knob = await call(client, "conditions", { action: "edit", condition: "CT-W2", height_ft: 8 });
   assert.equal(knob.data.height_ft, 8);
   const r2 = await call(client, "measure", { kind: "surface", sheet: KEY, points: [[600, 400], [900, 400]], condition: "CT-W2" });
   assert.equal(r2.data.area_sf, 66.67); // 8.33 LF × 8 ft
@@ -447,7 +448,7 @@ test("import_takeoff: empty session adopts wholesale; worked session merges by t
   await call(c, "open_drawings", { action: "load", path: PLAN });
   await call(c, "set_scale", { sheet: KEY, use_detected: true });
   await call(c, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [200, 100], [200, 200], [100, 200]], condition: "CPT-1" });
-  await call(c, "edit_condition", { condition: "CPT-1", waste_pct: 10 });
+  await call(c, "conditions", { action: "edit", condition: "CPT-1", waste_pct: 10 });
   const m = await call(c, "export", { action: "import", path: exported });
   assert.equal(m.data.replaced, false);
   assert.equal(m.data.conditions_merged, 1);
@@ -849,16 +850,16 @@ test("annotate arrow/bubble: validated per type, round-trip through list_annotat
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
 
-  const noHead = await call(client, "annotate", { sheet: KEY, type: "arrow", from: [100, 100] });
+  const noHead = await call(client, "annotate", { action: "add", sheet: KEY, type: "arrow", from: [100, 100] });
   assert.equal(noHead.isError, true);
   assert.match(noHead.data.error, /arrow needs from.*and to/);
 
-  const arrow = await call(client, "annotate", { sheet: KEY, type: "arrow", text: "ALIGN CPT TO WALL", from: [600, 900], to: [900, 900], condition: "CPT-1" });
+  const arrow = await call(client, "annotate", { action: "add", sheet: KEY, type: "arrow", text: "ALIGN CPT TO WALL", from: [600, 900], to: [900, 900], condition: "CPT-1" });
   assert.equal(arrow.isError, false);
-  const bubble = await call(client, "annotate", { sheet: KEY, type: "bubble", text: "K3", at: [1200, 500], r: 40 });
+  const bubble = await call(client, "annotate", { action: "add", sheet: KEY, type: "bubble", text: "K3", at: [1200, 500], r: 40 });
   assert.equal(bubble.isError, false);
 
-  const listed = await call(client, "list_annotations", {});
+  const listed = await call(client, "annotate", { action: "list" });
   const la = listed.data.annotations.find((m: any) => m.type === "arrow");
   const lb = listed.data.annotations.find((m: any) => m.type === "bubble");
   assert.deepEqual(la.from, [600, 900]);
@@ -876,8 +877,8 @@ test("annotate arrow/bubble: validated per type, round-trip through list_annotat
   assert.equal((await readFile(out)).subarray(0, 5).toString(), "%PDF-");
 
   // a bubble with no r stores the canvas default (2% of sheet width = 48.96 px on the 2448-px sheet)
-  await call(client, "annotate", { sheet: KEY, type: "bubble", text: "K4", at: [300, 300] });
-  const again = await call(client, "list_annotations", {});
+  await call(client, "annotate", { action: "add", sheet: KEY, type: "bubble", text: "K4", at: [300, 300] });
+  const again = await call(client, "annotate", { action: "list" });
   const lb2 = again.data.annotations.find((m: any) => m.text === "K4");
   assert.ok(Math.abs(lb2.r - 48.96) < 0.1);
 });
@@ -1043,7 +1044,7 @@ test("edit_condition roll_setup: opt-in figures the order, report carries it, nu
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
   await call(client, "takeoff_rooms", { action: "detect", sheet: KEY, condition: "CPT-1" });
 
-  const on = await call(client, "edit_condition", { condition: "CPT-1", roll_setup: { material: "carpet" } });
+  const on = await call(client, "conditions", { action: "edit", condition: "CPT-1", roll_setup: { material: "carpet" } });
   assert.equal(on.isError, false);
   assert.equal(on.data.roll_setup.material, "carpet");
   assert.equal(on.data.roll_setup.roll_width_ft, 12, "engine defaults minted");
@@ -1054,7 +1055,7 @@ test("edit_condition roll_setup: opt-in figures the order, report carries it, nu
   assert.equal(on.data.roll.order_unit, "sy");
 
   // same-material partial edit patches, keeps the rest
-  const patched = await call(client, "edit_condition", { condition: "CPT-1", roll_setup: { roll_width_ft: 6 } });
+  const patched = await call(client, "conditions", { action: "edit", condition: "CPT-1", roll_setup: { roll_width_ft: 6 } });
   assert.equal(patched.data.roll_setup.roll_width_ft, 6);
   assert.equal(patched.data.roll_setup.material, "carpet");
   assert.ok(patched.data.roll.order_lf > on.data.roll.order_lf, "half the roll width ⇒ more lineal footage");
@@ -1066,7 +1067,7 @@ test("edit_condition roll_setup: opt-in figures the order, report carries it, nu
   assert.equal(rep.data.roll_goods[0].order_lf, patched.data.roll.order_lf);
 
   // opt out; then undo restores the width-6 setup verbatim
-  const off = await call(client, "edit_condition", { condition: "CPT-1", roll_setup: null });
+  const off = await call(client, "conditions", { action: "edit", condition: "CPT-1", roll_setup: null });
   assert.equal(off.data.roll_setup, undefined);
   assert.equal((await call(client, "export", { action: "report" })).data.roll_goods.length, 0);
   await call(client, "edit_takeoff", { action: "undo", n: 1 });
@@ -1301,7 +1302,7 @@ test("edit_materials: add/remove/patch, minted-on-touch, all-or-nothing, undo re
   await call(client, "open_drawings", { action: "load", path: PLAN });
 
   // add alone mints the condition — no shape needs to exist first
-  const added = await call(client, "edit_materials", { condition: "CPT-1", add: [
+  const added = await call(client, "conditions", { action: "materials", condition: "CPT-1", add: [
     { name: "Adhesive", per: 250, basis: "area", unit: "gal" },
   ] });
   assert.equal(added.isError, false);
@@ -1312,7 +1313,7 @@ test("edit_materials: add/remove/patch, minted-on-touch, all-or-nothing, undo re
   assert.equal(added.data.changed.added[0], rowId);
 
   // patch changes fields without touching id/basis
-  const patched = await call(client, "edit_materials", { condition: "CPT-1", patch: [
+  const patched = await call(client, "conditions", { action: "materials", condition: "CPT-1", patch: [
     { id: rowId, fields: { per: 300, note: "verify TDS" } },
   ] });
   assert.equal(patched.isError, false);
@@ -1321,31 +1322,31 @@ test("edit_materials: add/remove/patch, minted-on-touch, all-or-nothing, undo re
   assert.equal(patched.data.materials.length, 1);
 
   // remove drops the row
-  const removed = await call(client, "edit_materials", { condition: "CPT-1", remove: [rowId] });
+  const removed = await call(client, "conditions", { action: "materials", condition: "CPT-1", remove: [rowId] });
   assert.equal(removed.isError, false);
   assert.equal(removed.data.materials.length, 0);
 
   // remove/patch on an unknown tag errors WITHOUT minting an empty condition
   const before = await call(client, "summary");
   const condCountBefore = before.data.conditions.length;
-  const badRemove = await call(client, "edit_materials", { condition: "NOPE-9", remove: ["mat-nope"] });
+  const badRemove = await call(client, "conditions", { action: "materials", condition: "NOPE-9", remove: ["mat-nope"] });
   assert.equal(badRemove.isError, true);
   assert.match(badRemove.data.error, /no material row/);
   const after = await call(client, "summary");
   assert.equal(after.data.conditions.length, condCountBefore, "no empty condition minted by a failed call");
 
   // empty body errors
-  const empty = await call(client, "edit_materials", { condition: "CPT-1" });
+  const empty = await call(client, "conditions", { action: "materials", condition: "CPT-1" });
   assert.equal(empty.isError, true);
   assert.match(empty.data.error, /at least one of add, remove, patch/);
 
   // blank name on add errors before anything is written
-  const blank = await call(client, "edit_materials", { condition: "CPT-1", add: [{ name: "  " }] });
+  const blank = await call(client, "conditions", { action: "materials", condition: "CPT-1", add: [{ name: "  " }] });
   assert.equal(blank.isError, true);
   assert.match(blank.data.error, /name required/);
 
   // undo_last restores the whole materials array from before the last edit_materials call
-  const readded = await call(client, "edit_materials", { condition: "CPT-1", add: [{ name: "Sealer", per: 400 }] });
+  const readded = await call(client, "conditions", { action: "materials", condition: "CPT-1", add: [{ name: "Sealer", per: 400 }] });
   assert.equal(readded.data.materials.length, 1);
   const undone = await call(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(undone.isError, false);
@@ -1365,7 +1366,7 @@ test("annotate: attaches a note to a scope, resolves the tag back, and round-tri
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
 
-  const cloud = await call(client, "annotate", {
+  const cloud = await call(client, "annotate", { action: "add",
     sheet: KEY, type: "cloud", text: "verify substrate before install",
     rect: [[400, 900], [800, 1200]], condition: "CPT-1",
   });
@@ -1374,11 +1375,11 @@ test("annotate: attaches a note to a scope, resolves the tag back, and round-tri
   assert.ok(cloud.data.condition_id);
 
   // a sheet note, deliberately unattached
-  const note = await call(client, "annotate", { sheet: KEY, type: "text", text: "GC to confirm", at: [500, 500] });
+  const note = await call(client, "annotate", { action: "add", sheet: KEY, type: "text", text: "GC to confirm", at: [500, 500] });
   assert.equal(note.data.condition, "");
   assert.equal(note.data.condition_id, "");
 
-  const all = await call(client, "list_annotations", {});
+  const all = await call(client, "annotate", { action: "list" });
   assert.equal(all.data.count, 2);
   assert.equal(all.data.unattached, 1);                    // the text note
   // condition resolved for the caller — no join against conditions[] needed
@@ -1388,7 +1389,7 @@ test("annotate: attaches a note to a scope, resolves the tag back, and round-tri
   assert.deepEqual(c.rect[0], [400, 900]);
 
   // filtering by condition excludes the unattached note
-  const only = await call(client, "list_annotations", { condition: "CPT-1" });
+  const only = await call(client, "annotate", { action: "list", condition: "CPT-1" });
   assert.equal(only.data.count, 1);
   assert.equal(only.data.annotations[0].id, cloud.data.id);
 
@@ -1403,30 +1404,30 @@ test("annotate: attaches a note to a scope, resolves the tag back, and round-tri
 test("link_annotation: attaches an orphan note, and detaches on an empty condition", async () => {
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
-  const note = await call(client, "annotate", { sheet: KEY, type: "text", text: "chase this", at: [300, 300] });
+  const note = await call(client, "annotate", { action: "add", sheet: KEY, type: "text", text: "chase this", at: [300, 300] });
 
-  const linked = await call(client, "link_annotation", { annotation_id: note.data.id, condition: "LVT-2" });
+  const linked = await call(client, "annotate", { action: "link", annotation_id: note.data.id, condition: "LVT-2" });
   assert.equal(linked.isError, false);
   assert.equal(linked.data.condition, "LVT-2");
-  assert.equal((await call(client, "list_annotations", {})).data.unattached, 0);
+  assert.equal((await call(client, "annotate", { action: "list" })).data.unattached, 0);
 
-  const off = await call(client, "link_annotation", { annotation_id: note.data.id, condition: "" });
+  const off = await call(client, "annotate", { action: "link", annotation_id: note.data.id, condition: "" });
   assert.equal(off.data.condition, "");
-  assert.equal((await call(client, "list_annotations", {})).data.unattached, 1);
+  assert.equal((await call(client, "annotate", { action: "list" })).data.unattached, 1);
 
   // a bad id is a user error, not a crash
-  const bad = await call(client, "link_annotation", { annotation_id: "mk-nope", condition: "LVT-2" });
+  const bad = await call(client, "annotate", { action: "link", annotation_id: "mk-nope", condition: "LVT-2" });
   assert.equal(bad.isError, true);
 });
 
 test("annotate: a shape-less type mismatch is refused before anything is written", async () => {
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
-  const noRect = await call(client, "annotate", { sheet: KEY, type: "cloud", text: "x" });   // cloud needs rect
+  const noRect = await call(client, "annotate", { action: "add", sheet: KEY, type: "cloud", text: "x" });   // cloud needs rect
   assert.equal(noRect.isError, true);
-  const noTarget = await call(client, "annotate", { sheet: KEY, type: "callout", text: "x", at: [10, 10] });
+  const noTarget = await call(client, "annotate", { action: "add", sheet: KEY, type: "callout", text: "x", at: [10, 10] });
   assert.equal(noTarget.isError, true);
-  assert.equal((await call(client, "list_annotations", {})).data.count, 0);   // nothing written
+  assert.equal((await call(client, "annotate", { action: "list" })).data.count, 0);   // nothing written
 });
 
 // dimension — the one annotation the scale gate applies to: it LABELS a real
@@ -1438,25 +1439,25 @@ test("annotate dimension: scale-gated, labels itself with the measured length, r
   await call(client, "open_drawings", { action: "load", path: PLAN });
 
   // endpoints are required, like arrow
-  const noEnds = await call(client, "annotate", { sheet: KEY, type: "dimension", from: [600, 400] });
+  const noEnds = await call(client, "annotate", { action: "add", sheet: KEY, type: "dimension", from: [600, 400] });
   assert.equal(noEnds.isError, true);
   assert.match(noEnds.data.error, /dimension needs from.*and to/);
 
   // unscaled: the measure tools' exact refusal, and nothing is written
-  const unscaled = await call(client, "annotate", { sheet: KEY, type: "dimension", from: [600, 400], to: [960, 400] });
+  const unscaled = await call(client, "annotate", { action: "add", sheet: KEY, type: "dimension", from: [600, 400], to: [960, 400] });
   assert.equal(unscaled.isError, true);
   assert.equal(unscaled.data.error, `Set the scale for ${KEY} first — use set_scale (detected: 1/4" = 1'-0").`);
-  assert.equal((await call(client, "list_annotations", {})).data.count, 0);
+  assert.equal((await call(client, "annotate", { action: "list" })).data.count, 0);
 
   // scaled: 360 px at 1/4" = 1'-0" (36 px per real foot) = exactly 10 LF
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
-  const dim = await call(client, "annotate", { sheet: KEY, type: "dimension", from: [600, 400], to: [960, 400], text: "VIF", condition: "CPT-1" });
+  const dim = await call(client, "annotate", { action: "add", sheet: KEY, type: "dimension", from: [600, 400], to: [960, 400], text: "VIF", condition: "CPT-1" });
   assert.equal(dim.isError, false);
   assert.equal(dim.data.length_lf, 10);
   assert.equal(dim.data.condition, "CPT-1");
 
   // round-trip: endpoints come back in image px, the length rides along
-  const listed = await call(client, "list_annotations", {});
+  const listed = await call(client, "annotate", { action: "list" });
   const ld = listed.data.annotations.find((m: any) => m.type === "dimension");
   assert.deepEqual(ld.from, [600, 400]);
   assert.deepEqual(ld.to, [960, 400]);
@@ -1888,20 +1889,20 @@ test("mark_verdict: shape and sheet-point mints, anchors, inventory, and the exa
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
 
   // exactly one target — none, or both, is a refusal that writes nothing
-  const none = await call(client, "mark_verdict", {});
+  const none = await call(client, "review", { action: "mark" });
   assert.equal(none.isError, true);
   assert.match(none.data.error, /exactly one target/);
   const square = await call(client, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [300, 100], [300, 300], [100, 300]], condition: "CPT-1" });
-  const both = await call(client, "mark_verdict", { shape_id: square.data.shape_id, sheet: KEY, at: [50, 50] });
+  const both = await call(client, "review", { action: "mark", shape_id: square.data.shape_id, sheet: KEY, at: [50, 50] });
   assert.equal(both.isError, true);
   assert.match(both.data.error, /exactly one target/);
-  const half = await call(client, "mark_verdict", { sheet: KEY });
+  const half = await call(client, "review", { action: "mark", sheet: KEY });
   assert.equal(half.isError, true);
   assert.match(half.data.error, /BOTH sheet and at/);
-  assert.equal((await call(client, "list_annotations", {})).data.verdict_count, 0, "the refusals minted nothing");
+  assert.equal((await call(client, "annotate", { action: "list" })).data.verdict_count, 0, "the refusals minted nothing");
 
   // shape mode: a closed room anchors at its area centroid, condition resolved
-  const onShape = await call(client, "mark_verdict", { shape_id: square.data.shape_id, text: "traced against A-101 walls" });
+  const onShape = await call(client, "review", { action: "mark", shape_id: square.data.shape_id, text: "traced against A-101 walls" });
   assert.equal(onShape.isError, false);
   assert.match(onShape.data.id, /^apr-/);
   assert.equal(onShape.data.actor, "agent");
@@ -1914,40 +1915,40 @@ test("mark_verdict: shape and sheet-point mints, anchors, inventory, and the exa
 
   // one mark per shape — a second diamond stacked on the same anchor is
   // invisible duplication, refused with the re-mark path named
-  const dup = await call(client, "mark_verdict", { shape_id: square.data.shape_id });
+  const dup = await call(client, "review", { action: "mark", shape_id: square.data.shape_id });
   assert.equal(dup.isError, true);
   assert.match(dup.data.error, /already carries an agent verdict/);
 
   // an open run anchors at its on-path midpoint; a count marker at its point
   const line = await call(client, "measure", { kind: "length", sheet: KEY, points: [[0, 0], [360, 0], [360, 360]], condition: "RB-1" });
-  const onLine = await call(client, "mark_verdict", { shape_id: line.data.shape_id });
+  const onLine = await call(client, "review", { action: "mark", shape_id: line.data.shape_id });
   assert.deepEqual(onLine.data.at, [360, 0], "half the run's length lands at the elbow");
   const ea = await call(client, "count", { action: "place", sheet: KEY, points: [[500, 500]], condition: "TR-1" });
-  const onCount = await call(client, "mark_verdict", { shape_id: ea.data.shape_ids[0] });
+  const onCount = await call(client, "review", { action: "mark", shape_id: ea.data.shape_ids[0] });
   assert.deepEqual(onCount.data.at, [500, 500], "a count marker is its own anchor");
 
   // sheet-point mode: no shape, no condition — a mark about the paper
-  const onSheet = await call(client, "mark_verdict", { sheet: KEY, at: [1200, 800], text: "sheet checked for scope gaps" });
+  const onSheet = await call(client, "review", { action: "mark", sheet: KEY, at: [1200, 800], text: "sheet checked for scope gaps" });
   assert.equal(onSheet.isError, false);
   assert.deepEqual(onSheet.data.at, [1200, 800]);
   assert.equal(onSheet.data.shape_id, undefined);
   assert.equal(onSheet.data.condition, undefined);
 
   // a bad shape id is a user error naming the inventory
-  const badId = await call(client, "mark_verdict", { shape_id: "shp-nope" });
+  const badId = await call(client, "review", { action: "mark", shape_id: "shp-nope" });
   assert.equal(badId.isError, true);
   assert.match(badId.data.error, /edit_takeoff \{action: "list"\}/);
 
   // the inventory: all four, actors stated, condition filter reaches through
   // the target shape, sheet-point marks drop out of any condition filter
-  const all = await call(client, "list_annotations", {});
+  const all = await call(client, "annotate", { action: "list" });
   assert.equal(all.data.verdict_count, 4);
   assert.ok(all.data.verdicts.every((v: any) => v.actor === "agent"));
-  const byCond = await call(client, "list_annotations", { condition: "CPT-1" });
+  const byCond = await call(client, "annotate", { action: "list", condition: "CPT-1" });
   assert.equal(byCond.data.verdict_count, 1);
   assert.equal(byCond.data.verdicts[0].id, onShape.data.id);
   assert.equal(byCond.data.verdicts[0].condition, "CPT-1");
-  const bySheet = await call(client, "list_annotations", { sheet: KEY });
+  const bySheet = await call(client, "annotate", { action: "list", sheet: KEY });
   assert.equal(bySheet.data.verdict_count, 4);
 
   // a verdict touches no quantity — the takeoff is exactly what was measured
@@ -1961,7 +1962,7 @@ test("mark_verdict is structurally agent-only: an injected actor is discarded, a
 
   // the tool has no actor input, so an injected one is stripped by the input
   // schema — the reply AND the stored record still say agent
-  const forged = await call(client, "mark_verdict", { sheet: KEY, at: [600, 600], actor: "estimator" });
+  const forged = await call(client, "review", { action: "mark", sheet: KEY, at: [600, 600], actor: "estimator" });
   assert.equal(forged.isError, false);
   assert.equal(forged.data.actor, "agent", "there is no path to the estimator's seal");
 
@@ -1982,29 +1983,29 @@ test("delete_verdict + undo_last: a lift is journaled with its exact inverse, an
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
 
-  const a = await call(client, "mark_verdict", { sheet: KEY, at: [100, 100], text: "first" });
-  const b = await call(client, "mark_verdict", { sheet: KEY, at: [200, 200], text: "second" });
+  const a = await call(client, "review", { action: "mark", sheet: KEY, at: [100, 100], text: "first" });
+  const b = await call(client, "review", { action: "mark", sheet: KEY, at: [200, 200], text: "second" });
 
   // unknown id names the inventory
-  const nope = await call(client, "delete_verdict", { verdict_id: "apr-nope" });
+  const nope = await call(client, "review", { action: "delete", verdict_id: "apr-nope" });
   assert.equal(nope.isError, true);
   assert.match(nope.data.error, /verdicts\[\]/);
 
   // lift the FIRST record, then undo — it comes back at its original index,
   // id and ts included (the pure apply's restore contract)
-  const del = await call(client, "delete_verdict", { verdict_id: a.data.id });
+  const del = await call(client, "review", { action: "delete", verdict_id: a.data.id });
   assert.equal(del.isError, false);
-  assert.deepEqual(del.data, { deleted: a.data.id, verdicts_remaining: 1 });
+  assert.deepEqual(del.data, { action: "delete", deleted: a.data.id, verdicts_remaining: 1 });
   const undo = await call(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(undo.data.steps[0].op, "approval");
   assert.equal(undo.data.steps[0].tool, "delete_verdict");
-  const restored = await call(client, "list_annotations", {});
+  const restored = await call(client, "annotate", { action: "list" });
   assert.deepEqual(restored.data.verdicts.map((v: any) => v.id), [a.data.id, b.data.id], "re-seated at its original index, order intact");
 
   // undoing past the delete takes back the mints too, newest first
   const back2 = await call(client, "edit_takeoff", { action: "undo", n: 2 });
   assert.deepEqual(back2.data.steps.map((s: any) => s.tool), ["mark_verdict", "mark_verdict"]);
-  assert.equal((await call(client, "list_annotations", {})).data.verdict_count, 0);
+  assert.equal((await call(client, "annotate", { action: "list" })).data.verdict_count, 0);
 });
 
 test("verdicts in the marked set: glyphs drawn, sheet marked, and the cover tallies the ink/pencil split", async () => {
@@ -2016,8 +2017,8 @@ test("verdicts in the marked set: glyphs drawn, sheet marked, and the cover tall
   await call(client, "set_scale", { sheet: KEY, use_detected: true });
 
   const room = await call(client, "takeoff_rooms", { action: "at", sheet: KEY, at: [600, 1084], condition: "CPT-1" });
-  await call(client, "mark_verdict", { shape_id: room.data.shape_id });
-  await call(client, "mark_verdict", { sheet: KEY, at: [1200, 300] });
+  await call(client, "review", { action: "mark", shape_id: room.data.shape_id });
+  await call(client, "review", { action: "mark", sheet: KEY, at: [1200, 300] });
 
   const pdf = await call(client, "export", { action: "marked_pdf" });
   assert.equal(pdf.isError, false);
@@ -2034,7 +2035,7 @@ test("verdicts in the marked set: glyphs drawn, sheet marked, and the cover tall
   // still exports (the markedset seal-only rule, reachable from here)
   const solo = await pair();
   await call(solo, "open_drawings", { action: "load", path: tmpPlan });
-  await call(solo, "mark_verdict", { sheet: KEY, at: [500, 500] });
+  await call(solo, "review", { action: "mark", sheet: KEY, at: [500, 500] });
   const soloPdf = await call(solo, "export", { action: "marked_pdf", path: path.join(dir, "solo.pdf") });
   assert.equal(soloPdf.isError, false);
   assert.equal(soloPdf.data.sheets_marked, 1);
@@ -2051,8 +2052,8 @@ test("verdicts round-trip: export_takeoff → import_takeoff (wholesale and merg
   await call(a, "open_drawings", { action: "load", path: PLAN });
   await call(a, "set_scale", { sheet: KEY, use_detected: true });
   const room = await call(a, "takeoff_rooms", { action: "at", sheet: KEY, at: [600, 1084], condition: "CPT-1" });
-  const v1 = await call(a, "mark_verdict", { shape_id: room.data.shape_id, text: "checked" });
-  const v2 = await call(a, "mark_verdict", { sheet: KEY, at: [1000, 1000] });
+  const v1 = await call(a, "review", { action: "mark", shape_id: room.data.shape_id, text: "checked" });
+  const v2 = await call(a, "review", { action: "mark", sheet: KEY, at: [1000, 1000] });
   const payload = await call(a, "export", { action: "takeoff", path: exported });
   assert.equal(payload.data.approvals.length, 2);
 
@@ -2067,15 +2068,15 @@ test("verdicts round-trip: export_takeoff → import_takeoff (wholesale and merg
   await call(b, "open_drawings", { action: "load", path: PLAN });
   const r = await call(b, "export", { action: "import", path: exported });
   assert.equal(r.data.replaced, true);
-  const listed = await call(b, "list_annotations", {});
+  const listed = await call(b, "annotate", { action: "list" });
   assert.equal(listed.data.verdict_count, 2);
   assert.deepEqual(listed.data.verdicts.map((v: any) => v.id).sort(), [v1.data.id, v2.data.id].sort());
   const rt = listed.data.verdicts.find((v: any) => v.id === v1.data.id);
   assert.equal(rt.text, "checked", "the note rides the round-trip");
   assert.deepEqual(rt.at, v1.data.at, "the anchor survives normalized storage exactly");
   // and imported marks are live records here: agent marks lift, undo re-seats
-  await call(b, "delete_verdict", { verdict_id: v2.data.id });
-  assert.equal((await call(b, "list_annotations", {})).data.verdict_count, 1);
+  await call(b, "review", { action: "delete", verdict_id: v2.data.id });
+  assert.equal((await call(b, "annotate", { action: "list" })).data.verdict_count, 1);
 
   // worked session C: merge keeps its own marks and adds the file's (new ids
   // append, re-import would skip them — the markup rule)
@@ -2083,15 +2084,15 @@ test("verdicts round-trip: export_takeoff → import_takeoff (wholesale and merg
   await call(c, "open_drawings", { action: "load", path: PLAN });
   await call(c, "set_scale", { sheet: KEY, use_detected: true });
   await call(c, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [200, 100], [200, 200], [100, 200]], condition: "CPT-1" });
-  const own = await call(c, "mark_verdict", { sheet: KEY, at: [50, 50] });
+  const own = await call(c, "review", { action: "mark", sheet: KEY, at: [50, 50] });
   const m = await call(c, "export", { action: "import", path: exported });
   assert.equal(m.data.replaced, false);
-  const merged = await call(c, "list_annotations", {});
+  const merged = await call(c, "annotate", { action: "list" });
   assert.equal(merged.data.verdict_count, 3, "own mark kept, both imported marks added");
   assert.ok(merged.data.verdicts.some((v: any) => v.id === own.data.id));
   const again = await call(c, "export", { action: "import", path: exported });
   assert.equal(again.isError, false);
-  assert.equal((await call(c, "list_annotations", {})).data.verdict_count, 3, "re-import is idempotent for verdicts too");
+  assert.equal((await call(c, "annotate", { action: "list" })).data.verdict_count, 3, "re-import is idempotent for verdicts too");
 });
 
 // ── symbol_sweep phase 2: set-wide sweeps, plan-only counting ────────────────
@@ -2613,11 +2614,11 @@ test("get_sheet_vectors: a scan has no strokes — refused, and view_sheet is na
 test("RFIs: create → list → resolve → delete round-trip on the wire, and undo_last ×3 takes each back exactly", async () => {
   const client = await pair();
   await call(client, "open_drawings", { action: "load", path: PLAN });
-  const cloud = await call(client, "annotate", { sheet: KEY, type: "cloud", text: "schedule says CPT-1, plan tags VCT-1", rect: [[400, 900], [800, 1200]], condition: "CPT-1" });
-  const note = await call(client, "annotate", { sheet: KEY, type: "text", text: "unrelated", at: [100, 100] });
+  const cloud = await call(client, "annotate", { action: "add", sheet: KEY, type: "cloud", text: "schedule says CPT-1, plan tags VCT-1", rect: [[400, 900], [800, 1200]], condition: "CPT-1" });
+  const note = await call(client, "annotate", { action: "add", sheet: KEY, type: "text", text: "unrelated", at: [100, 100] });
 
   // create: next number in the panel's sequence, open, agent-raised and pending
-  const made = await call(client, "create_rfi", {
+  const made = await call(client, "rfi", { action: "create",
     title: "Room 102 finish conflict", question: "Finish schedule row 102 reads CPT-1; the plan tags the room VCT-1. Which governs?",
     sheet: "A-101", markup_ids: [cloud.data.id],
   });
@@ -2639,7 +2640,7 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   assert.equal(payload1.data.rfis[0].subject, "Room 102 finish conflict");
 
   // list: every RFI with status, sheet, links, and the conditions the links touch
-  const listed = await call(client, "list_rfis", {});
+  const listed = await call(client, "rfi", { action: "list" });
   assert.equal(listed.isError, false);
   assert.equal(listed.data.count, 1);
   assert.equal(listed.data.open, 1);
@@ -2649,24 +2650,24 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   assert.deepEqual(listed.data.rfis[0].conditions, ["CPT-1"]);
 
   // resolve: answered + response + dates; a second resolve is refused in so many words
-  const done = await call(client, "resolve_rfi", { rfi_id: made.data.id, answer: "Architect: VCT-1 governs; schedule row 102 revised in ASI-02." });
+  const done = await call(client, "rfi", { action: "resolve", rfi_id: made.data.id, answer: "Architect: VCT-1 governs; schedule row 102 revised in ASI-02." });
   assert.equal(done.isError, false, done.data.error);
   assert.equal(done.data.status, "answered");
   assert.match(done.data.response, /VCT-1 governs/);
   assert.match(done.data.response_date, /^\d{4}-\d{2}-\d{2}$/, "the panel's date-only auto-stamp");
   assert.match(done.data.resolved_at, /^\d{4}-\d{2}-\d{2}T/, "plus the resolve's own ISO timestamp");
-  const again = await call(client, "resolve_rfi", { rfi_id: made.data.id, answer: "second answer" });
+  const again = await call(client, "rfi", { action: "resolve", rfi_id: made.data.id, answer: "second answer" });
   assert.equal(again.isError, true);
   assert.match(again.data.error, /RFI-001 is answered, not open/);
   assert.match(again.data.error, /open/i);
-  assert.equal((await call(client, "list_rfis", {})).data.rfis[0].response, "Architect: VCT-1 governs; schedule row 102 revised in ASI-02.", "the refusal changed nothing");
+  assert.equal((await call(client, "rfi", { action: "list" })).data.rfis[0].response, "Architect: VCT-1 governs; schedule row 102 revised in ASI-02.", "the refusal changed nothing");
 
   // delete: tombstone — gone from the list, number reserved, the markup keeps its note and loses the link
-  const gone = await call(client, "delete_rfi", { rfi_id: made.data.id });
+  const gone = await call(client, "rfi", { action: "delete", rfi_id: made.data.id });
   assert.equal(gone.isError, false, gone.data.error);
   assert.deepEqual({ deleted: gone.data.deleted, number: gone.data.number, unlinked_markups: gone.data.unlinked_markups, rfis_remaining: gone.data.rfis_remaining },
     { deleted: made.data.id, number: "RFI-001", unlinked_markups: 1, rfis_remaining: 0 });
-  const afterDel = await call(client, "list_rfis", {});
+  const afterDel = await call(client, "rfi", { action: "list" });
   assert.equal(afterDel.data.count, 0);
   assert.deepEqual(afterDel.data.withdrawn, ["RFI-001"], "the gap is explained, not silent");
   const payload2 = await call(client, "export", { action: "takeoff" });
@@ -2674,12 +2675,12 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   assert.equal(payload2.data.markups.find((m: any) => m.id === cloud.data.id).rfi_id, "", "link cleared, note kept");
   assert.equal(payload2.data.markups.length, 2);
   // a withdrawn id is refused by name, and so is a made-up one
-  const dead = await call(client, "resolve_rfi", { rfi_id: made.data.id, answer: "x" });
+  const dead = await call(client, "rfi", { action: "resolve", rfi_id: made.data.id, answer: "x" });
   assert.equal(dead.isError, true);
   assert.match(dead.data.error, /RFI-001 was withdrawn/);
-  const nope = await call(client, "delete_rfi", { rfi_id: "rfi-nope" });
+  const nope = await call(client, "rfi", { action: "delete", rfi_id: "rfi-nope" });
   assert.equal(nope.isError, true);
-  assert.match(nope.data.error, /list_rfis/);
+  assert.match(nope.data.error, /rfi \{action: "list"\}/);
 
   // ── undo ×3, newest first: delete → resolve → create. Each op name crosses
   // the wire through undoLastOutput's enum — the assertion that catches a
@@ -2687,7 +2688,7 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   const u1 = await call(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(u1.isError, false, `undo of delete_rfi failed on the wire: ${u1.data.error}`);
   assert.deepEqual(u1.data.steps.map((x: any) => [x.op, x.tool, x.shapes]), [["rfi_delete", "delete_rfi", 0]]);
-  const back1 = await call(client, "list_rfis", {});
+  const back1 = await call(client, "rfi", { action: "list" });
   assert.equal(back1.data.count, 1);
   assert.deepEqual(back1.data.withdrawn, []);
   assert.equal(back1.data.rfis[0].status, "answered", "the record came back as it was before the delete — answered");
@@ -2696,7 +2697,7 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   const u2 = await call(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(u2.isError, false, `undo of resolve_rfi failed on the wire: ${u2.data.error}`);
   assert.deepEqual(u2.data.steps.map((x: any) => [x.op, x.tool]), [["rfi_resolve", "resolve_rfi"]]);
-  const back2 = await call(client, "list_rfis", {});
+  const back2 = await call(client, "rfi", { action: "list" });
   assert.equal(back2.data.rfis[0].status, "open");
   assert.equal(back2.data.rfis[0].response, "");
   assert.equal(back2.data.rfis[0].response_date, "");
@@ -2704,7 +2705,7 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   const u3 = await call(client, "edit_takeoff", { action: "undo", n: 1 });
   assert.equal(u3.isError, false, `undo of create_rfi failed on the wire: ${u3.data.error}`);
   assert.deepEqual(u3.data.steps.map((x: any) => [x.op, x.tool]), [["rfi_create", "create_rfi"]]);
-  const back3 = await call(client, "list_rfis", {});
+  const back3 = await call(client, "rfi", { action: "list" });
   assert.equal(back3.data.count, 0);
   assert.deepEqual(back3.data.withdrawn, [], "an undone create leaves no tombstone — it never existed");
   const payload3 = await call(client, "export", { action: "takeoff" });
@@ -2713,7 +2714,7 @@ test("RFIs: create → list → resolve → delete round-trip on the wire, and u
   assert.equal(u3.data.remaining, 0, "annotate is not journaled; the three RFI verbs were the whole history");
 
   // and forward again: after a full unwind the register starts at RFI-001 (no tombstone was left)
-  const fresh = await call(client, "create_rfi", { title: "again", question: "q", sheet: KEY });
+  const fresh = await call(client, "rfi", { action: "create", title: "again", question: "q", sheet: KEY });
   assert.equal(fresh.data.number, "RFI-001");
 });
 
@@ -2724,18 +2725,18 @@ test("RFIs: delete is a tombstone — the number is never reissued and the marke
   await copyFile(PLAN, tmpPlan);
   await call(client, "open_drawings", { action: "load", path: tmpPlan });
 
-  const a = await call(client, "create_rfi", { title: "first", question: "q1", sheet: KEY });
-  const b = await call(client, "create_rfi", { title: "second", question: "q2", sheet: KEY });
-  const c = await call(client, "create_rfi", { title: "third", question: "q3", sheet: KEY });
+  const a = await call(client, "rfi", { action: "create", title: "first", question: "q1", sheet: KEY });
+  const b = await call(client, "rfi", { action: "create", title: "second", question: "q2", sheet: KEY });
+  const c = await call(client, "rfi", { action: "create", title: "third", question: "q3", sheet: KEY });
   assert.deepEqual([a.data.number, b.data.number, c.data.number], ["RFI-001", "RFI-002", "RFI-003"]);
 
   // withdraw the NEWEST — the case a hard delete would silently renumber (max+1 would hand out RFI-003 again)
-  const gone = await call(client, "delete_rfi", { rfi_id: c.data.id });
+  const gone = await call(client, "rfi", { action: "delete", rfi_id: c.data.id });
   assert.equal(gone.isError, false);
   assert.match(gone.data.note, /next RFI takes RFI-004/);
-  const d = await call(client, "create_rfi", { title: "fourth", question: "q4", sheet: KEY });
+  const d = await call(client, "rfi", { action: "create", title: "fourth", question: "q4", sheet: KEY });
   assert.equal(d.data.number, "RFI-004", "the withdrawn number stays reserved");
-  const listed = await call(client, "list_rfis", {});
+  const listed = await call(client, "rfi", { action: "list" });
   assert.deepEqual(listed.data.rfis.map((r: any) => r.number), ["RFI-001", "RFI-002", "RFI-004"]);
   assert.deepEqual(listed.data.withdrawn, ["RFI-003"]);
 
@@ -2759,10 +2760,10 @@ test("RFIs: delete is a tombstone — the number is never reissued and the marke
   await call(client, "export", { action: "takeoff", path: out });
   const imp = await call(client, "export", { action: "import", path: out });
   assert.equal(imp.isError, false, imp.data.error);
-  const after = await call(client, "list_rfis", {});
+  const after = await call(client, "rfi", { action: "list" });
   assert.deepEqual(after.data.rfis.map((r: any) => r.number), ["RFI-001", "RFI-002", "RFI-004"], "re-import is idempotent for RFIs too");
   assert.deepEqual(after.data.withdrawn, ["RFI-003"]);
-  assert.equal((await call(client, "create_rfi", { title: "fifth", question: "q5", sheet: KEY })).data.number, "RFI-005");
+  assert.equal((await call(client, "rfi", { action: "create", title: "fifth", question: "q5", sheet: KEY })).data.number, "RFI-005");
 });
 
 test("RFIs in the marked set: an agent-raised RFI prints exactly like a panel-raised one; only the record and the credit line say who asked", async () => {
@@ -2777,8 +2778,8 @@ test("RFIs in the marked set: an agent-raised RFI prints exactly like a panel-ra
   // AGENT: annotate + create_rfi over the wire
   const agent = await pair();
   await call(agent, "open_drawings", { action: "load", path: tmpPlan });
-  const cloud = await call(agent, "annotate", { sheet: KEY, type: "cloud", text: "finish conflict", rect });
-  const made = await call(agent, "create_rfi", { title: subject, question, sheet: KEY, markup_ids: [cloud.data.id] });
+  const cloud = await call(agent, "annotate", { action: "add", sheet: KEY, type: "cloud", text: "finish conflict", rect });
+  const made = await call(agent, "rfi", { action: "create", title: subject, question, sheet: KEY, markup_ids: [cloud.data.id] });
   assert.equal(made.isError, false, made.data.error);
   const agentPdf = await call(agent, "export", { action: "marked_pdf", path: path.join(dir, "agent.pdf") });
   assert.equal(agentPdf.isError, false, agentPdf.data.error);
@@ -2803,7 +2804,7 @@ test("RFIs in the marked set: an agent-raised RFI prints exactly like a panel-ra
   await call(panel, "open_drawings", { action: "load", path: tmpPlan });
   const imp = await call(panel, "export", { action: "import", path: panelFile });
   assert.equal(imp.isError, false, imp.data.error);
-  const panelList = await call(panel, "list_rfis", {});
+  const panelList = await call(panel, "rfi", { action: "list" });
   assert.deepEqual({ actor: panelList.data.rfis[0].actor, pending: panelList.data.rfis[0].pending, linked: panelList.data.rfis[0].linked_markups },
     { actor: "estimator", pending: false, linked: ["mk-panel-1"] }, "a panel-raised RFI is the estimator's own and never pending");
   const panelPdf = await call(panel, "export", { action: "marked_pdf", path: path.join(dir, "panel.pdf") });
@@ -2849,7 +2850,7 @@ test("export_takeoff after tools/list preserves calibration and RFIs under clien
     await client.listTools();
     await client.callTool({ name: "open_drawings", arguments: { action: "load", path: PLAN } });
     await client.callTool({ name: "set_scale", arguments: { sheet: KEY, use_detected: true } });
-    await client.callTool({ name: "create_rfi", arguments: {
+    await client.callTool({ name: "rfi", arguments: { action: "create",
       sheet: KEY, title: "Synthetic scope question", question: "Confirm the finish at the indicated location.",
     } });
     const result = await client.callTool({ name: "export", arguments: { action: "takeoff" } });
@@ -2877,31 +2878,31 @@ test("edit_annotation changes only text, round-trips and undoes; no approval or 
     await call(client, "open_drawings", { action: "load", path: PLAN });
     assert.equal((await call(client, "set_scale", { sheet: KEY, upp: 1 / 36 })).isError, false);
     assert.equal((await call(client, "measure", { kind: "area", sheet: KEY, points: [[100, 100], [460, 100], [460, 460]], condition: "FT-1" })).isError, false);
-    const created = await call(client, "annotate", { sheet: KEY, type: "dimension", from: [100, 100], to: [460, 100], text: "A note too long for this drawing", condition: "FT-1" });
+    const created = await call(client, "annotate", { action: "add", sheet: KEY, type: "dimension", from: [100, 100], to: [460, 100], text: "A note too long for this drawing", condition: "FT-1" });
     assert.equal(created.isError, false);
     const id = created.data.id;
     Object.assign(session.markups[0], { extension: { keep: [1, 2] } });
     const before = structuredClone(session.exportPayload());
-    const edited = await call(client, "edit_annotation", { annotation_id: id, text: "Verify in field" });
+    const edited = await call(client, "annotate", { action: "edit", annotation_id: id, text: "Verify in field" });
     assert.equal(edited.isError, false);
     assert.equal(edited.data.text, "Verify in field");
     const after = session.exportPayload();
     assert.deepEqual(after, { ...before, markups: before.markups.map(m => ({ ...m, text: "Verify in field" })) });
-    const listed = await call(client, "list_annotations");
+    const listed = await call(client, "annotate", { action: "list" });
     assert.equal(listed.data.annotations[0].text, "Verify in field");
     assert.equal(listed.data.annotations[0].length_lf ?? session.markups[0].len_ft, 10);
     const undone = await call(client, "edit_takeoff", { action: "undo", n: 1 });
     assert.equal(undone.isError, false);
     assert.equal(undone.data.steps[0].op, "annotation_text");
     assert.deepEqual(session.exportPayload(), before);
-    assert.equal((await call(client, "edit_annotation", { annotation_id: id, text: "" })).isError, false, "empty text clears the note; dimension length remains");
+    assert.equal((await call(client, "annotate", { action: "edit", annotation_id: id, text: "" })).isError, false, "empty text clears the note; dimension length remains");
     assert.equal(session.markups[0].len_ft, 10);
     await call(client, "edit_takeoff", { action: "undo", n: 1 });
-    assert.equal((await call(client, "edit_annotation", { annotation_id: "missing", text: "x" })).isError, true);
-    assert.equal((await call(client, "edit_annotation", { annotation_id: id, text: session.markups[0].text })).isError, true, "a no-op must not consume an undo step");
+    assert.equal((await call(client, "annotate", { action: "edit", annotation_id: "missing", text: "x" })).isError, true);
+    assert.equal((await call(client, "annotate", { action: "edit", annotation_id: id, text: session.markups[0].text })).isError, true, "a no-op must not consume an undo step");
     session.markups[0].rfi_id = "rfi-existing";
     const linked = structuredClone(session.exportPayload());
-    const refused = await call(client, "edit_annotation", { annotation_id: id, text: "Architect approved" });
+    const refused = await call(client, "annotate", { action: "edit", annotation_id: id, text: "Architect approved" });
     assert.equal(refused.isError, true);
     assert.match(refused.data.error, /RFI/);
     assert.deepEqual(session.exportPayload(), linked);
@@ -2922,7 +2923,7 @@ test("measure_line rise/drop: condition defaults, per-run override, edit_shape c
   assert.equal(flat.data.plan_lf, undefined, "a flat run carries no split");
 
   // the condition's defaults re-flow the existing run and seed the next
-  const knob = await call(client, "edit_condition", { condition: "EC-1", rise_ft: 2, drop_ft: 8 });
+  const knob = await call(client, "conditions", { action: "edit", condition: "EC-1", rise_ft: 2, drop_ft: 8 });
   assert.equal(knob.isError, false);
   assert.equal(knob.data.rise_ft, 2);
   assert.equal(knob.data.drop_ft, 8);
@@ -2970,7 +2971,7 @@ test("measure_line rise/drop: condition defaults, per-run override, edit_shape c
   assert.equal(shp.computed.vertical_lf, 10);
 
   // undo the knob write: the defaults go, and every run without its own leg re-flows flat
-  const zero = await call(client, "edit_condition", { condition: "EC-1", rise_ft: 0, drop_ft: 0 });
+  const zero = await call(client, "conditions", { action: "edit", condition: "EC-1", rise_ft: 0, drop_ft: 0 });
   assert.equal(zero.isError, false);
   sum = await call(client, "summary");
   assert.equal(sum.data.conditions.find((c: any) => c.finish_tag === "EC-1").lf, 24.99, "3 flat runs × 8.33");

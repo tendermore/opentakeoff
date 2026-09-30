@@ -150,9 +150,9 @@ async function workflow(dir) {
     await tool("view_sheet", { sheet, px: 1400 });
     await tool("measure", { kind: "area", sheet, points: reference.rooms[0].verts_px, condition: "SYNTH-FLOOR", role: "floor_area" }, "product-refusal");
     await tool("set_scale", { sheet, upp: reference.scale.feet_per_image_px });
-    await tool("propose_takeoff", estimatorTrace
-      ? { label: `${reference.reference_id} known-answer run`, rationale: "Scripted conformance run of the frozen reference rings; tool/workflow conformance only, not an agent trace." }
-      : { label: "Synthetic four-room wall-face areas", rationale: "Analytic inset wall faces from demo/sample-plan.pdf; scripted conformance fixture." });
+    await tool("proposal", estimatorTrace
+      ? { action: "propose", label: `${reference.reference_id} known-answer run`, rationale: "Scripted conformance run of the frozen reference rings; tool/workflow conformance only, not an agent trace." }
+      : { action: "propose", label: "Synthetic four-room wall-face areas", rationale: "Analytic inset wall faces from demo/sample-plan.pdf; scripted conformance fixture." });
     for (const room of reference.rooms) await tool("measure", { kind: "area", sheet, points: room.verts_px, condition: room.finish ?? "SYNTH-FLOOR", role: "floor_area" });
     const listed = await tool("edit_takeoff", { action: "list", sheet });
     const shapeRows = listed.value?.shapes ?? [];
@@ -174,8 +174,8 @@ async function workflow(dir) {
       };
       await tool("view_sheet", { sheet, region: cropRegion, overlay: true, px: 1400 });
     }
-    const duplicates = await tool("scope_duplicates", { sheet });
-    if ((duplicates.value?.collisions?.length ?? 0) || (duplicates.value?.duplicates?.length ?? 0) || duplicates.value?.shared_floor_sf !== 0) throw new Error("scope_duplicates reported overlap in clean fixture");
+    const duplicates = await tool("conditions", { action: "scope_duplicates", sheet });
+    if ((duplicates.value?.collisions?.length ?? 0) || (duplicates.value?.duplicates?.length ?? 0) || duplicates.value?.shared_floor_sf !== 0) throw new Error("conditions scope_duplicates reported overlap in clean fixture");
     await tool("summary");
     await tool("export", { action: "report", path: resolve(dir, "report.json"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });
     await tool("export", { action: "marked_pdf", path: resolve(dir, "marked.pdf"), project_name: "Synthetic MCP workflow benchmark", overwrite: true });

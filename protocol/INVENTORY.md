@@ -83,7 +83,7 @@ The [current-record tests](test/current-records.test.mjs) verify a 54 SF stepped
 face, a 3 ft physical opening, actual surviving endpoints, pending review,
 structural conformance and undo without adding a role or changing schemas.
 
-`edit_annotation` changes only existing `markups[].text`. Its session-only
+`annotate {action: "edit"}` changes only existing `markups[].text`. Its session-only
 inverse stores the previous string; persisted markup geometry, extensions,
 links and review records remain untouched. RFI-linked notes refuse this edit.
 See the [wire tests](../mcp/test/tools.test.ts). No new durable event is claimed.

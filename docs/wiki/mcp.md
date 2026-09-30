@@ -12,13 +12,13 @@ comes from the runtime, including each tool's actions and required inputs; the
 | Establish scale | `set_scale` | Correct detail scale; agent-set calibration stays unconfirmed |
 | Find finish evidence | `schedule` (`find`), `find_text` (`resolve_tag`, `read`) | Verify the cited sheet/region; do not infer missing rows |
 | Locate boundaries | `sheet_context` (`vectors` or `context`) | `view_sheet` for visual confirmation |
-| Group a pass | `propose_takeoff` | A batch heading exists; no geometry has been committed |
+| Group a pass | `proposal {action: "propose"}` | A batch heading exists; no geometry has been committed |
 | Rooms from the linework | `takeoff_rooms` (gated) | Overlay inspection; read `withheld` |
 | Floor, base/trim, wall face | `measure` (`area`, `length`, `surface`) | Overlay inspection and per-role quantities |
 | Count drawn symbols | `count` (`symbol`, then `sweep` for set-wide or counter-examples) | Check the numbered picture; drop wrong marks before `commit` |
 | Device/count census | `count` (`marks`) | Inspect withheld entries; use more specific sweeps where needed |
 | Located opening, base, transitions | `derive` (`deduct`, `base`, `transitions`) | Surviving geometry; numeric derived-base allowances cannot be clipped |
-| Pending shape or crowded note | `edit_takeoff` (`edit`) or `edit_annotation` | Reinspect; `edit_takeoff` (`undo`) restores the edit |
+| Pending shape or crowded note | `edit_takeoff` (`edit`) or `annotate {action: "edit"}` | Reinspect; `edit_takeoff` (`undo`) restores the edit |
 | Check and hand off | `summary`, `export` (`report`, `takeoff`, `marked_pdf`) | Reopen and inspect; leave human review pending |
 
 Every tool is always listed; there is no staged exposure. A task tool takes one

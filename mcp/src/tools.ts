@@ -439,244 +439,209 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
     }
   }));
 
-  // ── estimator workflow — the old per-verb tools, consolidated in a later change ──
-  server.registerTool("propose_takeoff", {
-    description: `Open a PROPOSAL — a named batch of the shapes you are about to commit, with one identity (#365). Every shape you commit from here on (${oneClick ? "takeoff_rooms, " : ""}measure {kind: "area"}, measure {kind: "length"}, measure {kind: "surface"}, count {action: "place"}, the sweeps, the derives, derive {action: "deduct"}) attaches to it until you open another proposal or withdraw this one; the estimator then sees ONE Accept pill for the whole batch instead of one per shape — a forty-room pass becomes one decision, not forty. Use it BEFORE the work, the way an estimator titles a takeoff before tracing: "Level 2 rooms per finish schedule A-601", "Base derived from CPT-1 rooms". label is what the estimator reads on the pill; rationale is what decided the batch (the schedule row, the sheet, the rule) — both required, neither is a comment. Nothing here commits geometry or changes a total: an empty proposal is just a heading. The batch is what revise_proposal replaces and withdraw_proposal removes; shapes the estimator has already accepted leave the batch and no agent verb reaches them. summary carries the ledger (pending / accepted / withdrawn per batch).`,
+  server.registerTool("conditions", {
+    description: "Set up conditions and check scope. edit: an existing condition's knobs — waste_pct, multiplier (×N floors), height_ft for surface, rise_ft/drop_ft defaults for its runs, roll_setup (roll goods; null opts out). duplicate: twin a condition under label, the same finish in another area; the twin follows the original's materials until split. split: end a twin's inheritance. materials: add, remove or patch coverage-rate rows (basis ÷ per = order quantity). scope_duplicates: floor claimed twice, as pairs. scope_merge: resolve one pair. Each write is one undo step.",
     inputSchema: {
-      label: z.string().min(1).describe("The batch's title, as the estimator will read it on the Accept pill"),
-      rationale: z.string().min(1).describe("What decided the batch — cite the schedule row, sheet, or rule"),
-    },
-    outputSchema: proposeTakeoffOutput,
-  }, run("propose_takeoff", (a) => session.proposeTakeoff(a.label, a.rationale)));
-
-  server.registerTool("revise_proposal", {
-    description: `Replace EVERY still-pending shape in a proposal with a new set, as ONE journal step (#365) — the move for "I re-measured and got a better batch". The old pending shapes go, the replacements commit under the same proposal, and edit_takeoff {action: "undo"} puts the previous batch back exactly. All-or-nothing: the whole replacement is validated (sheet, scale, vertex count, a height for surface_area) before the first pending shape is removed, so a malformed last shape leaves the batch untouched and the error says which entry and why. Shapes the estimator already accepted are ink — they stay, and they are not part of what this replaces. verts are image px like every other tool; roles and minimums match the measure tools (floor_area/deduct ≥3, linear/surface_area ≥2, count 1). An empty shapes list is refused — withdraw_proposal is the verb for that.`,
-    inputSchema: {
-      proposal_id: z.string().describe("The batch, from propose_takeoff"),
-      shapes: z.array(z.object({
-        sheet: z.string().describe('Sheet key ("plan.pdf", "plan.pdf#2") or title-block number'),
-        condition: z.string().describe("Finish tag — minted on first touch, like measure {kind: \"area\"}"),
-        role: z.enum(["floor_area", "deduct", "linear", "surface_area", "count"]),
-        verts: z.array(point()).min(1).describe("Geometry in image px: a ring for areas, a run for linear/surface, one point for a count"),
-        label: z.string().optional().describe("The room this shape belongs to (per-room reporting)"),
-        height_ft: z.number().positive().optional().describe("surface_area only — the height to quantify at when the condition has none"),
-      })).min(1),
-    },
-    outputSchema: reviseProposalOutput,
-  }, run("revise_proposal", (a) => session.reviseProposal(a.proposal_id, a.shapes)));
-
-  server.registerTool("withdraw_proposal", {
-    description: `Take a proposal back (#365): every still-pending shape in the batch is removed in ONE journal step, the record stays marked withdrawn (its label is history the estimator may still read), and new commits stop attaching to it. Shapes the estimator already accepted are ink and stay — the reply counts them. This is the honest exit for "that batch was wrong" — one call instead of N edit_takeoff {action: "delete"} calls, and edit_takeoff {action: "undo"} restores the whole batch.`,
-    inputSchema: { proposal_id: z.string().describe("The batch, from propose_takeoff") },
-    outputSchema: withdrawProposalOutput,
-  }, run("withdraw_proposal", ({ proposal_id }) => session.withdrawProposal(proposal_id)));
-
-  server.registerTool("propose_condition_edit", {
-    description: `PROPOSE a change to a condition instead of making it (#365): a diff — a new finish tag (rename), waste %, ×N multiplier, height_ft, roll_setup — held PENDING until the estimator accepts it from the panel. edit_condition is the wrong power for "I think this condition is wrong": a tag rename or a knob change should be a decision the estimator makes, not one they discover. Until acceptance NOTHING changes — summary and export {action: "report"} keep computing from the current values and carry the diff beside them (proposed_condition_edits), and once accepted the report is byte-for-byte what a direct edit_condition would have produced (the same write path). Only fields that differ from the current value are recorded; a proposal that changes nothing is refused, and a rename onto a tag another condition already carries is refused (two conditions on one tag would make one unreachable). One pending diff per condition — proposing again replaces the earlier one (edit_takeoff {action: "undo"} restores it). rationale is required: the estimator accepts a reason.`,
-    inputSchema: {
-      condition: z.string().describe("Finish tag of an EXISTING condition, e.g. 'CPT-1'"),
-      finish_tag: z.string().min(1).optional().describe("Proposed new tag (a rename)"),
-      waste_pct: z.number().min(0).optional(),
-      multiplier: z.number().positive().optional(),
-      height_ft: z.number().positive().optional(),
-      rise_ft: z.number().min(0).optional().describe("Proposed default vertical leg UP for the condition's linear runs (#441)"),
-      drop_ft: z.number().min(0).optional().describe("Proposed default vertical leg DOWN for the condition's linear runs (#441)"),
-      roll_setup: z.union([z.null(), z.object({}).passthrough()]).optional().describe("Proposed roll-goods setup, or null to propose opting out"),
-      rationale: z.string().min(1).describe("Why — the schedule row, the spec section, the sheet note that decided it"),
-    },
-    outputSchema: proposeConditionEditOutput,
-  }, run("propose_condition_edit", (a) => session.proposeConditionEdit(a.condition, { finish_tag: a.finish_tag, waste_pct: a.waste_pct, multiplier: a.multiplier, height_ft: a.height_ft, rise_ft: a.rise_ft, drop_ft: a.drop_ft, roll_setup: a.roll_setup }, a.rationale)));
-
-  server.registerTool("withdraw_condition_edit", {
-    description: `Drop a pending condition-edit proposal (#365) without touching the condition. edit_takeoff {action: "undo"} re-seats it.`,
-    inputSchema: { proposal_id: z.string().describe("From propose_condition_edit, or summary's proposed_condition_edits") },
-    outputSchema: withdrawConditionEditOutput,
-  }, run("withdraw_condition_edit", ({ proposal_id }) => session.withdrawConditionEdit(proposal_id)));
-
-  server.registerTool("edit_condition", {
-    description: `Set a condition's quantity knobs — waste %, multiplier, height_ft (the H knob measure {kind: "surface"} quantifies against), and/or roll_setup (the roll-goods opt-in: seams and order footage figured from the committed rooms, #147). summary emits waste-adjusted *_net order quantities and a per-condition multiplier, and every export carries both, but conditions minted through the measure tools start at waste 0 / multiplier 1 — without this tool an agent's takeoff always ships net === gross (#131). waste_pct is the estimator's cut-waste percentage (carpet commonly 5–10); multiplier scales every quantity on the condition (×N identical floors — summary applies it before waste). condition must resolve to an EXISTING finish tag — a typo'd tag errors rather than minting an empty condition (the edit_materials remove/patch rule, not its add rule: these knobs mean nothing on a condition that doesn't exist yet). No review gate — quantity config, not traced geometry; edit_takeoff {action: "undo"} reverses a call in one step (both knobs snapshotted together, restored verbatim).`,
-    inputSchema: {
-      condition: z.string().describe("Finish tag of an existing condition, e.g. 'CPT-1'"),
-      waste_pct: z.number().min(0).optional().describe("Waste percentage applied to net order quantities, e.g. 10 for 10%"),
-      multiplier: z.number().positive().optional().describe("Quantity multiplier (×N identical areas). Note: the canvas treats 0 as 1, so 0 is rejected here rather than silently meaning 'off'"),
-      height_ft: z.number().positive().optional().describe("Wall height in feet — the canvas's H knob; measure {kind: \"surface\"} quantifies traced LF × this"),
-      rise_ft: z.number().min(0).optional().describe("Drop and Rise (#441): the vertical leg UP, in feet, every linear run of this condition adds to its plan length (LF = plan + rise + drop). Re-flows existing runs that do not carry their own rise_ft; derived base/transitions never take a leg. 0 turns it off"),
-      drop_ft: z.number().min(0).optional().describe("Drop and Rise (#441): the vertical leg DOWN, in feet, every linear run of this condition adds to its plan length. Re-flows existing runs that do not carry their own drop_ft. 0 turns it off"),
-      roll_setup: z.union([
-        z.null().describe("Opt the condition OUT of roll goods"),
-        z.object({
-          material: z.enum(["carpet", "sheet_vinyl", "rubber"]).optional().describe("Material class — fresh opt-ins and material changes start from this class's engine defaults (carpet sells sy, others sf)"),
-          roll_width_ft: z.number().positive().optional(),
-          roll_length_ft: z.number().min(0).optional().describe("Physical roll length; 0 = unlimited"),
-          seam_allowance_in: z.number().min(0).optional(),
-          wall_overage_in: z.number().min(0).optional(),
-          doorway_overage_in: z.number().min(0).optional(),
-          direction: z.enum(["auto", "ns", "ew"]).optional().describe("Run direction; auto lets the engine pick per room"),
-          price_unit: z.enum(["sy", "sf", "lf"]).optional().describe("Sell unit the order quantity is figured in"),
-        }),
-      ]).optional().describe("Roll-goods opt-in (#147): presence of a setup is what makes the condition roll goods — seams figured, cuts packed, order footage beside the measured quantities. Same-material partial edits patch the existing setup; null opts out. The reply echoes the figured order (cuts, order_lf, rolls, order_qty) whenever floor shapes exist on scaled sheets, and export {action: \"report\"}'s roll_goods block carries the same rows"),
-    },
-    outputSchema: editConditionOutput,
-  }, run("edit_condition", (a) => session.editCondition(a.condition, { waste_pct: a.waste_pct, multiplier: a.multiplier, height_ft: a.height_ft, roll_setup: a.roll_setup, rise_ft: a.rise_ft, drop_ft: a.drop_ft })));
-
-  server.registerTool("edit_materials", {
-    description: `Add, remove, or patch supporting-materials rows on a condition — the coverage-rate lines that turn a measured area/length/count into an order quantity (adhesive at N sf/gal, grout at N lf/bag, …), matching the canvas's per-condition Supporting Materials panel. Each row is {name, per, basis, unit, round, note}: quantity = the condition's basis total (area/linear/count/seam_lf) ÷ per, rounded up to whole purchase units unless round:false. basis "seam_lf" is the one basis that is FIGURED rather than measured: it is the length where two cuts meet on the floor, read off the condition's roll layout (set roll_setup with edit_condition), which is what a heat-weld rod or a carpet seam tape is bought by. A 20-ft-wide room off a 12-ft roll seams once down its length; the same square footage as two 10-ft rooms seams not at all, and no percentage of the area or the perimeter can tell those two jobs apart. Without a roll_setup — or with no committed floor shapes to lay out — a seam_lf row reads 0, which is the honest state rather than a guess. condition names an existing OR NEW finish tag (minted on first touch, same as ${oneClick ? "takeoff_rooms/" : ""}measure {kind: "area"}) — add alone is enough to seed materials on a condition before you've traced anything. remove/patch target existing row ids from this reply or export {action: "takeoff"} (summary strips materials for a compact quantities-only reply); a bad id 404s the WHOLE call before anything is written, and referencing an id on a tag with no condition yet errors rather than silently minting an empty one. No review gate here — materials rows are quantity config, not traced geometry, so this edits directly; edit_takeoff {action: "undo"} reverses a call in one step (the condition's whole materials array, snapshotted before the write, restored verbatim).`,
-    inputSchema: {
-      condition: z.string().describe("Finish tag, e.g. 'CPT-1'"),
+      action: z.enum(["edit", "duplicate", "split", "materials", "scope_duplicates", "scope_merge"]),
+      condition: z.string().optional().describe("edit, duplicate, split, materials: the finish tag, e.g. 'CPT-1' (materials mints it on first use)"),
+      waste_pct: z.number().min(0).optional().describe("edit: waste percentage on net order quantities, e.g. 10"),
+      multiplier: z.number().positive().optional().describe("edit: ×N identical areas (0 is refused; the canvas reads it as 1)"),
+      height_ft: z.number().positive().optional().describe("edit: wall height, feet — what measure {kind: \"surface\"} multiplies LF by"),
+      rise_ft: z.number().min(0).optional().describe("edit: default vertical leg up every linear run adds, feet; 0 turns it off"),
+      drop_ft: z.number().min(0).optional().describe("edit: default vertical leg down every linear run adds, feet; 0 turns it off"),
+      roll_setup: z.object({
+        material: z.enum(["carpet", "sheet_vinyl", "rubber"]).optional().describe("Material class; a fresh opt-in starts from its defaults"),
+        roll_width_ft: z.number().positive().optional(),
+        roll_length_ft: z.number().min(0).optional().describe("Physical roll length; 0 = unlimited"),
+        seam_allowance_in: z.number().min(0).optional(),
+        wall_overage_in: z.number().min(0).optional(),
+        doorway_overage_in: z.number().min(0).optional(),
+        direction: z.enum(["auto", "ns", "ew"]).optional().describe("Run direction; auto lets the engine pick per room"),
+        price_unit: z.enum(["sy", "sf", "lf"]).optional().describe("Sell unit the order quantity is figured in"),
+      }).nullable().optional().describe("edit: roll-goods setup (seams, cuts, order footage); partial edits patch it; null opts out"),
+      label: z.string().optional().describe("duplicate: what makes the twin different, e.g. 'Level 2' (its tag becomes 'CPT-1 – Level 2')"),
       add: z.array(z.object({
         name: z.string().min(1),
-        per: z.number().min(0).optional().describe("Coverage rate — basis units per purchase unit, e.g. 250 for 1 gal / 250 sf. Default 0 (quantity 0 until set)"),
-        basis: z.enum(["area", "linear", "count", "seam_lf"]).optional().describe("Which of the condition's totals this row divides against — default 'area' (total SF). 'seam_lf' is the figured roll-layout seam length (weld rod, seam tape), 0 until the condition carries a roll_setup"),
-        unit: z.string().optional().describe("Purchase unit, e.g. 'gal', 'bag', 'roll'"),
-        round: z.boolean().optional().describe("Round up to whole purchase units — default true"),
+        per: z.number().min(0).optional().describe("Coverage rate: basis units per purchase unit, e.g. 250 (default 0)"),
+        basis: z.enum(["area", "linear", "count", "seam_lf"]).optional().describe("Total the row divides: area (default), linear, count, or seam_lf (figured roll seams)"),
+        unit: z.string().optional().describe("Purchase unit, e.g. 'gal', 'bag'"),
+        round: z.boolean().optional().describe("Round up to whole purchase units (default true)"),
         note: z.string().optional(),
-      })).optional().describe("New rows to add"),
-      remove: z.array(z.string()).optional().describe("Existing row ids to remove"),
+      })).optional().describe("materials: new rows"),
+      remove: z.array(z.string()).optional().describe("materials: row ids to remove"),
       patch: z.array(z.object({
         id: z.string(),
-        fields: z.record(z.union([z.string(), z.number(), z.boolean()])).describe("Field:value pairs — name/per/basis/unit/round/note only"),
-      })).optional().describe("Field changes on existing rows"),
+        fields: z.record(z.union([z.string(), z.number(), z.boolean()])).describe("name/per/basis/unit/round/note values"),
+      })).optional().describe("materials: field changes on existing rows"),
+      sheet: z.string().optional().describe("scope_duplicates: only this sheet; omit for every sheet"),
+      min_fraction: z.number().min(0).max(1).optional().describe("scope_duplicates: list a pair when shared ÷ smaller ≥ this (default 0.05)"),
+      shape_a: z.string().optional().describe("scope_merge: one floor shape of the pair"),
+      shape_b: z.string().optional().describe("scope_merge: the other"),
+      winner: z.string().optional().describe("scope_merge: the shape that keeps the shared floor; omit to let the reviewed one win"),
     },
-    outputSchema: editMaterialsOutput,
-  }, run("edit_materials", (a) => session.editMaterials(a.condition, { add: a.add, remove: a.remove, patch: a.patch })));
+    outputSchema: perAction("action", ["edit", "duplicate", "split", "materials", "scope_duplicates", "scope_merge"],
+      editConditionOutput, duplicateConditionOutput, splitConditionOutput, editMaterialsOutput, scopeDuplicatesOutput, scopeMergeOutput),
+  }, run("conditions", async (a) => {
+    switch (a.action) {
+      case "scope_duplicates":
+        return { action: "scope_duplicates", ...(await session.scopeDuplicates({ sheet: a.sheet, min_fraction: a.min_fraction })) };
+      case "scope_merge": {
+        need("conditions", "scope_merge", a, "shape_a", "shape_b");
+        // the Session names the loser's fate `action`; the tool's own action field owns that key
+        const { action: outcome, ...merged } = await session.scopeMerge({ shape_a: a.shape_a, shape_b: a.shape_b, winner: a.winner });
+        return { action: "scope_merge", outcome, ...merged };
+      }
+      case "duplicate":
+        need("conditions", "duplicate", a, "condition", "label");
+        return { action: "duplicate", ...(await session.duplicateCondition(a.condition, a.label)) };
+      case "split":
+        need("conditions", "split", a, "condition");
+        return { action: "split", ...(await session.splitCondition(a.condition)) };
+      case "materials":
+        need("conditions", "materials", a, "condition");
+        return { action: "materials", ...(await session.editMaterials(a.condition, { add: a.add, remove: a.remove, patch: a.patch })) };
+      default:
+        need("conditions", "edit", a, "condition");
+        return { action: "edit", ...(await session.editCondition(a.condition, { waste_pct: a.waste_pct, multiplier: a.multiplier, height_ft: a.height_ft, roll_setup: a.roll_setup, rise_ft: a.rise_ft, drop_ft: a.drop_ft })) };
+    }
+  }));
 
-  server.registerTool("duplicate_condition", {
-    description: `Twin a condition — the same finish measured somewhere else, with its own supporting materials. One finish in two areas is not two conditions and it is not one either: the same sheet goods over a slab and over a raised deck take the same field material and different preparation underneath (one wants a moisture barrier, the other a primer and a different adhesive). The twin arrives carrying the original's whole materials list and keeps FOLLOWING it — change a coverage rate on the original and every twin that has not touched that row gets it; edit a row on the twin and only THAT row stops following. \`label\` is REQUIRED and becomes the tag suffix ('CPT-1' + 'Level 2' → 'CPT-1 – Level 2'), because every tool in this server resolves a condition by finish tag and takes the FIRST match: two conditions sharing a tag would make one permanently unreachable, and a takeoff re-import collapses them last-wins. A label already in use is refused rather than de-collided. No takeoffs come along — measure the new area against the returned condition_id. Reversible with edit_takeoff {action: "undo"}; use split_condition to end the inheritance permanently.`,
+  server.registerTool("proposal", {
+    description: "Group your work for one estimator decision. propose: open a named batch before committing; every shape committed afterwards attaches to it, and the estimator accepts the batch with one click. revise: replace every still-pending shape of a batch in one step. withdraw: remove a batch's pending shapes. propose_condition_edit: hold a change to a condition's tag or knobs pending the estimator's acceptance instead of making it. withdraw_condition_edit: drop that pending change. Shapes the estimator accepted are ink and stay. Each call is one undo step.",
     inputSchema: {
-      condition: z.string().describe("Finish tag of the condition to twin, e.g. 'CPT-1'"),
-      label: z.string().describe("What makes this one different, usually the area: 'Level 2', 'Building B', 'Phase 2'"),
+      action: z.enum(["propose", "revise", "withdraw", "propose_condition_edit", "withdraw_condition_edit"]),
+      label: z.string().min(1).optional().describe("propose: the batch title the estimator reads on the Accept pill"),
+      rationale: z.string().min(1).optional().describe("propose, propose_condition_edit: what decided it — the schedule row, sheet, spec or rule"),
+      proposal_id: z.string().optional().describe("revise, withdraw: the batch; withdraw_condition_edit: the pending condition edit"),
+      shapes: z.array(z.object({
+        sheet: z.string().describe("Sheet key or title-block number"),
+        condition: z.string().describe("Finish tag, minted on first use"),
+        role: z.enum(["floor_area", "deduct", "linear", "surface_area", "count"]),
+        points: z.array(point()).min(1).describe("Image px: a ring for areas (≥3), a run for linear/surface (≥2), one point for a count"),
+        label: z.string().optional().describe("The room this shape belongs to"),
+        height_ft: z.number().positive().optional().describe("surface_area: height when the condition has none"),
+      })).min(1).optional().describe("revise: the replacement batch, validated whole before anything is removed"),
+      condition: z.string().optional().describe("propose_condition_edit: finish tag of an existing condition"),
+      finish_tag: z.string().min(1).optional().describe("propose_condition_edit: proposed new tag (a rename)"),
+      waste_pct: z.number().min(0).optional().describe("propose_condition_edit: proposed waste %"),
+      multiplier: z.number().positive().optional().describe("propose_condition_edit: proposed ×N multiplier"),
+      height_ft: z.number().positive().optional().describe("propose_condition_edit: proposed wall height, feet"),
+      rise_ft: z.number().min(0).optional().describe("propose_condition_edit: proposed default vertical leg up for runs, feet"),
+      drop_ft: z.number().min(0).optional().describe("propose_condition_edit: proposed default vertical leg down for runs, feet"),
+      roll_setup: z.object({}).passthrough().nullable().optional().describe("propose_condition_edit: proposed roll-goods setup, or null to propose opting out"),
     },
-    outputSchema: duplicateConditionOutput,
-  }, run("duplicate_condition", (a) => session.duplicateCondition(a.condition, a.label)));
+    outputSchema: perAction("action", ["propose", "revise", "withdraw", "propose_condition_edit", "withdraw_condition_edit"],
+      proposeTakeoffOutput, reviseProposalOutput, withdrawProposalOutput, proposeConditionEditOutput, withdrawConditionEditOutput),
+  }, run("proposal", async (a) => {
+    switch (a.action) {
+      case "propose":
+        need("proposal", "propose", a, "label", "rationale");
+        return { action: "propose", ...(await session.proposeTakeoff(a.label, a.rationale)) };
+      case "revise": {
+        need("proposal", "revise", a, "proposal_id", "shapes");
+        const shapes = a.shapes.map(({ points, ...rest }: any) => ({ ...rest, verts: points }));
+        return { action: "revise", ...(await session.reviseProposal(a.proposal_id, shapes)) };
+      }
+      case "withdraw":
+        need("proposal", "withdraw", a, "proposal_id");
+        return { action: "withdraw", ...(await session.withdrawProposal(a.proposal_id)) };
+      case "withdraw_condition_edit":
+        need("proposal", "withdraw_condition_edit", a, "proposal_id");
+        return { action: "withdraw_condition_edit", ...(await session.withdrawConditionEdit(a.proposal_id)) };
+      default:
+        need("proposal", "propose_condition_edit", a, "condition", "rationale");
+        return {
+          action: "propose_condition_edit",
+          ...(await session.proposeConditionEdit(a.condition, { finish_tag: a.finish_tag, waste_pct: a.waste_pct, multiplier: a.multiplier, height_ft: a.height_ft, rise_ft: a.rise_ft, drop_ft: a.drop_ft, roll_setup: a.roll_setup }, a.rationale)),
+        };
+    }
+  }));
 
-  server.registerTool("split_condition", {
-    description: `Cut a twin loose from its family: every following material row freezes at its current values and edits to the original stop reaching it. It keeps its finish tag and still groups with its siblings — only the inheritance ends. Use when two variants have diverged far enough that following one another is wrong. A condition that already owns its materials returns split:false rather than erroring. Reversible with edit_takeoff {action: "undo"}.`,
+  server.registerTool("review", {
+    description: "Your verdict on work you checked: the AGENT diamond. mark: on a committed shape (shape_id) or at a sheet point (sheet + at), exactly one target; optional text rides every export. One mark per shape: delete, then mark again. delete: lift one of your marks by verdict_id. The estimator's APPROVED ring is human ink: it cannot be minted or lifted here. A verdict touches no quantity and gates nothing. annotate {action: \"list\"} lists every mark in verdicts[].",
     inputSchema: {
-      condition: z.string().describe("Finish tag of the twin to split, e.g. 'CPT-1 – Level 2'"),
+      action: z.enum(["mark", "delete"]),
+      shape_id: z.string().optional().describe("mark: a committed shape (edit_takeoff {action: \"list\"} has the ids)"),
+      sheet: z.string().optional().describe("mark: the sheet, together with at, for a sheet-point mark"),
+      at: point().optional().describe("mark: where the diamond renders (image px), together with sheet"),
+      text: z.string().optional().describe("mark: a short note riding the record; the glyph always reads AGENT"),
+      verdict_id: z.string().optional().describe("delete: the record id from mark or annotate list's verdicts[]"),
     },
-    outputSchema: splitConditionOutput,
-  }, run("split_condition", (a) => session.splitCondition(a.condition)));
-
-  server.registerTool("scope_duplicates", {
-    description: `Two conditions claiming the same floor, as a list (#366). Every pair of committed floor_area shapes on one sheet whose EXACT polygon intersection exceeds min_fraction of the smaller shape — with the shared SF, which condition each belongs to, whether the estimator already affirmed either, and a look region to pass to view_sheet {overlay: true}. Pairs on DIFFERENT conditions are collisions: every total downstream counts that floor twice. Pairs on the SAME condition are a double trace (a different bug) and come back in duplicates. shared_floor_sf is the whole compared set's Σ areas − union, counted once per cell no matter how many shapes pile on it — the number summary carries and the one that has to read 0 before any total means anything. Machine-precision edge remnants are ignored; a real overlap below 0.01 SF stays listed with an explanatory note. Supporting materials belong in edit_materials coverage rows, not duplicate floor polygons. Deducts and runs are not claims. Read-only; a shape on an unscaled sheet or with a degenerate ring is listed in unmeasured, never counted as zero. Same rule as the room eval's shared-floor gate (iou ≥ 0.5 = the same space claimed twice).`,
-    inputSchema: {
-      sheet: z.string().optional().describe("Restrict to one sheet; default every sheet with floor shapes"),
-      min_fraction: z.number().min(0).max(1).optional().describe("List a pair only when shared ÷ smaller ≥ this (default 0.05 — rings that merely kiss along a wall are not claims; 0 lists every positive overlap above machine-precision noise)"),
-    },
-    outputSchema: scopeDuplicatesOutput,
-  }, run("scope_duplicates", (a) => session.scopeDuplicates({ sheet: a.sheet, min_fraction: a.min_fraction })));
-
-  server.registerTool("scope_merge", {
-    description: `Resolve ONE collision (#366): given a pair of floor shapes and the winner, the loser gives up the shared floor — TRIMMED to its remainder by an exact boolean difference (the derive {action: "deduct"} module's own arithmetic; its quantities re-measured from the result), or DELETED outright when the overlap is near-total (≥ 98% of the loser: the same space claimed twice, not a room with a sliver left). One journal step either way; edit_takeoff {action: "undo"} restores the loser verbatim. Who wins: state winner; with it omitted the reviewed shape wins over a pending one, and the verb refuses when neither is reviewed (it does not guess which condition the floor belongs to) or when BOTH are (that is the estimator's call — the collision shows on both condition rows in the canvas). The ink rule is absolute: a loser the estimator affirmed is refused whoever you name. A trim that would split the loser into disjoint pieces refuses — that is a re-trace decision, not a merge — and a loser carrying reconciled cutouts refuses (delete the cuts first).`,
-    inputSchema: {
-      shape_a: z.string().describe("One shape of the pair (from scope_duplicates)"),
-      shape_b: z.string().describe("The other"),
-      winner: z.string().optional().describe("Which of the two keeps the shared floor; omit to let the reviewed one win"),
-    },
-    outputSchema: scopeMergeOutput,
-  }, run("scope_merge", (a) => session.scopeMerge({ shape_a: a.shape_a, shape_b: a.shape_b, winner: a.winner })));
-
-  server.registerTool("annotate", {
-    description: `Place an annotation on a sheet — a note ABOUT the work, never a measurement of it. Types: cloud and highlight take rect:[[x0,y0],[x1,y1]] (a revision cloud around an area, a highlight box over it), text takes at:[x,y], callout takes at:[x,y] plus target:[x,y] (the point its leader aims at), arrow takes from:[x,y] and to:[x,y] (tail and head — plank/seam direction, the markup flooring drawings use most; #150), bubble takes at:[x,y] plus optional r (a keynote/detail circle carrying centered text), dimension takes from:[x,y] and to:[x,y] (its two measured endpoints) and labels itself with the length between them at the sheet's scale — drawn as a dimension line with end ticks and the measurement centered. A dimension states a REAL length, so it is the one annotation the scale gate applies to: on an unscaled sheet it refuses exactly like the measure tools (set_scale first) rather than dressing a px figure up as feet. It still touches no quantity — a dimension is a note about a distance, not a takeoff line item.\n\nPass condition to attach the note to a finish tag, which is what makes it part of that SCOPE rather than a floating remark: it then wears the condition's colour on the canvas and in the marked-set PDF, and travels with it into the report. The tag is minted on first touch like ${oneClick ? "takeoff_rooms/" : ""}measure {kind: "area"}, so you can annotate CPT-1 before anything is traced for it. Omit condition for a note about the sheet itself. \n\nNo review gate: the pencil-not-ink rule exists to stop an agent inventing geometry, and a cloud reading "verify substrate" is not geometry. It touches no quantity.`,
-    inputSchema: {
-      sheet: z.string().describe("Sheet name or number, as open_drawings {action: \"info\"} reports it"),
-      type: z.enum(["cloud", "text", "callout", "highlight", "arrow", "bubble", "dimension"]).describe("cloud/highlight need rect; text/callout/bubble need at; callout also needs target; arrow and dimension need from + to"),
-      text: z.string().default("").describe("The note. A cloud with no text still reads as 'look here'; a bubble's text draws centered in the circle; a dimension appends it after the measured length"),
-      condition: z.string().optional().describe("Finish tag to attach this note to, e.g. 'CPT-1' (minted on first use). Omit for an unattached sheet note"),
-      at: point().optional().describe("Anchor point (image px) — text, callout, and bubble (the circle's center)"),
-      target: point().optional().describe("What a callout's leader line points at (image px)"),
-      rect: z.tuple([point(), point()]).optional().describe("Corners (image px) — cloud and highlight"),
-      from: point().optional().describe("Arrow tail / dimension start (image px)"),
-      to: point().optional().describe("Arrow head / dimension end (image px)"),
-      r: z.number().positive().optional().describe("Bubble radius (image px); omitted → the canvas default (2% of sheet width)"),
-    },
-    outputSchema: annotateOutput,
-  }, run("annotate", (a) => session.annotate(a)));
-
-  server.registerTool("list_annotations", {
-    description: `Every annotation on the takeoff, with condition_id RESOLVED to its finish tag so you can act on the reply without joining against conditions[]. Filter by sheet, by condition, or both. Coordinates come back in image px (the same frame you passed in), not the normalized form they're stored as. \`unattached\` counts the notes carrying no condition — the candidates for link_annotation. \`verdicts\` is the approval family's inventory (mark_verdict/delete_verdict): every mark with its actor stated — the estimator's APPROVED ring or the agent's AGENT diamond — under the same filters, a condition filter reaching a verdict through its target shape.`,
-    inputSchema: {
-      sheet: z.string().optional().describe("Only annotations on this sheet"),
-      condition: z.string().optional().describe("Only annotations attached to this finish tag"),
-    },
-    outputSchema: listAnnotationsOutput,
-  }, run("list_annotations", (a) => session.listAnnotations(a)));
-
-  server.registerTool("edit_annotation", {
-    description: "Shorten, replace or clear the text of an existing annotation. Get annotation_id from list_annotations (annotations, not verdicts). Changes only text: position, shape, dimension length, condition links, quantities and review records stay unchanged. Empty text clears the note; a dimension still prints its measured length. Refuses an RFI-linked note: review that question's context in the browser RFI register. One edit_takeoff {action: \"undo\"} step restores the previous text. Does not create a verdict or human approval.",
-    inputSchema: {
-      annotation_id: z.string().describe("An annotation id from list_annotations"),
-      text: z.string().describe("Replacement text; empty string clears it"),
-    },
-    outputSchema: editAnnotationOutput,
-  }, run("edit_annotation", (a) => session.editAnnotation(a.annotation_id, a.text)));
-
-  server.registerTool("link_annotation", {
-    description: `Attach an existing annotation to a condition, or detach it by passing an empty condition — the canvas's Attach/Detach control, reachable by an agent. Use it to tie up notes left unattached (list_annotations reports how many), or to move one to the finish it actually concerns. Attaching mints the tag on first use.`,
-    inputSchema: {
-      annotation_id: z.string().describe("Id from annotate or list_annotations"),
-      condition: z.string().describe("Finish tag to attach to; empty string detaches"),
-    },
-    outputSchema: linkAnnotationOutput,
-  }, run("link_annotation", (a) => session.linkAnnotation(a.annotation_id, a.condition)));
-
-  server.registerTool("mark_verdict", {
-    description: `Mark the agent's VERDICT on work — the pencil half of the approval family, and the only half an agent can mint. Two actors exist on the record: the estimator's APPROVED ring is ink, minted solely by a human's click at the canvas's Approve tool; this tool mints the AGENT diamond and structurally nothing else — it takes no actor input to misuse. Target the work either way: shape_id anchors the mark ON a committed shape (a room at its area centroid, a run at its on-path midpoint, a count marker at its point) and records WHAT was marked — the shape_id stays on the record as provenance, and the glyph keeps its own anchor even if the shape is later deleted; or sheet + at drops the mark at a sheet point (image px). Exactly one target. Optional text rides the record through every export; the glyph itself always reads AGENT. A verdict touches no quantity and gates nothing: it is the agent's signed claim that it checked this work — pencil beside the estimator's ink, never in its place. The mark renders as the graphite AGENT diamond on the canvas and in the marked set, the marked-set cover tallies the split ("Approval stamps: N estimator-approved · M agent-marked"), and the record rides the annotations payload through export {action: "takeoff"} / export {action: "import"} and the app's own saves. One mark per shape (re-mark = delete_verdict, then mark again); list_annotations returns the inventory in verdicts[]; edit_takeoff {action: "undo"} steps over a mark exactly like any other mutation.`,
-    inputSchema: {
-      shape_id: z.string().optional().describe("Mark a committed shape (edit_takeoff {action: \"list\"} has the ids) — anchored on the shape, recorded as provenance. Exactly one target: this OR sheet + at"),
-      sheet: z.string().optional().describe("Sheet-point mode: the sheet, together with at"),
-      at: point().optional().describe("Sheet-point mode: where the AGENT diamond renders (image px)"),
-      text: z.string().optional().describe("Optional short note riding the record and every export — the glyph always reads AGENT"),
-    },
-    outputSchema: markVerdictOutput,
-  }, run("mark_verdict", (a) => {
+    outputSchema: perAction("action", ["mark", "delete"], markVerdictOutput, deleteVerdictOutput),
+  }, run("review", async (a) => {
+    if (a.action === "delete") {
+      need("review", "delete", a, "verdict_id");
+      return { action: "delete", ...(await session.deleteVerdict(a.verdict_id)) };
+    }
     // the set_scale convention: one target, stated exactly, refused otherwise
     const byShape = a.shape_id !== undefined;
     const byPoint = a.sheet !== undefined || a.at !== undefined;
-    if (byShape === byPoint) throw new UserError("Provide exactly one target: shape_id (mark a committed shape), or sheet + at (mark a sheet point).");
+    if (byShape === byPoint) throw new UserError("review mark needs exactly one target: shape_id (mark a committed shape), or sheet + at (mark a sheet point).");
     if (byPoint && (a.sheet === undefined || a.at === undefined)) throw new UserError("A sheet-point verdict needs BOTH sheet and at: [x, y] (image px).");
-    return session.markVerdict({ shape_id: a.shape_id, sheet: a.sheet, at: a.at, text: a.text });
+    return { action: "mark", ...(await session.markVerdict({ shape_id: a.shape_id, sheet: a.sheet, at: a.at, text: a.text })) };
   }));
 
-  server.registerTool("delete_verdict", {
-    description: `Lift an agent verdict mark by id (mark_verdict's reply, or list_annotations verdicts[]). Agent marks only: the estimator's APPROVED seal is human ink and is refused — the same line edit_takeoff {action: "edit"} holds on reviewed shapes. Journaled like every mutation, so edit_takeoff {action: "undo"} re-seats a lifted mark exactly where it was.`,
+  server.registerTool("rfi", {
+    description: "The RFI register: questions for the architect when the drawings contradict themselves or cannot answer, e.g. a schedule row the plan never draws or a finish called out two ways. create: numbered next in the register, pending until the estimator accepts it, printed in the marked set; link markup_ids (annotate a cloud at the conflict first). list: every RFI with status, links and the scopes it touches; read it before raising a duplicate. resolve: record the answer to an open RFI. delete: withdraw one; its number stays reserved. Each write is one undo step.",
     inputSchema: {
-      verdict_id: z.string().describe("Record id from mark_verdict or list_annotations verdicts[]"),
+      action: z.enum(["create", "list", "resolve", "delete"]),
+      title: z.string().optional().describe("create: the one-line subject the register prints"),
+      question: z.string().optional().describe("create: what the architect must answer, stated so a reply can settle it"),
+      sheet: z.string().optional().describe("create: the sheet the question is about"),
+      markup_ids: z.array(z.string()).optional().describe("create: annotation ids to link; they carry the RFI number on the sheet"),
+      rfi_id: z.string().optional().describe("resolve, delete: the record id from create or list"),
+      answer: z.string().optional().describe("resolve: the response that settles the question"),
     },
-    outputSchema: deleteVerdictOutput,
-  }, run("delete_verdict", ({ verdict_id }) => session.deleteVerdict(verdict_id)));
+    outputSchema: perAction("action", ["create", "list", "resolve", "delete"], createRfiOutput, listRfisOutput, resolveRfiOutput, deleteRfiOutput),
+  }, run("rfi", async (a) => {
+    switch (a.action) {
+      case "list":
+        return { action: "list", ...(await session.listRfis()) };
+      case "resolve":
+        need("rfi", "resolve", a, "rfi_id", "answer");
+        return { action: "resolve", ...(await session.resolveRfi(a.rfi_id, a.answer)) };
+      case "delete":
+        need("rfi", "delete", a, "rfi_id");
+        return { action: "delete", ...(await session.deleteRfi(a.rfi_id)) };
+      default:
+        need("rfi", "create", a, "title", "question", "sheet");
+        return { action: "create", ...(await session.createRfi({ title: a.title, question: a.question, sheet: a.sheet, markup_ids: a.markup_ids })) };
+    }
+  }));
 
-  server.registerTool("create_rfi", {
-    description: `Raise an RFI — a Request For Information — when the drawing set contradicts itself or cannot answer a question you need answered to take the work off: a room-finish schedule row that names a tag the plan never draws, a room label the schedule has no row for, a finish called out two ways, a scale that disagrees with a stated dimension. It lands in the estimator's RFI register (the canvas's RFI panel) with the next number in that register's own sequence (RFI-001, RFI-002, …), status open, dated today, on the sheet you name. You raise it as the agent: the record carries origin {actor: "agent", reviewed: false} and is PENDING — pencil — until the estimator accepts it in the register, because an RFI goes to the architect and nothing sends without a human. It still prints in the marked set's RFI schedule like any other RFI, so the question is on the deliverable. Pass markup_ids to pin it to annotations already on the sheet (annotate a cloud or callout at the conflict first, then link it here) — a linked markup carries the RFI number on the canvas and in the marked set, and list_rfis reports which finish tags the question touches through those links. Prefer this to describing the conflict in prose: a question in the register is tracked, numbered, and answered; a sentence in a reply is lost. Journaled; edit_takeoff {action: "undo"} takes it back.`,
+  server.registerTool("annotate", {
+    description: "Notes about the work, never measurements of it. add: a note on a sheet by type — cloud and highlight take rect, text and bubble take at, callout takes at + target, arrow and dimension take from + to (a dimension labels its real length, so it needs the scale). Pass condition to attach the note to a finish tag's scope. list: annotations and verdict marks, filtered by sheet or condition. edit: replace or clear one annotation's text (not an RFI-linked one). link: attach an annotation to a condition; condition \"\" detaches it. Each write is one undo step.",
     inputSchema: {
-      title: z.string().describe("The one-line subject the register and the RFI schedule print — what the question is about"),
-      question: z.string().describe("What you are asking the architect to answer, stated so a reply can settle it"),
-      sheet: z.string().describe("Sheet name or number the question is about, as open_drawings {action: \"info\"} reports it"),
-      markup_ids: z.array(z.string()).optional().describe("Annotation ids (annotate / list_annotations) to link — they carry this RFI's number on the sheet"),
+      action: z.enum(["add", "edit", "link", "list"]),
+      sheet: z.string().optional().describe("add: the sheet; list: only this sheet"),
+      type: z.enum(["cloud", "text", "callout", "highlight", "arrow", "bubble", "dimension"]).optional().describe("add: the kind of note"),
+      text: z.string().optional().describe("add: the note (default empty); edit: the replacement, empty clears it"),
+      condition: z.string().optional().describe("add, link: finish tag to attach to (minted on first use; \"\" detaches on link); list: only this tag"),
+      at: point().optional().describe("add: anchor of text, callout and bubble (the circle's center)"),
+      target: point().optional().describe("add: the point a callout's leader aims at"),
+      rect: z.array(point()).length(2).optional().describe("add: [[x0,y0],[x1,y1]] corners of a cloud or highlight"),
+      from: point().optional().describe("add: arrow tail or dimension start"),
+      to: point().optional().describe("add: arrow head or dimension end"),
+      r: z.number().positive().optional().describe("add: bubble radius (default 2% of sheet width)"),
+      annotation_id: z.string().optional().describe("edit, link: the annotation's id from add or list"),
     },
-    outputSchema: createRfiOutput,
-  }, run("create_rfi", (a) => session.createRfi(a)));
-
-  server.registerTool("list_rfis", {
-    description: `Every RFI in the register with its status, sheet, who raised it (actor) and whether an agent-raised one is still pending the estimator's acceptance, its linked markup ids, and the finish tags those markups are attached to — the scopes the question touches. withdrawn[] lists the numbers delete_rfi tombstoned, so a gap in the sequence is explained rather than silent. Read this before raising a question the register already holds.`,
-    inputSchema: {},
-    outputSchema: listRfisOutput,
-  }, run("list_rfis", () => session.listRfis()));
-
-  server.registerTool("resolve_rfi", {
-    description: `Answer an OPEN RFI: the answer lands as its response, status becomes answered (the register's own state for "response in"), and the response date stamps exactly as the panel's would, plus an ISO timestamp of the resolve. Only an open RFI resolves — an answered, closed, or void one is refused rather than re-answered or quietly revived (edit_takeoff {action: "undo"} reverses your own resolve if the answer was wrong). Record the answer the drawings or the architect actually gave; an RFI is not resolved by guessing.`,
-    inputSchema: {
-      rfi_id: z.string().describe("Record id from create_rfi or list_rfis"),
-      answer: z.string().describe("The response — what settles the question"),
-    },
-    outputSchema: resolveRfiOutput,
-  }, run("resolve_rfi", ({ rfi_id, answer }) => session.resolveRfi(rfi_id, answer)));
-
-  server.registerTool("delete_rfi", {
-    description: `Withdraw an RFI. A TOMBSTONE, never a renumber: the record stays with its number reserved, so the register and the marked set keep printing a gap where it was and the next RFI takes the next number — an RFI number that went out and then meant something else would be a lie. Every markup linked to it keeps its note and loses the link (the canvas's own delete rule). Withdraw a question you raised in error; a question the architect answered is closed in the register, not deleted. Journaled; edit_takeoff {action: "undo"} puts the record and its links back.`,
-    inputSchema: {
-      rfi_id: z.string().describe("Record id from create_rfi or list_rfis"),
-    },
-    outputSchema: deleteRfiOutput,
-  }, run("delete_rfi", ({ rfi_id }) => session.deleteRfi(rfi_id)));
+    outputSchema: perAction("action", ["add", "edit", "link", "list"], annotateOutput, editAnnotationOutput, linkAnnotationOutput, listAnnotationsOutput),
+  }, run("annotate", async (a) => {
+    switch (a.action) {
+      case "list":
+        return { action: "list", ...(await session.listAnnotations({ sheet: a.sheet, condition: a.condition })) };
+      case "edit":
+        need("annotate", "edit", a, "annotation_id", "text");
+        return { action: "edit", ...(await session.editAnnotation(a.annotation_id, a.text)) };
+      case "link":
+        need("annotate", "link", a, "annotation_id", "condition");
+        return { action: "link", ...(await session.linkAnnotation(a.annotation_id, a.condition)) };
+      default:
+        need("annotate", "add", a, "sheet", "type");
+        return {
+          action: "add",
+          ...(await session.annotate({ sheet: a.sheet, type: a.type, text: a.text ?? "", condition: a.condition, at: a.at, target: a.target, rect: a.rect, from: a.from, to: a.to, r: a.r })),
+        };
+    }
+  }));
 }

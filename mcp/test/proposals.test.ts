@@ -102,7 +102,7 @@ test("revise_proposal is all-or-nothing: a bad entry anywhere in the list leaves
   assert.throws(() => s.reviseProposal(p.proposal_id, [good, { sheet: KEY, condition: "TH-1", role: "count", verts: [] }]), /shapes\[1\].*at least 1 vertex/);
   assert.throws(() => s.reviseProposal(p.proposal_id, [good, { sheet: KEY, condition: "WT-1", role: "surface_area", verts: [[0, 0], [10, 0]] }]), /shapes\[1\].*height/);
   assert.throws(() => s.reviseProposal(p.proposal_id, [good, { sheet: "nowhere.pdf", condition: "CPT-1", role: "floor_area", verts: SQ(0, 0) }]), /nowhere\.pdf/);
-  assert.throws(() => s.reviseProposal(p.proposal_id, []), /withdraw_proposal/);
+  assert.throws(() => s.reviseProposal(p.proposal_id, []), /proposal \{action: "withdraw"\}/);
   assert.throws(() => s.reviseProposal("prop-missing", [good]), /No proposal/);
   assert.deepEqual(s.exportPayload(), before, "nothing moved");
   assert.equal(journalOf(s).length, steps, "nothing journaled");

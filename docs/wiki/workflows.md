@@ -33,7 +33,7 @@ Source: [Human stitching instructions](../USER_GUIDE.md#stitching-a-floor-split-
 2. Read source text and vectors; inspect the matching region with `view_sheet`.
    Use each room's schedule evidence for its finish. Missing/ambiguous evidence
    is a qualification or RFI, not an inferred assignment.
-3. `propose_takeoff` names a batch; it creates no geometry. Measure small batches
+3. `proposal {action: "propose"}` names a batch; it creates no geometry. Measure small batches
    with the appropriate area, run, surface or count tool.
 4. Inspect overlays and actual boundaries, openings, jambs and deductions.
    `edit_takeoff {action: "edit"}` corrects pending shapes. Physical base gaps use explicit runs;
@@ -79,7 +79,7 @@ total, is what fails. These rules are what the references are drawn to:
 When something is genuinely ambiguous, follow the rule most literally, carry it,
 and say so in the shape's label or an annotation. Do not stop.
 5. `summary` and `export {action: "report"}` check quantities and material coverage.
-   Shorten notes through `list_annotations` → `edit_annotation` where permitted.
+   Shorten notes through `annotate {action: "list"}` → `annotate {action: "edit"}` where permitted.
 6. Export editable takeoff JSON and a marked-set PDF, reopen the JSON against
    the same source, and check the handoff. Leave agent work pending for the
    human's review; exported files and agent verdicts do not create approval.

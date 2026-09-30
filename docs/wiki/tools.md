@@ -12,10 +12,6 @@ with the tool, the action and the missing field named. Coordinates are
 full-sheet image pixels at render scale 2.0 (PDF points × 2, origin top-left,
 y down) everywhere.
 
-The estimator-workflow tools (proposals, conditions and materials, verdicts,
-RFIs, annotations) keep their per-verb names for now; their runtime
-descriptions are their reference.
-
 ## `open_drawings`
 
 Open plan PDFs and see what is loaded. load: open path, replacing the session; merge:true adds the file to the working set instead (plans + schedules + addenda as one takeoff). info: without sheet, every loaded sheet with its scale status and shape count; with sheet, that sheet's dims, vector linework, detected scale and PDF layer table.
@@ -178,7 +174,7 @@ Fields:
 
 ### `kind: "length"` (was `measure_line`)
 
-Measure an open polyline (min 2 points, image px): length_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it as a linear shape (base, transitions, feature strips, conduit and home runs). A curved run (base along a radius wall, a curved feature strip) takes arc_through: one point on the bow, marked. DROP AND RISE (#441): a plan trace is the flat X–Y path; the material also travels VERTICALLY — a home run drops from the ceiling to a panel, rises to a box. length_lf is the TOTAL: plan + rise + drop. The condition's rise_ft / drop_ft (edit_condition) are the defaults for every run under it; pass rise_ft / drop_ft here to give THIS run its own legs (0 included — "no drop on this one" is a statement), and the reply splits plan_lf / vertical_lf beside the total when a leg exists.
+Measure an open polyline (min 2 points, image px): length_lf at the sheet's scale. Requires the scale to be set. Pass condition to commit it as a linear shape (base, transitions, feature strips, conduit and home runs). A curved run (base along a radius wall, a curved feature strip) takes arc_through: one point on the bow, marked. DROP AND RISE (#441): a plan trace is the flat X–Y path; the material also travels VERTICALLY — a home run drops from the ceiling to a panel, rises to a box. length_lf is the TOTAL: plan + rise + drop. The condition's rise_ft / drop_ft (conditions {action: "edit"}) are the defaults for every run under it; pass rise_ft / drop_ft here to give THIS run its own legs (0 included — "no drop on this one" is a statement), and the reply splits plan_lf / vertical_lf beside the total when a leg exists.
 
 Fields:
 
@@ -188,7 +184,7 @@ Fields:
 
 ### `kind: "surface"` (was `measure_surface`)
 
-Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (min 2 points, image px) and the quantity is traced LF × height. This is how wall tile, wainscot, and wall systems are taken off — the quantity family takeoff_rooms {action: "at"} and measure {kind: "area"} cannot produce. Height lives on the CONDITION (the canvas's H knob): pass height_ft to set it on this call (journals as its own undo step, like typing H before tracing), or set it once with edit_condition; with neither, this refuses and mints nothing. The shape snapshots the height it was quantified at. Requires the sheet's scale.
+Surface Area — wall SF (#146): trace an OPEN run along the wall in plan view (min 2 points, image px) and the quantity is traced LF × height. This is how wall tile, wainscot, and wall systems are taken off — the quantity family takeoff_rooms {action: "at"} and measure {kind: "area"} cannot produce. Height lives on the CONDITION (the canvas's H knob): pass height_ft to set it on this call (journals as its own undo step, like typing H before tracing), or set it once with conditions {action: "edit"}; with neither, this refuses and mints nothing. The shape snapshots the height it was quantified at. Requires the sheet's scale.
 
 Fields:
 
@@ -283,7 +279,145 @@ Remove a committed shape by the id returned when it was committed.
 
 ### `action: "undo"` (was `undo_last`)
 
-Step back over your OWN last n mutations, newest first — a committed takeoff_rooms {action: "at"}, a whole takeoff_rooms sweep, an edit_takeoff {action: "edit"}, a edit_takeoff {action: "delete"}, an edit_materials call, an edit_condition call, or an RFI verb (create_rfi / resolve_rfi / delete_rfi). Each step is reversed exactly (a commit is removed, an edit is restored verbatim, a delete is re-inserted where it was, a materials edit's whole array is restored, a condition edit's waste/multiplier pair is restored), so this restores state rather than approximating it. Reads are never journaled, so n counts gestures that changed something, not tool calls you made. Use it when a sweep committed against the wrong condition or a batch went in on the wrong sheet — one call instead of N deletes. Scope: this session's own history only. It is not the browser canvas's undo stack, and open_drawings {action: "load"} clears it along with the shapes it refers to.
+Step back over your OWN last n mutations, newest first — a committed takeoff_rooms {action: "at"}, a whole takeoff_rooms sweep, an edit_takeoff {action: "edit"}, an edit_takeoff {action: "delete"}, a conditions {action: "materials"} call, a conditions {action: "edit"} call, or an RFI verb (rfi {action: "create"} / rfi {action: "resolve"} / rfi {action: "delete"}). Each step is reversed exactly (a commit is removed, an edit is restored verbatim, a delete is re-inserted where it was, a materials edit's whole array is restored, a condition edit's waste/multiplier pair is restored), so this restores state rather than approximating it. Reads are never journaled, so n counts gestures that changed something, not tool calls you made. Use it when a sweep committed against the wrong condition or a batch went in on the wrong sheet — one call instead of N deletes. Scope: this session's own history only. It is not the browser canvas's undo stack, and open_drawings {action: "load"} clears it along with the shapes it refers to.
+
+## `conditions`
+
+Set up conditions and check scope. edit: an existing condition's knobs — waste_pct, multiplier (×N floors), height_ft for surface, rise_ft/drop_ft defaults for its runs, roll_setup (roll goods; null opts out). duplicate: twin a condition under label, the same finish in another area; the twin follows the original's materials until split. split: end a twin's inheritance. materials: add, remove or patch coverage-rate rows (basis ÷ per = order quantity). scope_duplicates: floor claimed twice, as pairs. scope_merge: resolve one pair. Each write is one undo step.
+
+### `action: "edit"` (was `edit_condition`)
+
+Set a condition's quantity knobs — waste %, multiplier, height_ft (the H knob measure {kind: "surface"} quantifies against), and/or roll_setup (the roll-goods opt-in: seams and order footage figured from the committed rooms, #147). summary emits waste-adjusted *_net order quantities and a per-condition multiplier, and every export carries both, but conditions minted through the measure tools start at waste 0 / multiplier 1 — without this tool an agent's takeoff always ships net === gross (#131). waste_pct is the estimator's cut-waste percentage (carpet commonly 5–10); multiplier scales every quantity on the condition (×N identical floors — summary applies it before waste). condition must resolve to an EXISTING finish tag — a typo'd tag errors rather than minting an empty condition (the conditions {action: "materials"} remove/patch rule, not its add rule: these knobs mean nothing on a condition that doesn't exist yet). No review gate — quantity config, not traced geometry; edit_takeoff {action: "undo"} reverses a call in one step (both knobs snapshotted together, restored verbatim).
+
+Fields:
+
+- `multiplier`: Quantity multiplier (×N identical areas). Note: the canvas treats 0 as 1, so 0 is rejected here rather than silently meaning 'off'
+- `height_ft`: Wall height in feet — the canvas's H knob; measure {kind: "surface"} quantifies traced LF × this
+- `rise_ft`: Drop and Rise (#441): the vertical leg UP, in feet, every linear run of this condition adds to its plan length (LF = plan + rise + drop). Re-flows existing runs that do not carry their own rise_ft; derived base/transitions never take a leg. 0 turns it off
+- `drop_ft`: Drop and Rise (#441): the vertical leg DOWN, in feet, every linear run of this condition adds to its plan length. Re-flows existing runs that do not carry their own drop_ft. 0 turns it off
+- `roll_setup`: Roll-goods opt-in (#147): presence of a setup is what makes the condition roll goods — seams figured, cuts packed, order footage beside the measured quantities. Same-material partial edits patch the existing setup; null opts out. The reply echoes the figured order (cuts, order_lf, rolls, order_qty) whenever floor shapes exist on scaled sheets, and export {action: "report"}'s roll_goods block carries the same rows
+
+### `action: "duplicate"` (was `duplicate_condition`)
+
+Twin a condition — the same finish measured somewhere else, with its own supporting materials. One finish in two areas is not two conditions and it is not one either: the same sheet goods over a slab and over a raised deck take the same field material and different preparation underneath (one wants a moisture barrier, the other a primer and a different adhesive). The twin arrives carrying the original's whole materials list and keeps FOLLOWING it — change a coverage rate on the original and every twin that has not touched that row gets it; edit a row on the twin and only THAT row stops following. `label` is REQUIRED and becomes the tag suffix ('CPT-1' + 'Level 2' → 'CPT-1 – Level 2'), because every tool in this server resolves a condition by finish tag and takes the FIRST match: two conditions sharing a tag would make one permanently unreachable, and a takeoff re-import collapses them last-wins. A label already in use is refused rather than de-collided. No takeoffs come along — measure the new area against the returned condition_id. Reversible with edit_takeoff {action: "undo"}; use conditions {action: "split"} to end the inheritance permanently.
+
+### `action: "split"` (was `split_condition`)
+
+Cut a twin loose from its family: every following material row freezes at its current values and edits to the original stop reaching it. It keeps its finish tag and still groups with its siblings — only the inheritance ends. Use when two variants have diverged far enough that following one another is wrong. A condition that already owns its materials returns split:false rather than erroring. Reversible with edit_takeoff {action: "undo"}.
+
+### `action: "materials"` (was `edit_materials`)
+
+Add, remove, or patch supporting-materials rows on a condition — the coverage-rate lines that turn a measured area/length/count into an order quantity (adhesive at N sf/gal, grout at N lf/bag, …), matching the canvas's per-condition Supporting Materials panel. Each row is {name, per, basis, unit, round, note}: quantity = the condition's basis total (area/linear/count/seam_lf) ÷ per, rounded up to whole purchase units unless round:false. basis "seam_lf" is the one basis that is FIGURED rather than measured: it is the length where two cuts meet on the floor, read off the condition's roll layout (set roll_setup with conditions {action: "edit"}), which is what a heat-weld rod or a carpet seam tape is bought by. A 20-ft-wide room off a 12-ft roll seams once down its length; the same square footage as two 10-ft rooms seams not at all, and no percentage of the area or the perimeter can tell those two jobs apart. Without a roll_setup — or with no committed floor shapes to lay out — a seam_lf row reads 0, which is the honest state rather than a guess. condition names an existing OR NEW finish tag (minted on first touch, same as takeoff_rooms/measure {kind: "area"}) — add alone is enough to seed materials on a condition before you've traced anything. remove/patch target existing row ids from this reply or export {action: "takeoff"} (summary strips materials for a compact quantities-only reply); a bad id 404s the WHOLE call before anything is written, and referencing an id on a tag with no condition yet errors rather than silently minting an empty one. No review gate here — materials rows are quantity config, not traced geometry, so this edits directly; edit_takeoff {action: "undo"} reverses a call in one step (the condition's whole materials array, snapshotted before the write, restored verbatim).
+
+### `action: "scope_duplicates"` (was `scope_duplicates`)
+
+Two conditions claiming the same floor, as a list (#366). Every pair of committed floor_area shapes on one sheet whose EXACT polygon intersection exceeds min_fraction of the smaller shape — with the shared SF, which condition each belongs to, whether the estimator already affirmed either, and a look region to pass to view_sheet {overlay: true}. Pairs on DIFFERENT conditions are collisions: every total downstream counts that floor twice. Pairs on the SAME condition are a double trace (a different bug) and come back in duplicates. shared_floor_sf is the whole compared set's Σ areas − union, counted once per cell no matter how many shapes pile on it — the number summary carries and the one that has to read 0 before any total means anything. Machine-precision edge remnants are ignored; a real overlap below 0.01 SF stays listed with an explanatory note. Supporting materials belong in conditions {action: "materials"} coverage rows, not duplicate floor polygons. Deducts and runs are not claims. Read-only; a shape on an unscaled sheet or with a degenerate ring is listed in unmeasured, never counted as zero. Same rule as the room eval's shared-floor gate (iou ≥ 0.5 = the same space claimed twice).
+
+Fields:
+
+- `min_fraction`: List a pair only when shared ÷ smaller ≥ this (default 0.05 — rings that merely kiss along a wall are not claims; 0 lists every positive overlap above machine-precision noise)
+
+### `action: "scope_merge"` (was `scope_merge`)
+
+Resolve ONE collision (#366): given a pair of floor shapes and the winner, the loser gives up the shared floor — TRIMMED to its remainder by an exact boolean difference (the derive {action: "deduct"} module's own arithmetic; its quantities re-measured from the result), or DELETED outright when the overlap is near-total (≥ 98% of the loser: the same space claimed twice, not a room with a sliver left). One journal step either way; edit_takeoff {action: "undo"} restores the loser verbatim. Who wins: state winner; with it omitted the reviewed shape wins over a pending one, and the verb refuses when neither is reviewed (it does not guess which condition the floor belongs to) or when BOTH are (that is the estimator's call — the collision shows on both condition rows in the canvas). The ink rule is absolute: a loser the estimator affirmed is refused whoever you name. A trim that would split the loser into disjoint pieces refuses — that is a re-trace decision, not a merge — and a loser carrying reconciled cutouts refuses (delete the cuts first).
+
+## `proposal`
+
+Group your work for one estimator decision. propose: open a named batch before committing; every shape committed afterwards attaches to it, and the estimator accepts the batch with one click. revise: replace every still-pending shape of a batch in one step. withdraw: remove a batch's pending shapes. propose_condition_edit: hold a change to a condition's tag or knobs pending the estimator's acceptance instead of making it. withdraw_condition_edit: drop that pending change. Shapes the estimator accepted are ink and stay. Each call is one undo step.
+
+### `action: "propose"` (was `propose_takeoff`)
+
+Open a PROPOSAL — a named batch of the shapes you are about to commit, with one identity (#365). Every shape you commit from here on (takeoff_rooms, measure {kind: "area"}, measure {kind: "length"}, measure {kind: "surface"}, count {action: "place"}, the sweeps, the derives, derive {action: "deduct"}) attaches to it until you open another proposal or withdraw this one; the estimator then sees ONE Accept pill for the whole batch instead of one per shape — a forty-room pass becomes one decision, not forty. Use it BEFORE the work, the way an estimator titles a takeoff before tracing: "Level 2 rooms per finish schedule A-601", "Base derived from CPT-1 rooms". label is what the estimator reads on the pill; rationale is what decided the batch (the schedule row, the sheet, the rule) — both required, neither is a comment. Nothing here commits geometry or changes a total: an empty proposal is just a heading. The batch is what proposal {action: "revise"} replaces and proposal {action: "withdraw"} removes; shapes the estimator has already accepted leave the batch and no agent verb reaches them. summary carries the ledger (pending / accepted / withdrawn per batch).
+
+### `action: "revise"` (was `revise_proposal`)
+
+Replace EVERY still-pending shape in a proposal with a new set, as ONE journal step (#365) — the move for "I re-measured and got a better batch". The old pending shapes go, the replacements commit under the same proposal, and edit_takeoff {action: "undo"} puts the previous batch back exactly. All-or-nothing: the whole replacement is validated (sheet, scale, vertex count, a height for surface_area) before the first pending shape is removed, so a malformed last shape leaves the batch untouched and the error says which entry and why. Shapes the estimator already accepted are ink — they stay, and they are not part of what this replaces. each entry's points are image px like every other tool; roles and minimums match the measure tools (floor_area/deduct ≥3, linear/surface_area ≥2, count 1). An empty shapes list is refused — proposal {action: "withdraw"} is the verb for that.
+
+### `action: "withdraw"` (was `withdraw_proposal`)
+
+Take a proposal back (#365): every still-pending shape in the batch is removed in ONE journal step, the record stays marked withdrawn (its label is history the estimator may still read), and new commits stop attaching to it. Shapes the estimator already accepted are ink and stay — the reply counts them. This is the honest exit for "that batch was wrong" — one call instead of N edit_takeoff {action: "delete"} calls, and edit_takeoff {action: "undo"} restores the whole batch.
+
+### `action: "propose_condition_edit"` (was `propose_condition_edit`)
+
+PROPOSE a change to a condition instead of making it (#365): a diff — a new finish tag (rename), waste %, ×N multiplier, height_ft, roll_setup — held PENDING until the estimator accepts it from the panel. conditions {action: "edit"} is the wrong power for "I think this condition is wrong": a tag rename or a knob change should be a decision the estimator makes, not one they discover. Until acceptance NOTHING changes — summary and export {action: "report"} keep computing from the current values and carry the diff beside them (proposed_condition_edits), and once accepted the report is byte-for-byte what a direct conditions {action: "edit"} would have produced (the same write path). Only fields that differ from the current value are recorded; a proposal that changes nothing is refused, and a rename onto a tag another condition already carries is refused (two conditions on one tag would make one unreachable). One pending diff per condition — proposing again replaces the earlier one (edit_takeoff {action: "undo"} restores it). rationale is required: the estimator accepts a reason.
+
+Fields:
+
+- `rise_ft`: Proposed default vertical leg UP for the condition's linear runs (#441)
+- `drop_ft`: Proposed default vertical leg DOWN for the condition's linear runs (#441)
+
+### `action: "withdraw_condition_edit"` (was `withdraw_condition_edit`)
+
+Drop a pending condition-edit proposal (#365) without touching the condition. edit_takeoff {action: "undo"} re-seats it.
+
+## `review`
+
+Your verdict on work you checked: the AGENT diamond. mark: on a committed shape (shape_id) or at a sheet point (sheet + at), exactly one target; optional text rides every export. One mark per shape: delete, then mark again. delete: lift one of your marks by verdict_id. The estimator's APPROVED ring is human ink: it cannot be minted or lifted here. A verdict touches no quantity and gates nothing. annotate {action: "list"} lists every mark in verdicts[].
+
+### `action: "mark"` (was `mark_verdict`)
+
+Mark the agent's VERDICT on work — the pencil half of the approval family, and the only half an agent can mint. Two actors exist on the record: the estimator's APPROVED ring is ink, minted solely by a human's click at the canvas's Approve tool; this tool mints the AGENT diamond and structurally nothing else — it takes no actor input to misuse. Target the work either way: shape_id anchors the mark ON a committed shape (a room at its area centroid, a run at its on-path midpoint, a count marker at its point) and records WHAT was marked — the shape_id stays on the record as provenance, and the glyph keeps its own anchor even if the shape is later deleted; or sheet + at drops the mark at a sheet point (image px). Exactly one target. Optional text rides the record through every export; the glyph itself always reads AGENT. A verdict touches no quantity and gates nothing: it is the agent's signed claim that it checked this work — pencil beside the estimator's ink, never in its place. The mark renders as the graphite AGENT diamond on the canvas and in the marked set, the marked-set cover tallies the split ("Approval stamps: N estimator-approved · M agent-marked"), and the record rides the annotations payload through export {action: "takeoff"} / export {action: "import"} and the app's own saves. One mark per shape (re-mark = review {action: "delete"}, then mark again); annotate {action: "list"} returns the inventory in verdicts[]; edit_takeoff {action: "undo"} steps over a mark exactly like any other mutation.
+
+Fields:
+
+- `shape_id`: Mark a committed shape (edit_takeoff {action: "list"} has the ids) — anchored on the shape, recorded as provenance. Exactly one target: this OR sheet + at
+
+### `action: "delete"` (was `delete_verdict`)
+
+Lift an agent verdict mark by id (review {action: "mark"}'s reply, or annotate {action: "list"} verdicts[]). Agent marks only: the estimator's APPROVED seal is human ink and is refused — the same line edit_takeoff {action: "edit"} holds on reviewed shapes. Journaled like every mutation, so edit_takeoff {action: "undo"} re-seats a lifted mark exactly where it was.
+
+## `rfi`
+
+The RFI register: questions for the architect when the drawings contradict themselves or cannot answer, e.g. a schedule row the plan never draws or a finish called out two ways. create: numbered next in the register, pending until the estimator accepts it, printed in the marked set; link markup_ids (annotate a cloud at the conflict first). list: every RFI with status, links and the scopes it touches; read it before raising a duplicate. resolve: record the answer to an open RFI. delete: withdraw one; its number stays reserved. Each write is one undo step.
+
+### `action: "create"` (was `create_rfi`)
+
+Raise an RFI — a Request For Information — when the drawing set contradicts itself or cannot answer a question you need answered to take the work off: a room-finish schedule row that names a tag the plan never draws, a room label the schedule has no row for, a finish called out two ways, a scale that disagrees with a stated dimension. It lands in the estimator's RFI register (the canvas's RFI panel) with the next number in that register's own sequence (RFI-001, RFI-002, …), status open, dated today, on the sheet you name. You raise it as the agent: the record carries origin {actor: "agent", reviewed: false} and is PENDING — pencil — until the estimator accepts it in the register, because an RFI goes to the architect and nothing sends without a human. It still prints in the marked set's RFI schedule like any other RFI, so the question is on the deliverable. Pass markup_ids to pin it to annotations already on the sheet (annotate {action: "add"} a cloud or callout at the conflict first, then link it here) — a linked markup carries the RFI number on the canvas and in the marked set, and rfi {action: "list"} reports which finish tags the question touches through those links. Prefer this to describing the conflict in prose: a question in the register is tracked, numbered, and answered; a sentence in a reply is lost. Journaled; edit_takeoff {action: "undo"} takes it back.
+
+Fields:
+
+- `markup_ids`: Annotation ids (annotate {action: "add"} / annotate {action: "list"}) to link — they carry this RFI's number on the sheet
+
+### `action: "list"` (was `list_rfis`)
+
+Every RFI in the register with its status, sheet, who raised it (actor) and whether an agent-raised one is still pending the estimator's acceptance, its linked markup ids, and the finish tags those markups are attached to — the scopes the question touches. withdrawn[] lists the numbers rfi {action: "delete"} tombstoned, so a gap in the sequence is explained rather than silent. Read this before raising a question the register already holds.
+
+### `action: "resolve"` (was `resolve_rfi`)
+
+Answer an OPEN RFI: the answer lands as its response, status becomes answered (the register's own state for "response in"), and the response date stamps exactly as the panel's would, plus an ISO timestamp of the resolve. Only an open RFI resolves — an answered, closed, or void one is refused rather than re-answered or quietly revived (edit_takeoff {action: "undo"} reverses your own resolve if the answer was wrong). Record the answer the drawings or the architect actually gave; an RFI is not resolved by guessing.
+
+### `action: "delete"` (was `delete_rfi`)
+
+Withdraw an RFI. A TOMBSTONE, never a renumber: the record stays with its number reserved, so the register and the marked set keep printing a gap where it was and the next RFI takes the next number — an RFI number that went out and then meant something else would be a lie. Every markup linked to it keeps its note and loses the link (the canvas's own delete rule). Withdraw a question you raised in error; a question the architect answered is closed in the register, not deleted. Journaled; edit_takeoff {action: "undo"} puts the record and its links back.
+
+## `annotate`
+
+Notes about the work, never measurements of it. add: a note on a sheet by type — cloud and highlight take rect, text and bubble take at, callout takes at + target, arrow and dimension take from + to (a dimension labels its real length, so it needs the scale). Pass condition to attach the note to a finish tag's scope. list: annotations and verdict marks, filtered by sheet or condition. edit: replace or clear one annotation's text (not an RFI-linked one). link: attach an annotation to a condition; condition "" detaches it. Each write is one undo step.
+
+### `action: "add"` (was `annotate`)
+
+Place an annotation on a sheet — a note ABOUT the work, never a measurement of it. Types: cloud and highlight take rect:[[x0,y0],[x1,y1]] (a revision cloud around an area, a highlight box over it), text takes at:[x,y], callout takes at:[x,y] plus target:[x,y] (the point its leader aims at), arrow takes from:[x,y] and to:[x,y] (tail and head — plank/seam direction, the markup flooring drawings use most; #150), bubble takes at:[x,y] plus optional r (a keynote/detail circle carrying centered text), dimension takes from:[x,y] and to:[x,y] (its two measured endpoints) and labels itself with the length between them at the sheet's scale — drawn as a dimension line with end ticks and the measurement centered. A dimension states a REAL length, so it is the one annotation the scale gate applies to: on an unscaled sheet it refuses exactly like the measure tools (set_scale first) rather than dressing a px figure up as feet. It still touches no quantity — a dimension is a note about a distance, not a takeoff line item.
+
+Pass condition to attach the note to a finish tag, which is what makes it part of that SCOPE rather than a floating remark: it then wears the condition's colour on the canvas and in the marked-set PDF, and travels with it into the report. The tag is minted on first touch like takeoff_rooms/measure {kind: "area"}, so you can annotate CPT-1 before anything is traced for it. Omit condition for a note about the sheet itself. 
+
+No review gate: the pencil-not-ink rule exists to stop an agent inventing geometry, and a cloud reading "verify substrate" is not geometry. It touches no quantity.
+
+Fields:
+
+- `type`: cloud/highlight need rect; text/callout/bubble need at; callout also needs target; arrow and dimension need from + to
+- `text`: The note. A cloud with no text still reads as 'look here'; a bubble's text draws centered in the circle; a dimension appends it after the measured length
+
+### `action: "list"` (was `list_annotations`)
+
+Every annotation on the takeoff, with condition_id RESOLVED to its finish tag so you can act on the reply without joining against conditions[]. Filter by sheet, by condition, or both. Coordinates come back in image px (the same frame you passed in), not the normalized form they're stored as. `unattached` counts the notes carrying no condition — the candidates for annotate {action: "link"}. `verdicts` is the approval family's inventory (review {action: "mark"}/delete_verdict): every mark with its actor stated — the estimator's APPROVED ring or the agent's AGENT diamond — under the same filters, a condition filter reaching a verdict through its target shape.
+
+### `action: "edit"` (was `edit_annotation`)
+
+Shorten, replace or clear the text of an existing annotation. Get annotation_id from annotate {action: "list"} (annotations, not verdicts). Changes only text: position, shape, dimension length, condition links, quantities and review records stay unchanged. Empty text clears the note; a dimension still prints its measured length. Refuses an RFI-linked note: review that question's context in the browser RFI register. One edit_takeoff {action: "undo"} step restores the previous text. Does not create a verdict or human approval.
+
+### `action: "link"` (was `link_annotation`)
+
+Attach an existing annotation to a condition, or detach it by passing an empty condition — the canvas's Attach/Detach control, reachable by an agent. Use it to tie up notes left unattached (annotate {action: "list"} reports how many), or to move one to the finish it actually concerns. Attaching mints the tag on first use.
 
 ## `summary`
 
