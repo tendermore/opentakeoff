@@ -284,7 +284,7 @@ export function scheduleWidthMm(cells: Record<string, string>): number | undefin
     if (/^(W|B|WIDTH|BREDDE|BREIDDE|B\s*\(MM\)|WIDTH\s*\(MM\))$/i.test(k.trim())) { const n = num(v); if (n) return mm(n); }
   }
   for (const [, v] of entries) {
-    const m = v.match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+    const m = v.match(/(\d{1,5}(?:[.,]\d{1,3})?)\s*[x×]\s*(\d{1,5}(?:[.,]\d{1,3})?)/i);
     if (m) { const n = num(m[1]); if (n) return mm(n); }
   }
   return undefined;
@@ -296,9 +296,9 @@ export function scheduleWidthMm(cells: Record<string, string>): number | undefin
 function annotatedSizes(text: TextSpan[], marks: Array<{ at: Point }>, pxPerM: number): Map<number, number> {
   const reach = 1.2 * pxPerM, out = new Map<number, { d: number; w: number }>();
   for (const sp of text) {
-    // a thousands gap is one space before three digits ("1 205x1 420"); no two
-    // whitespace runs sit side by side (linear-time matching)
-    const m = sp.str.match(/(\d+(?: \d{3})*) ?[x×] ?(\d+(?: \d{3})*)/i);
+    // a thousands gap is one space before three digits ("1 205x1 420"); bounded
+    // digit runs, no two whitespace runs side by side (linear-time matching)
+    const m = sp.str.match(/(\d{1,5}(?: \d{3})?) ?[x×] ?(\d{1,5}(?: \d{3})?)/i);
     if (!m) continue;
     const w = scheduleWidthMm({ size: `${m[1].replace(/ /g, "")}x${m[2].replace(/ /g, "")}` });
     if (!w) continue;
@@ -323,7 +323,7 @@ export function scheduleHeightMm(cells: Record<string, string>): number | undefi
     if (/^(H|HEIGHT|HØYDE|HØGDE|H\s*\(MM\)|HEIGHT\s*\(MM\))$/i.test(k.trim())) { const n = scheduleWidthMm({ W: v }); if (n) return n; }
   }
   for (const v of Object.values(cells)) {
-    const m = v.match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+    const m = v.match(/(\d{1,5}(?:[.,]\d{1,3})?)\s*[x×]\s*(\d{1,5}(?:[.,]\d{1,3})?)/i);
     if (m) return scheduleWidthMm({ W: m[2] });
   }
   return undefined;
