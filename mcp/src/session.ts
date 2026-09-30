@@ -42,6 +42,7 @@ import { ROOM_LABEL_RE, AREA_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubbl
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { wallSegIndices } from "../../web/src/lib/wallpairs.ts";
+import { snapEdges } from "../../web/src/lib/edgesnap.ts";
 import { buildNet, netRoomAt } from "../../web/src/lib/netroom.js";
 import { drawnRegions, roomAtPoint, type DrawnRegion } from "../../web/src/lib/drawnrooms.ts";
 import { extractTextMarks } from "../../web/src/lib/sheets.ts";
@@ -539,8 +540,9 @@ interface SheetState {
   snap?: ReturnType<typeof buildSnapGrid>;
   /** undefined = not built yet; null = sheet has zero vector segments (a scan) */
   mask?: MaskObj | null;
-  /** Walls-only mask for unlayered sheets (wallpairs.ts), doorways sealed; scale baked in like `mask`. */
-  wallMask?: MaskObj | null;
+  /** Walls-only masks for unlayered sheets (wallpairs.ts), doorways sealed, each with the per-segment
+   * flag of the lines it was built from; scale baked in like `mask`. See ensureWallMasks. */
+  wallMasks?: { mo: MaskObj; faces: Uint8Array }[];
   /** Wall-network faces and drawn closed figures (the canvas's other room engines), unlayered sheets only. */
   roomNet?: unknown;
   drawn?: DrawnRegion[];
@@ -697,6 +699,11 @@ const sheetSummary = (s: SheetState): SheetSummary => ({
   ...(s.sheetNumber ? { sheet_number: s.sheetNumber } : {}),
   ...(s.detected ? { detected_scale: s.detected.label } : {}),
 });
+
+/** Fill luminance (0 black – 255 white) at and above which a filled figure is white. */
+const WHITE_FILL_LUM = 250;
+/** How far (working-raster cells) a walls-flood edge may move onto the wall face it parallels. */
+const WALL_SNAP_CELLS = 3;
 
 export class Session {
   file: string | null = null;
@@ -1220,31 +1227,45 @@ export class Session {
   }
 
   /** A flattened export draws furniture in the wall pen, so the ink mask stops
-   * a flood at the first desk. This mask keeps only paired wall faces and
-   * filled wall poché (wallpairs.ts) and seals doorways at their swings, so
+   * a flood at the first desk. These masks keep only paired wall faces and
+   * filled wall poché (wallpairs.ts) and seal doorways at their swings, so
    * a flood fills the room to its walls. Unlayered vector sheets with a
-   * scale only; null otherwise. Cached like `mask`; set_scale evicts it. */
-  async ensureWallMask(name: string): Promise<MaskObj | null> {
+   * scale only; empty otherwise. Cached like `mask`; set_scale evicts them.
+   *
+   * The first mask counts every fill as poché. Where the sheet has white fills
+   * there is a second one without them: a white fill often masks what lies under
+   * a fixture or a bed (so the flood stops at it), and as often draws a wall
+   * itself (a band, a line drawn as a thin fill, a compound wall outline). No
+   * shape rule tells the two apart reliably, so both masks are candidates and
+   * the printed area decides, as it does between every other candidate. */
+  async ensureWallMasks(name: string): Promise<{ mo: MaskObj; faces: Uint8Array }[]> {
     const s = this.sheet(name);
-    if (s.wallMask === undefined) {
+    if (s.wallMasks === undefined) {
+      s.wallMasks = [];
       const geo = await this.ensureGeometry(s);
       const ink = await this.ensureMask(name);
       const pxPerFt = s.upp ? 1 / s.upp : 0;
-      if (!ink || !pxPerFt || s.layers?.length) { s.wallMask = null; return null; }
+      if (!ink || !pxPerFt || s.layers?.length) return s.wallMasks;
       const wall = wallSegIndices(geo.segs, geo.meta, pxPerFt / 0.3048);
-      const segs: number[] = [], meta: number[] = [];
-      for (let i = 0; i < wall.length; i++) {
-        if (!wall[i] && !(geo.meta[i] & SEG_FILLONLY)) continue;
-        segs.push(geo.segs[4 * i], geo.segs[4 * i + 1], geo.segs[4 * i + 2], geo.segs[4 * i + 3]);
-        meta.push(geo.meta[i]);
+      const white = new Uint8Array(wall.length);
+      for (const sp of geo.subpaths ?? []) if (sp.flags & SEG_FILLONLY && sp.fillLum >= WHITE_FILL_LUM) white.fill(1, sp.i0, sp.i1);
+      const seals = findDoorSeals(geo.segs, geo.meta, ink, pxPerFt);
+      for (const dropWhite of white.includes(1) ? [false, true] : [false]) {
+        const segs: number[] = [], meta: number[] = [];
+        const faces = new Uint8Array(wall.length);
+        for (let i = 0; i < wall.length; i++) {
+          if (!wall[i] && !(geo.meta[i] & SEG_FILLONLY && !(dropWhite && white[i]))) continue;
+          faces[i] = 1;
+          segs.push(geo.segs[4 * i], geo.segs[4 * i + 1], geo.segs[4 * i + 2], geo.segs[4 * i + 3]);
+          meta.push(geo.meta[i]);
+        }
+        if (!segs.length) continue;
+        const mo = sealDoorways(buildMask(segs, s.widthPx, s.heightPx, MASK_MAX_DIM, Uint8Array.from(meta), pxPerFt, pxPerFt,
+          { pageW: s.widthPt, pageH: s.heightPt, renderScale: RENDER_SCALE, baseScale: RENDER_SCALE }, null), seals).mo;
+        s.wallMasks.push({ mo, faces });
       }
-      s.wallMask = segs.length
-        ? sealDoorways(buildMask(segs, s.widthPx, s.heightPx, MASK_MAX_DIM, Uint8Array.from(meta), pxPerFt, pxPerFt,
-            { pageW: s.widthPt, pageH: s.heightPt, renderScale: RENDER_SCALE, baseScale: RENDER_SCALE }, null),
-          findDoorSeals(geo.segs, geo.meta, ink, pxPerFt)).mo
-        : null;
     }
-    return s.wallMask;
+    return s.wallMasks;
   }
 
   /** The canvas's wall-network and drawn-figure room engines for one sheet,
@@ -1388,7 +1409,7 @@ export class Session {
     // scale-free and stay. Re-picking the identical scale evicts nothing.
     if (s.upp !== upp) {
       s.mask = undefined;
-      s.wallMask = undefined;
+      s.wallMasks = undefined;
       s.roomNet = undefined;
       s.drawn = undefined;
       s.rmask = undefined;
@@ -1789,7 +1810,8 @@ export class Session {
     // is passed explicitly there, exactly as oneClick does
     const sweepMppf = raster ? (s.upp ? mask.ws / s.upp : 0) : (mask.mppf || 0);
     // flattened sheets: a second, walls-only mask for rooms the ink flood cuts short at furniture
-    const wallMask = !raster && !opts.layers && s.upp != null && stamped.length ? await this.ensureWallMask(name) : null;
+    const wallMasks = !raster && !opts.layers && s.upp != null && stamped.length ? await this.ensureWallMasks(name) : [];
+    const wallMask = wallMasks[0]?.mo ?? null;
     for (const lb of labels) {
       if (callDeadline && Date.now() > callDeadline) { withheld.not_tried++; continue; }
       const [cx, cy] = labelAt(lb);
@@ -1837,9 +1859,13 @@ export class Session {
       if (printed != null && wallMask && s.upp != null) {
         const upp = s.upp;
         const agrees = (x: typeof t) => !!x.ring && Math.abs(ringArea(x.ring) * upp * upp * M2_PER_SF - printed) <= 0.03 * printed + 0.05;
-        if (!agrees(t)) {
-          const w = traceWith(wallMask, wallMask.mppf || 0);
-          if (agrees(w) || !t.ring) t = w;
+        // the walls flood is traced on the working raster, a cell or two inside the wall faces: its
+        // edges go onto the wall-face lines they parallel, within WALL_SNAP_CELLS raster cells
+        for (const [k, wm] of wallMasks.entries()) {
+          if (agrees(t)) break;
+          const w = traceWith(wm.mo, wm.mo.mppf || 0);
+          if (w.ring) w.ring = snapEdges(w.ring as [number, number][], geo.segs, geo.meta, 1 / (upp * 0.3048), WALL_SNAP_CELLS / wm.mo.ws, { allowed: wm.faces });
+          if (agrees(w) || (!t.ring && k === 0)) t = w;
         }
       }
       let { ring, ev, seed } = t;
@@ -4511,7 +4537,7 @@ export class Session {
         s.scaleSource = e.source;
         s.scaleConfirmed = e.confirmed;
         s.mask = undefined;
-        s.wallMask = undefined;
+        s.wallMasks = undefined;
         s.roomNet = undefined;
         s.drawn = undefined;
         s.rmask = undefined;
