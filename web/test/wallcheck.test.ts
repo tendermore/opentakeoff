@@ -64,14 +64,18 @@ test("two rooms measured as one are refused: the wall between them lies inside",
   assert.ok(r.inside_wall_m >= 0.8, `the 3 m wall pair counted inside: ${r.inside_wall_m}`);
 });
 
-test("a door leaf's reach excuses the edge a trace runs round the swing", () => {
-  const { segs, meta, faces, pairs } = room(true).geo();
-  // the trace runs out of the doorway round the swing of a 0.9 m door hinged
-  // at (150, 300): along the arc from the strike, then back up the open leaf
-  const ring: Pt[] = [[0, 0], [400, 0], [400, 300], [240, 300], [214, 364], [150, 390], [150, 300], [0, 300]];
-  assert.equal(checkOnWalls(ring, segs, meta, faces, pairs, PX_PER_M).pass, false, "no door known: the bulge crosses paper");
-  const door = { hinges: [[150, 300]] as Pt[], opening: [[150, 300], [240, 300]] as [Pt, Pt], width: 90 };
-  assert.equal(checkOnWalls(ring, segs, meta, faces, pairs, PX_PER_M, [door]).pass, true);
+test("a door at a corner excuses the gap its chord spans, which has wall on one side only", () => {
+  const s = sheet();
+  const pair = (a: Pt, b: Pt, off: Pt) => { s.line(a, b); s.line([a[0] + off[0], a[1] + off[1]], [b[0] + off[0], b[1] + off[1]]); };
+  pair([0, 0], [400, 0], [0, -20]); pair([0, 0], [0, 300], [-20, 0]); pair([400, 0], [400, 300], [20, 0]);
+  pair([90, 300], [400, 300], [0, 20]);         // south wall, a 0.9 m door in its west end
+  const { segs, meta, faces, pairs } = s.geo();
+  assert.equal(checkOnWalls(RECT, segs, meta, faces, pairs, PX_PER_M).pass, false, "no door known: the corner gap is paper");
+  const door = { opening: [[0, 300], [90, 300]] as [Pt, Pt] };
+  assert.equal(checkOnWalls(RECT, segs, meta, faces, pairs, PX_PER_M, [door]).pass, true);
+  // a trace round the swing crosses floor, door or not
+  const swing: Pt[] = [[0, 0], [400, 0], [400, 300], [90, 300], [64, 364], [0, 390], [0, 300]];
+  assert.equal(checkOnWalls(swing, segs, meta, faces, pairs, PX_PER_M, [door]).pass, false);
 });
 
 test("closeOpenings cuts a notch no deeper than a wall off along the wall line, and keeps one reaching into the room", () => {

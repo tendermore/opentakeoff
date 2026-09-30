@@ -12,9 +12,8 @@
 import { SEG_CURVE, SEG_CLIP } from "./oneclick.ts";
 
 type Pt = [number, number];
-/** What the check needs of a door (doors.ts Door): its hinges, the opening
- * chord and the opening width (the leaf radius; both radii for a pair). */
-export interface DoorReach { hinges: Pt[]; opening: [Pt, Pt]; width: number }
+/** What the check needs of a door (doors.ts Door): its closed-leaf chord. */
+export interface DoorReach { opening: [Pt, Pt] }
 
 // Datum's constants, in the same unit: image px at RENDER_SCALE 2 is 1/144 in,
 // Datum's sheet px.
@@ -39,6 +38,8 @@ export const SHORT_EDGE_M = 0.4;
  * between them. */
 export const INSIDE_WALL_M = 0.8;
 const INSIDE_DEPTH_M = 0.4;
+/** A door chord runs along the edge it opens: parallel within drafting slack (doors.ts). */
+const OPENING_PARALLEL_DEG = 15;
 /** A wall inside is sampled at a tenth of a metre: far finer than the 0.8 m that decides. */
 const INSIDE_STEP_M = 0.1;
 
@@ -56,9 +57,10 @@ export interface WallCheck {
 /** `faces`: per segment, 1 = a wall face the outline may run along; `pairs`:
  * per segment, 1 = a paired wall line (the inside-wall test ignores filled
  * poché, which draws columns inside rooms). `doors`: the sheet's hinged doors
- * (doors.ts). At a door the room's boundary is the opening, and a trace runs
- * along the closed-leaf chord or round the leaf's swing: an outline may leave
- * the walls there, even at an edge's end, within the leaf's reach of its hinge. */
+ * (doors.ts). At a door the room's boundary is the opening: an edge may cross
+ * it along the door's closed-leaf chord (within a wall's thickness of it),
+ * even where the opening meets a corner and has wall on one side only. A trace
+ * that runs round the swing instead is not excused — it is crossing floor. */
 export function checkOnWalls(ring: Pt[], segs: ArrayLike<number>, meta: ArrayLike<number>, faces: ArrayLike<number>, pairs: ArrayLike<number>,
   pxPerM: number, doors: DoorReach[] = [], ids: ArrayLike<number> | null = null): WallCheck {
   const n = ring.length;
@@ -84,9 +86,11 @@ export function checkOnWalls(ring: Pt[], segs: ArrayLike<number>, meta: ArrayLik
     return Math.abs((x0 - a[0]) * -uy + (y0 - a[1]) * ux) <= ALONG_PX + L * sinTol;
   });
   const wallPx = SHORT_EDGE_M * pxPerM;
-  const onOpening = (x: number, y: number): boolean => doors.some((d) => {
-    const r = d.width / d.hinges.length + ALONG_PX;
-    return d.hinges.some((h) => Math.hypot(x - h[0], y - h[1]) <= r) || ptSegDist(x, y, d.opening[0][0], d.opening[0][1], d.opening[1][0], d.opening[1][1]) <= wallPx;
+  const cosDoor = Math.cos((OPENING_PARALLEL_DEG * Math.PI) / 180);
+  const onOpening = (x: number, y: number, ux: number, uy: number): boolean => doors.some(({ opening: [a, b] }) => {
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!L || Math.abs((ux * (b[0] - a[0]) + uy * (b[1] - a[1])) / L) < cosDoor) return false;
+    return ptSegDist(x, y, a[0], a[1], b[0], b[1]) <= wallPx;
   });
 
   let judged = 0, covered = 0;
@@ -114,7 +118,7 @@ export function checkOnWalls(ring: Pt[], segs: ArrayLike<number>, meta: ArrayLik
         if (bounded) hit[q] = true;
         else {
           const x = a[0] + (b[0] - a[0]) * (q / k), y = a[1] + (b[1] - a[1]) * (q / k);
-          if (onOpening(x, y)) hit[q] = true;
+          if (onOpening(x, y, ux, uy)) hit[q] = true;
         }
       }
       i = j;
