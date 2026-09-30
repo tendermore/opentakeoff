@@ -455,6 +455,7 @@ export const exportTakeoffOutput = {
     sheet_id: z.string(), units_per_px: z.number(),
     scale_source: z.string().optional().describe("How the exported calibration was established"),
     scale_confirmed: z.boolean().optional().describe("False for agent-set calibration until a human confirms it"),
+    scale_label: z.string().optional().describe("The printed scale the calibration came from (\"1:100\"); decides metric display on import"),
   })),
   conditions: z.array(z.object({
     id: z.string(),
