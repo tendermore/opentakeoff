@@ -54,10 +54,15 @@ const KEY: Record<string, Record<string, string>> = {
 };
 
 test("sheet roles classify from what the sheet SAYS, with evidence", () => {
+  // planSheet has no title block — its title sits in the body at running-text
+  // size, the last tier the classifier hears (one step weaker, still plan)
   const plan = classifySheetRole(planSheet);
   assert.equal(plan.role, "plan");
-  assert.ok(plan.confidence >= 0.8);
+  assert.ok(plan.confidence >= 0.6);
   assert.equal(plan.evidence?.text, "FIRST FLOOR FINISH PLAN");
+  // the same title in the title block (lower right) is read at full strength
+  const titled = classifySheetRole({ ...planSheet, width: 1000, height: 1000, spans: [...planSheet.spans.filter((t) => t.str !== "FIRST FLOOR FINISH PLAN"), sp("FIRST FLOOR FINISH PLAN", 700, 950)] });
+  assert.deepEqual({ r: titled.role, c: titled.confidence >= 0.8 }, { r: "plan", c: true });
   // titleless sheet falls back to the number convention — stated as weak
   const bare = classifySheetRole({ key: "x", sheet_number: "A-101", spans: [sp("nothing here", 0, 0)] });
   assert.deepEqual({ r: bare.role, weak: bare.confidence < 0.5 }, { r: "plan", weak: true });
@@ -68,7 +73,7 @@ test("sheet roles classify from what the sheet SAYS, with evidence", () => {
     spans: [sp("SECOND FLOOR DUCTWORK PLAN AREA A", 100, 700), sp("WALL RATING LEGEND:", 620, 640)],
   });
   assert.equal(mech.role, "plan");
-  assert.ok(mech.confidence >= 0.8);
+  assert.ok(mech.confidence >= 0.6);
   // and the number-convention fallback knows discipline prefixes
   const mBare = classifySheetRole({ key: "y", sheet_number: "M-101", spans: [sp("nothing here", 0, 0)] });
   assert.deepEqual({ r: mBare.role, weak: mBare.confidence < 0.5 }, { r: "plan", weak: true });
@@ -1349,4 +1354,87 @@ test("finish discovery cannot turn a missing or ambiguous room row into an assig
     assert.match(ambiguous.reason, /ambiguous: 2 schedule rows/);
     assert.equal(ambiguous.candidates?.length, 2);
   }
+});
+
+// ── Nordic / European sheets: roles from the title block ────────────────────
+test("roles: the title block speaks first — running notes and view labels never outvote it", () => {
+  const W = 1000, H = 700;
+  const t = (str: string, x: number, y: number, h = 8): GraphSpan => ({ str, x, y, w: str.length * h * 0.6, h });
+  // a Norwegian door schedule scoped to a level: the schedule word wins over the level
+  const sched = classifySheetRole({ key: "s", width: W, height: H, spans: [t("- Se plantegning for plassering", 40, 40), t("INNHOLD:", 720, 600, 6), t("Dørskjema 2. etasje", 720, 612, 16)] });
+  assert.deepEqual({ r: sched.role, c: sched.confidence >= 0.8 }, { r: "schedule", c: true });
+  // an English elevation whose note says "SEE ROOF PLAN": the title block decides
+  const elev = classifySheetRole({ key: "e", width: W, height: H, spans: [t("ALUMINUM GUTTER. SEE ROOF PLAN FOR SLOPES", 60, 200), t("EXTERIOR ELEVATIONS", 720, 640, 16)] });
+  assert.equal(elev.role, "elevation");
+  // a US title block printed VERTICALLY along the right edge still names the sheet
+  const vert = classifySheetRole({ key: "v", width: W, height: H, spans: [t("REINFORCEMENT SHOWN ON WALL ELEVATIONS", 60, 200), { str: "ARCHITECTURAL DETAILS", x: 960, y: 420, w: 16, h: 200, rot: 270 }] });
+  assert.equal(vert.role, "detail");
+  // "PLAN 2" is a house model on an English sheet — no Nordic text, no plan
+  const model = classifySheetRole({ key: "m", width: W, height: H, spans: [t("ENERGY COMPLIANCE - PLAN 2", 720, 640, 16)] });
+  assert.notEqual(model.role, "plan");
+  // …and the second floor on a Norwegian one
+  const floor = classifySheetRole({ key: "f", width: W, height: H, spans: [t("Målestokk 1:100", 720, 660, 6), t("Plan 2", 720, 640, 16)] });
+  assert.equal(floor.role, "plan");
+  // two drawing types named at the same size: both readings, half confidence
+  const both = classifySheetRole({ key: "b", width: W, height: H, spans: [t("Fasade nord", 720, 600, 16), t("Snitt A-A", 720, 630, 16)] });
+  assert.ok(both.confidence < 0.5 && both.candidates?.length === 2, "ambiguous titles say so, with candidates");
+});
+
+// ── door / window schedules ────────────────────────────────────────────────
+test("card schedules: types as columns, labels down the first column; twins sum, totals check, stacked cards split", () => {
+  const t = (str: string, x: number, y: number): GraphSpan => ({ str, x, y, w: str.length * 5, h: 8 });
+  const sheet: SheetSpans = { key: "d.pdf#1", spans: [
+    t("DØRSKJEMA - innerdører", 40, 20),
+    t("ID", 40, 60), t("ID-01", 140, 60), t("ID-01", 240, 60), t("ID-02", 340, 60),
+    t("Antall", 40, 75), t("2", 140, 75), t("3", 240, 75), t("1", 340, 75), t("7", 480, 75),
+    t("Størrelse", 40, 90), t("990×2 090", 140, 90), t("990×2 090", 240, 90), t("1 090×2 090", 340, 90),
+    t("Brannkrav", 40, 105), t("EI₂", 140, 105), t("30-Sa", 156, 105), t("-", 240, 105), t("-", 340, 105),
+    // a second card further down — its own ID row ends the first
+    t("DØRSKJEMA - ytterdører", 40, 300),
+    t("ID", 40, 340), t("YD-01", 140, 340),
+    t("Antall", 40, 355), t("1", 140, 355),
+    t("B (mm)", 60, 370), t("1 190", 140, 370),
+  ] };
+  const g = buildSheetGraph([sheet]);
+  const doors = g.tables.filter((x) => x.kind === "door");
+  assert.deepEqual(doors.map((x) => x.rows.map((r) => r.key)), [["ID-01", "ID-02"], ["YD-01"]]);
+  const id1 = doors[0].rows[0];
+  assert.deepEqual({ qty: id1.cells.QTY.text, cols: id1.columns, size: id1.cells.SIZE.text, fire: id1.cells.FIRE.text }, { qty: "5", cols: 2, size: "990×2 090", fire: "EI₂ 30-Sa" }, "left/right columns of one type add");
+  assert.deepEqual({ printed: doors[0].total?.printed, sum: doors[0].total?.sum, agrees: doors[0].total?.agrees }, { printed: 7, sum: 6, agrees: false });
+  assert.ok(g.notes.some((n) => /print[s]? a total of 7/.test(n)), "a total that disagrees is NAMED, never silently trusted");
+  assert.equal(doors[1].rows[0].cells.WIDTH.text, "1 190");
+  // side-by-side one-type cards, each with its own label column
+  const side: SheetSpans = { key: "s.pdf#1", spans: [
+    t("INNERDØRER:", 40, 20),
+    t("Type", 40, 60), t("ID1-T 11x21M", 120, 60), t("Type", 300, 60), t("ID2-T 10x21M", 380, 60),
+    t("Bredde", 40, 75), t("1090", 120, 75), t("Bredde", 300, 75), t("990", 380, 75),
+    t("Antall", 40, 90), t("57", 120, 90), t("Antall", 300, 90), t("3", 380, 90),
+  ] };
+  const s2 = buildSheetGraph([side]).tables;
+  assert.deepEqual(s2.map((x) => [x.kind, x.rows[0].key, x.rows[0].cells.QTY.text, x.rows[0].cells.WIDTH.text]), [["door", "ID1-T", "57", "1090"], ["door", "ID2-T", "3", "990"]]);
+});
+
+test("row door/window schedules: the title names the kind; a mark two schedules share REFUSES with both rows", () => {
+  const t = (str: string, x: number, y: number): GraphSpan => ({ str, x, y, w: str.length * 5, h: 8 });
+  const sheet: SheetSpans = { key: "a.pdf#9", spans: [
+    t("DOOR SCHEDULE", 40, 20),
+    t("NO.", 40, 50), t("TYPE", 100, 50), t("WIDTH", 160, 50), t("HEIGHT", 240, 50), t("REMARKS", 320, 50),
+    t("1", 40, 70), t("A", 100, 70), t("3' - 0\"", 160, 70), t("6' - 8\"", 240, 70),
+    t("2", 40, 90), t("C", 100, 90), t("6' - 0\"", 160, 90), t("6' - 8\"", 240, 90),
+    t("WINDOW SCHEDULE", 40, 300),
+    t("NO.", 40, 330), t("TYPE", 100, 330), t("WIDTH", 160, 330), t("HEIGHT", 240, 330), t("REMARKS", 320, 330),
+    t("1", 40, 350), t("B", 100, 350), t("4' - 0\"", 160, 350), t("4' - 0\"", 240, 350),
+    t("X1", 40, 370), t("A", 100, 370), t("3' - 0\"", 160, 370), t("4' - 0\"", 240, 370),
+  ] };
+  const g = buildSheetGraph([sheet]);
+  assert.deepEqual(g.tables.map((x) => [x.kind, x.rows.map((r) => r.key)]), [["door", ["1", "2"]], ["window", ["1", "X1"]]]);
+  const one = resolveTag(g, "1");
+  assert.equal(one.status, "unresolved");
+  if (one.status === "unresolved") {
+    assert.match(one.reason, /^ambiguous/);
+    assert.deepEqual(one.candidates?.map((c) => c.table), ["DOOR SCHEDULE [door]", "WINDOW SCHEDULE [window]"]);
+  }
+  const x1 = resolveTag(g, "X1");
+  assert.equal(x1.status, "resolved");
+  if (x1.status === "resolved") assert.deepEqual([x1.item?.kind, x1.item?.cells.WIDTH], ["window", "3' - 0\""]);
 });

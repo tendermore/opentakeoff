@@ -838,8 +838,10 @@ export const sheetGraphOutput = {
   sheets: z.array(z.object({
     sheet: z.string(),
     role: z.enum(["plan", "schedule", "legend", "detail", "elevation", "demolition", "unknown"]),
-    confidence: z.number().describe("0..1; mixed title signals halve it, a bare sheet-number convention stays under 0.5"),
+    confidence: z.number().describe("0..1; the title block's own title is read first (a body view title is one step weaker); mixed title signals halve it, a bare sheet-number convention stays under 0.5"),
     evidence: wireEvidence.optional(),
+    candidates: z.array(z.object({ role: z.string(), text: z.string() })).optional()
+      .describe("Present when the title names more than one drawing type (\"PLAN OG SNITT\", or two title lines of equal size) — every reading with the text that named it; the role above is the first, at half confidence. Look before trusting either"),
     building: z.string().optional().describe("The sheet's building context, when it names exactly one (BUILDING A / BLDG 2)"),
     schedules: z.array(z.object({
       kind: z.string(), title: z.string(), rows: z.number().int(), region: wireBox,
@@ -876,6 +878,13 @@ export const resolveTagOutput = {
   })).optional(),
   sources: z.array(wireEvidence).optional().describe("The chain: plan tag → schedule row (the row cites the sheet that CARRIES it — under a continuation that is the CONT'D sheet)"),
   revisions: z.array(wireRevision).optional().describe("resolved only — delta/REV markers on the answering schedule row or the plan bubble. The finishes above are the POST-revision answer, but the ink changed: check the marker (view_sheet its bbox) and the addendum before pricing"),
+  item: z.object({
+    kind: z.string().describe("door / window / door-window"),
+    table: z.string(), key: z.string(),
+    cells: z.record(z.string()).describe("Every cell the row states, by column: ID, QTY, WIDTH, HEIGHT, SIZE, FIRE, SOUND and the schedule's own labels. Sizes are as printed (mm on Nordic sets, feet-inches on US sets)"),
+    source: wireEvidence,
+    columns: z.number().int().optional().describe("A card schedule's type drawn as several columns (left/right hand) — QTY is their sum"),
+  }).optional().describe("resolved door/window mark — its schedule row. finishes is empty for a mark"),
   reason: z.string().optional().describe("unresolved only — WHY (no schedule row / ambiguous / no schedule found). A room that appears on the plan with no row comes back here, never as a silent omission"),
   candidates: z.array(z.object({
     key: z.string(), building: z.string().optional(), sheet: z.string(), table: z.string(),
@@ -892,6 +901,10 @@ export const findScheduleOutput = {
     revised_rows: z.number().int().optional().describe("Rows carrying a delta/REV marker — the ink changed there; resolve those tags to see which"),
     parts: z.array(z.object({ sheet: z.string(), title: z.string(), rows: z.number().int(), region: wireBox }))
       .optional().describe("Present when the table CONTINUES across sheets ('… SCHEDULE — CONT'D'): every fragment, base first, each with its own viewable region"),
+    layout: z.literal("card").optional().describe("A transposed schedule — one COLUMN per type, field labels down the first column (the Nordic door/window layout). Each type is still one row here"),
+    keys: z.array(z.string()).optional().describe("Door/window schedules: every type/mark the table defines, in order — pass one to find_text {action: \"resolve_tag\"} for its row, or to schedule {action: \"sweep_row\"} / count {action: \"marks\"}"),
+    total: z.object({ printed: z.number(), sum: z.number(), agrees: z.boolean(), source: wireEvidence }).optional()
+      .describe("A printed total beside the count row, checked against the counts read. agrees:false means a count cell was misread or the schedule is inconsistent — look before using its quantities"),
   })),
 };
 

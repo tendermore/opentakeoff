@@ -164,14 +164,14 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   });
 
   server.registerTool("find_text", {
-    description: "Text on the drawings. find: where a known string sits on a sheet (case-insensitive, per text run; count and truncated say what a tighter region or a higher limit would recover). read: every text item of a sheet or region with its position, plus the joined text. resolve_tag: one room tag → its room-finish schedule row → each finish code's definition, every edge citing sheet, text and bbox; it answers unresolved or ambiguous rather than guess.",
+    description: "Text on the drawings. find: where a known string sits on a sheet (case-insensitive, per text run; count and truncated say what a tighter region or a higher limit would recover). read: every text item of a sheet or region with its position, plus the joined text. resolve_tag: one room tag → its room-finish schedule row → each finish code's definition, or one door/window mark (ID-01, V-03) → its door/window schedule row (count, width, height, fire rating …), every edge citing sheet, text and bbox; it answers unresolved or ambiguous rather than guess.",
     inputSchema: {
       action: z.enum(["find", "read", "resolve_tag"]),
       sheet: z.string().optional().describe("find, read: sheet key or title-block number"),
       query: z.string().min(1).optional().describe("find: the text to locate, e.g. a room number or a finish tag"),
       region: region().optional().describe("find, read: rect in image px; omit for the full sheet"),
       limit: z.number().int().min(1).max(2000).default(200).describe("find: max hits returned"),
-      tag: z.string().optional().describe('resolve_tag: the room tag as drawn, e.g. "134", or building-qualified "A-134"'),
+      tag: z.string().optional().describe('resolve_tag: the room tag as drawn, e.g. "134", or building-qualified "A-134"; or a door/window mark, e.g. "ID-01"'),
     },
     outputSchema: perAction("action", ["find", "read", "resolve_tag"], findTextOutput, readSheetTextOutput, resolveTagOutput),
   }, run("find_text", async (a) => {
@@ -237,7 +237,7 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   };
 
   server.registerTool("count", {
-    description: "Count EA items. symbol: a point on one example → every copy found from the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, try another level if the example is wrong, then commit — marks already counted under the condition never count twice. sweep: the same search from a tight seed_rect, set-wide, with counter-examples. place: markers at points you already located. marks: census of value-annotated schedule marks. Count drawn symbols, never room labels.",
+    description: "Count EA items. symbol: a point on one example → every copy found from the linework (right angles, the plan's wing angles, mirrored) and a numbered picture; drop wrong marks, try another level if the example is wrong, then commit — marks already counted under the condition never count twice. sweep: the same search from a tight seed_rect, set-wide, with counter-examples. place: markers at points you already located. marks: census of schedule marks on plan sheets (value-annotated tags; door/window marks at openings; shared marks withheld). Count drawn symbols, never room labels.",
     inputSchema: {
       action: z.enum(["symbol", "sweep", "place", "marks"]),
       sheet: z.string().optional().describe("symbol, sweep, place: the sheet"),
@@ -336,10 +336,10 @@ export function registerTools(server: McpServer, session: Session, opts: { oneCl
   }));
 
   server.registerTool("schedule", {
-    description: "Schedules in the set. find: a schedule table by kind (room finish, finish/material, or equipment) with its sheet, headers, row count and region. sweep_row: take off one schedule row's mark — the condition is minted from the row and every drawn occurrence on the plan sheets is counted, geometry and tag text agreeing. apply_rules: re-run the correction rules an imported takeoff carries, one undo step.",
+    description: "Schedules in the set. find: a schedule table by kind (room finish, finish/material, equipment, door or window — row tables and the Nordic transposed card layout) with its sheet, headers, row count and region. sweep_row: take off one schedule row's mark — the condition is minted from the row and every drawn occurrence on the plan sheets is counted, geometry and tag text agreeing. apply_rules: re-run the correction rules an imported takeoff carries, one undo step.",
     inputSchema: {
       action: z.enum(["find", "sweep_row", "apply_rules"]),
-      schedule_kind: z.string().optional().describe('find: "room finish", "finish"/"material", or "equipment"'),
+      schedule_kind: z.string().optional().describe('find: "room finish", "finish"/"material", "equipment", "door" or "window" (Norwegian "dør"/"vindu" also read)'),
       tag: z.string().min(1).optional().describe("sweep_row: the row's key as drawn, e.g. T1; it becomes the condition"),
       commit: z.boolean().default(false).describe("sweep_row: commit every counted occurrence"),
       rotations: z.boolean().default(true).describe("sweep_row: also match 90/180/270° markers"),
