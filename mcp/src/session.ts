@@ -38,7 +38,7 @@ import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS }
 // scale-unpinned masks here, so an MCP trace and a canvas click at the same
 // seed measured DIFFERENT square footage under the same origin.method.
 import { sweepCommitRefusal } from "./sweepGuard.ts";
-import { ROOM_LABEL_RE, AREA_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
+import { ROOM_LABEL_RE, AREA_STAMP_RE, SF_STAMP_RE, printedAreaM2, seedLadderPx, isLabelBubblePx, floodSurroundsLabelPx, floodAtSeed, type LabelBBox } from "../../web/src/lib/detectRooms.ts";
 import { M2_PER_SF } from "../../web/src/lib/units.ts";
 import { findDoorSeals, sealDoorways } from "../../web/src/lib/doorseal.ts";
 import { findDoors, doorOnRing, OPENING_WALL_M, type Door, type RejectedSwing } from "../../web/src/lib/doors.ts";
@@ -1622,7 +1622,7 @@ export class Session {
     for (const sp of s.spans) {
       const label = (sp.str || "").trim();
       const m2 = printedAreaM2(label);
-      if (m2 == null || /^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i.test(label)) continue;   // totals ("BRA 59,7 m²") are not a room's own area
+      if (m2 == null || (/^[A-ZÆØÅ]{2,4}\s*(?::\s*)?\d/i.test(label) && !SF_STAMP_RE.test(label))) continue;   // totals ("BRA 59,7 m²") are not a room's own area; "NSF 705" is
       const x = (sp.x0 + sp.x1) / 2, y = (sp.y0 + sp.y1) / 2;
       if (!pointInPoly(x, y, vertsPx) || stamps.some((t) => Math.abs(t.x - x) < 4 && Math.abs(t.y - y) < 4)) continue;   // PDFs draw text twice
       stamps.push({ label, m2, x, y });
@@ -1967,6 +1967,8 @@ export class Session {
       const text = (sp.str || "").trim();
       // a whole-number stamp ("12 m²") would otherwise read as room number "12"
       if (AREA_STAMP_RE.test(text)) { labels.push({ str: text, bbox: sp }); continue; }
+      // a US room's printed area is checked against, never seeded from: its number is its label
+      if (SF_STAMP_RE.test(text)) continue;
       const num = text.split(/\s+/).find((tok) => ROOM_LABEL_RE.test(tok));
       if (num) labels.push({ str: num, bbox: sp });
       else if (ROOM_NAME_RE.test(text)) names.push({ str: text, bbox: sp });
@@ -2109,8 +2111,14 @@ export class Session {
       // own printed area decides whether the walls have to)
       const unprinted = printedAreaM2(lb.str) == null;
       if (unprinted && judgeWalls && s.upp != null) {
-        const onWalls = (r: Point[] | null, tolPx: number): { ring: Point[]; w: WallCheck } | null => {
+        // an outline that agrees with a room area printed inside it (a US room
+        // number, its "705 SF" beside it) needs no walls to confirm it
+        const printedAgrees = (r: Point[]) => {
+          try { return this.checkAgainstPrintedArea(s, r, ringArea(r) * s.upp! * s.upp!).status === "verified"; } catch { return false; }
+        };
+        const onWalls = (r: Point[] | null, tolPx: number): { ring: Point[]; w?: WallCheck } | null => {
           if (!r || r.length < 3) return null;
+          if (printedAgrees(r)) return { ring: r };
           const { ring: snapped, w } = this.onWalls(s, r, tolPx);
           const blocks = w.pass ? labelBlocks(snapped) : 1;
           if (blocks > 1) { twoRooms = blocks; return null; }

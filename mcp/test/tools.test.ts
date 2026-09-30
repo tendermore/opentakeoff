@@ -919,12 +919,15 @@ test("detect_rooms assign_from_schedule: rooms commit only under their own row a
   for (const tag of ["133", "136", "149", "153"]) assert.ok(offWalls.includes(tag), `${tag} withheld off the walls`);
   assert.ok(r.data.off_walls.every((o: any) => /runs along drawn walls|drawn wall inside/.test(o.reason) && o.seed.length === 2), "every off-walls room says which edge and where");
   assert.equal(r.data.withheld.off_walls, r.data.off_walls.length);
-  assert.equal(r.data.withheld.unowned, 7, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
+  // 7 -> 5 unowned and 3 -> 2 unresolved: the sheet prints its rooms' areas
+  // ("557 SF"); those are no longer read as room numbers ("557"), two of which
+  // flooded a neighbouring space and one a room no schedule row names
+  assert.equal(r.data.withheld.unowned, 5, "wrong-space floods are withheld as unowned, never committed under a tag (#373)");
 
   // the never-guesses contract: withheld rooms are reported with their real
   // geometry and a reason, never committed and never dropped
-  assert.equal(r.data.withheld.unresolved, 3);
-  assert.equal(r.data.unresolved.length, 3);
+  assert.equal(r.data.withheld.unresolved, 2);
+  assert.equal(r.data.unresolved.length, 2);
   for (const u of r.data.unresolved) {
     assert.ok(u.reason.length > 0, "every withheld room says why");
     assert.ok(u.area_sf > 0 && u.perimeter_lf > 0, "withheld from committing, not from reporting");
