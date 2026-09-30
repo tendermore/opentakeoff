@@ -79,6 +79,18 @@ docker run --rm -i -e OPENTAKEOFF_MCP_TRACE=1 -v "$PWD/demo:/plans:ro" opentakeo
 
 For example, load `/plans/sample-plan.pdf` after mounting `demo/`.
 
+## Run over HTTP (sandbox or service)
+
+`http.ts` serves the same tools over MCP Streamable HTTP, for a host that runs the engine as its own process and reaches it over a port:
+
+```bash
+OPENTAKEOFF_HTTP_TOKEN=<secret, 16+ chars> node --import tsx http.ts
+```
+
+- Endpoint `POST/GET/DELETE /mcp`; every request needs `Authorization: Bearer <secret>`. `GET /healthz` is open.
+- Each MCP session gets its own takeoff session (plans, scales, shapes), so one process serves several clients.
+- `OPENTAKEOFF_HTTP_HOST` (default `127.0.0.1`), `OPENTAKEOFF_HTTP_PORT` (default `8765`), `OPENTAKEOFF_HTTP_IDLE_MS` (idle sessions closed, default 45 min), `OPENTAKEOFF_HTTP_MAX_SESSIONS` (default 32).
+
 ## Quickstart
 
 Both `web/` and `mcp/` need their dependencies (the engine's pdf.js lives in
