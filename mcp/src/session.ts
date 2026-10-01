@@ -7,9 +7,10 @@
 import path from "node:path";
 import { openPdf, positionedText, textSpans, textItemsInRegion, OPS, type DocHandle, type PageHandle, type TextSpan, type OcgEntry } from "./pdf.ts";
 import { expandForScaleNotes, mixedScaleWarning } from "./scalewarn.ts";
-import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo } from "../../web/src/lib/layers.ts";
+import { classifyLayerName, layerRoleCodes, segRoles, type LayerInfo, ROLE_HIDDEN, ROLE_CODE } from "../../web/src/lib/layers.ts";
 import { buildSheetGraph, resolveTag, classifySheetRole, titleBlockBox, rowKeyAnswersFor, isOpeningKind, type SheetGraph, type SheetSpans, type Bbox } from "../../web/src/lib/sheetgraph.ts";
 import { UserError, round1, round2, displayUnits, displayLocale, isRatioScale } from "./format.ts";
+import { outlinedWords, textStatusOf, type TextStatus } from "../../web/src/lib/textstatus.ts";
 // Condition twins — the inheritance rule, shared with the canvas so a headless session and
 // the app can never disagree about what a twin holds (web/test/variants.test.ts).
 import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPatch, propagateRowRemove,
@@ -17,7 +18,7 @@ import { mintTwin, splitFromFamily, variantTag, propagateRowAdd, propagateRowPat
 import { STANDARD_SCALES, RENDER_SCALE, detectScale, extractSheetNumber, DIMTEXT_RE, type DetectedScale } from "../../web/src/lib/sheets.ts";
 import { buildSheetDxf, type DxfBuild } from "../../web/src/lib/dxf.ts";
 import {
-  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, setFloodDeadline, FloodDeadline,
+  extractVectorGeometry, buildMask, traceRegion, snapVertices, ringArea, SEG_FILLONLY, SEG_CLIP, setFloodBudget, floodWorkDone, FloodBudget,
   hatchFamilies, MASK_MAX_DIM, SENS_BALANCED, type FloodResult, type MaskObj, type VectorGeometry, type Point, type HatchFamily,
 } from "../../web/src/lib/oneclick.ts";
 // The trace-confidence module (RFC #60 item D) — the engine's own account of a
@@ -620,6 +621,9 @@ interface SheetState {
   /** the sheet's Optional Content layers (#85), classified — built with geo;
    * [] = no layers survived export (the silent, invisible fallback) */
   layers?: LayerInfo[];
+  /** where the sheet's words are (textstatus.ts): in its text layer, drawn as linework or stencil
+   * masks (outlined), both (partial), or nowhere (none) — built with geo and the spans */
+  textStatus?: { status: TextStatus; outlined_words: number };
 }
 
 /** sheet_context decimation defaults (issue #29) — declared and stable, never
@@ -776,16 +780,27 @@ const ROOM_NAME_RE = /^\p{L}[\p{L}\d .,/&+()'-]{0,29}$/u;
  * feet-inch string can be a note, three are a sheet drawn in those units (the
  * same count that makes a sheet one that prints its room areas). */
 const UNIT_EVIDENCE_MIN = 3;
-/** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET_MS): a room
- * floods in well under a second; one still running after this is flooding a
- * whole sheet through a leak, and is no room's outline. */
-const SEED_BUDGET_MS = 10_000;
-/** Per-call budget (OPENTAKEOFF_CALL_BUDGET_MS): a sandboxed agent's command
- * times out at 120 s, so a call stops before that and reports the labels it
- * did not reach (not_tried); a repeat call continues. */
-const CALL_BUDGET_MS = 100_000;
-/** A host-set budget (ms) overrides the default; 0 turns it off. */
-const budgetMs = (env: string, fallback: number): number => {
+/** Per-room flood budget (detect_rooms, OPENTAKEOFF_SEED_BUDGET): the mask cells every
+ * flood and check one label tries may fill, as a multiple of the sheet's mask area. A
+ * room's floods fill it a few dozen times over at most (the ladder rungs, the seal and
+ * bridge retries, the walls-only masks); one still filling after this many whole-sheet
+ * fills is flooding the sheet through a leak, and is no room's outline. Work, not time:
+ * the same input spends it at the same point on every machine, whatever the load. */
+const SEED_BUDGET_MASKS = 40;
+/** Per-call budget (OPENTAKEOFF_CALL_BUDGET), the same unit: a call stops here and reports
+ * the labels it did not reach (not_tried); a repeat call continues. */
+const CALL_BUDGET_MASKS = 300;
+/** Wall-clock SAFETY cap on a call (OPENTAKEOFF_CALL_BUDGET_MS): a sandboxed agent's command
+ * times out at 120 s. Checked between labels only, never inside a flood, and reported as
+ * budget_wallclock when hit — the labels after it are named, so the result set never
+ * changes silently with the machine's load. */
+const CALL_WALLCLOCK_MS = 100_000;
+/** count_symbol's seed ladder: placements scored across every seed size tried (symbolsweep's own work
+ * unit), and a wall-clock safety cap checked between seed sizes only. */
+const LADDER_BUDGET_CANDIDATES = 2_000_000;
+const LADDER_WALLCLOCK_MS = 90_000;
+/** A host-set budget overrides the default; 0 turns it off. */
+const budgetOf = (env: string, fallback: number): number => {
   const v = process.env[env];
   return v === undefined || v === "" ? fallback : Number(v) || 0;
 };
@@ -1119,12 +1134,15 @@ export class Session {
         segments_in_region: memberIdx.reduce((acc, i) => acc + (keptIdx.has(i) ? 1 : 0), 0),
       }));
 
+    const text = await this.textStatus(name);
     return {
       sheet: s.key,
       page: s.pageNum,
       sheet_px: [s.widthPx, s.heightPx],
       region: [round1(r.x0), round1(r.y0), round1(r.x1), round1(r.y1)],
       has_vector_linework: hasVectors,
+      text_status: text.status,
+      ...(text.outlined_words ? { outlined_words: text.outlined_words } : {}),
       vectors: {
         segments, meta: metaOut, family,
         kept: kept.length,
@@ -1326,8 +1344,13 @@ export class Session {
   /** A flattened export draws furniture in the wall pen, so the ink mask stops
    * a flood at the first desk. These masks keep only paired wall faces and
    * filled wall poché (wallpairs.ts) and seal doorways at their swings, so
-   * a flood fills the room to its walls. Unlayered vector sheets with a
-   * scale only; empty otherwise. Cached like `mask`; set_scale evicts them.
+   * a flood fills the room to its walls. Vector sheets with a scale whose
+   * walls are NOT stated by a layer: an unlayered sheet, or a layered one none
+   * of whose classified boundary layers (layers.ts) carries wall-like ink — a
+   * sheet whose layers are all unknown or annotation is flattened in every way
+   * that matters here. Where a boundary layer does carry paired wall lines the
+   * layer path bounds the rooms and these stay empty. Hidden and demolition
+   * ink never pairs. Cached like `mask`; set_scale evicts them.
    *
    * The first mask counts every fill as poché. Where the sheet has white fills
    * there is a second one without them: a white fill often masks what lies under
@@ -1342,8 +1365,17 @@ export class Session {
       const geo = await this.ensureGeometry(s);
       const ink = await this.ensureMask(name);
       const pxPerFt = s.upp ? 1 / s.upp : 0;
-      if (!ink || !pxPerFt || s.layers?.length) return s.wallMasks;
-      const wall = wallSegIndices(geo.segs, geo.meta, pxPerFt / 0.3048);
+      if (!ink || !pxPerFt) return s.wallMasks;
+      // ink not drawn on this plan (a hidden or demolition layer) pairs with nothing: it is marked as
+      // clip-only for the pairing, which wallpairs.ts never reads as a face or a partner
+      const roles = this.rolesFor(s, geo);
+      let meta = geo.meta;
+      if (roles) {
+        meta = Uint8Array.from(geo.meta);
+        for (let i = 0; i < roles.length; i++) if (roles[i] === ROLE_HIDDEN || roles[i] === ROLE_CODE.demolition) meta[i] |= SEG_CLIP;
+      }
+      const wall = wallSegIndices(geo.segs, meta, pxPerFt / 0.3048);
+      if (this.layerStatesWalls(s, geo, wall)) return s.wallMasks;
       const white = new Uint8Array(wall.length);
       for (const sp of geo.subpaths ?? []) if (sp.flags & SEG_FILLONLY && sp.fillLum >= WHITE_FILL_LUM) white.fill(1, sp.i0, sp.i1);
       const seals = findDoorSeals(geo.segs, geo.meta, ink, pxPerFt);
@@ -1363,6 +1395,20 @@ export class Session {
       }
     }
     return s.wallMasks;
+  }
+
+  /** Does a visible layer classified as a room boundary carry wall-like ink (paired wall lines)? Then
+   * the sheet states its walls and the layer path bounds its rooms; the flattened walls-only masks are
+   * for sheets that do not. */
+  private layerStatesWalls(s: SheetState, geo: VectorGeometry, wall: Uint8Array): boolean {
+    const infos = s.layers ?? [], lo = geo.layerOf;
+    if (!infos.length || !lo) return false;
+    for (let i = 0; i < wall.length; i++) {
+      if (!wall[i]) continue;
+      const l = infos[lo[i]];
+      if (l && l.visible && l.role === "boundary") return true;
+    }
+    return false;
   }
 
   /** The canvas's wall-network and drawn-figure room engines for one sheet,
@@ -1431,13 +1477,47 @@ export class Session {
     }
   }
 
+  /** Where the sheet's words are: its text layer, its linework (outlined), both (partial), or nowhere. */
+  async textStatus(name: string): Promise<{ status: TextStatus; outlined_words: number }> {
+    const s = this.sheet(name);
+    if (!s.textStatus) {
+      const geo = await this.ensureGeometry(s);
+      if (!s.spans) s.spans = textSpans(s.page);
+      const words = outlinedWords(geo).length;
+      s.textStatus = { status: textStatusOf(s.spans.length, words), outlined_words: words };
+    }
+    return s.textStatus;
+  }
+
+  /** Readers of the text layer (labels, find_text) never answer "nothing here" about a sheet whose words
+   * are not in it. A sheet that DRAWS its words (outlined) is refused with the reason: the words are
+   * there and unreadable, and an empty sweep of it would pass for a sheet with no rooms. A sheet with
+   * no words anywhere (none: a pure scan) sweeps honestly to nothing, and its reply says why. Both
+   * need OCR, or the caller's own reading — view_sheet, then labels or points. */
+  private async requireTextLayer(name: string, tool: string): Promise<{ status: TextStatus; outlined_words: number }> {
+    const t = await this.textStatus(name);
+    const s = this.sheet(name);
+    if (t.status === "outlined") throw new UserError(`text is drawn as outlines; OCR needed — ${s.key} has no text layer: its ${t.outlined_words} word(s) are drawn as linework or stencil masks (text_status: outlined), which ${tool} cannot read. Look at the sheet with view_sheet and pass what you read (labels, points), or OCR it first.`);
+    return t;
+  }
+
+  /** What a text-layer reader's reply says of the sheet's text when it is not all in the text layer. */
+  private static textFields(t: { status: TextStatus; outlined_words: number }): { text_status?: "partial" | "none"; outlined_words?: number; reason?: string } {
+    if (t.status === "partial") return { text_status: "partial", outlined_words: t.outlined_words };
+    if (t.status === "none") return { text_status: "none", reason: "no text layer; OCR needed" };
+    return {};
+  }
+
   async sheetInfo(name: string) {
     const s = this.sheet(name);
     const geo = await this.ensureGeometry(s);
+    const text = await this.textStatus(name);
     return {
       ...sheetSummary(s),
       seg_count: geo.segs.length >> 2,
       has_vector_linework: geo.segs.length > 0,
+      text_status: text.status,
+      ...(text.outlined_words ? { outlined_words: text.outlined_words } : {}),
       scale_set: s.upp != null,
       ...(s.upp != null ? { upp: s.upp } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
@@ -1619,9 +1699,9 @@ export class Session {
     return origin;
   }
 
-  /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS). */
+  /** Marked set / report / export units for this working set (OPENTAKEOFF_UNITS; by default what the scaled sheets say of themselves). */
   displayUnits(): "imperial" | "metric" {
-    return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => s.scaleLabel));
+    return displayUnits([...this.sheets.values()].filter((s) => s.upp != null).map((s) => this.unitsOf(s.key).system));
   }
 
   /** A room outline must agree with the room area printed inside it. The one
@@ -2061,6 +2141,9 @@ export class Session {
       raster = true;
     }
     const minAreaSf = opts.minAreaSf ?? 5;
+    // the labels come from the text layer: a sheet whose words are drawn is refused with the reason,
+    // never swept to an empty result
+    const text = await this.requireTextLayer(name, "detect");
     if (!s.spans) s.spans = textSpans(s.page);
     // labels with BBOXES: same tokenization as roomLabelSeeds, but the ladder
     // and the bubble test need the label's box, not just its anchor
@@ -2098,18 +2181,22 @@ export class Session {
     // Trace every label first (ladder + bubble guard per label). Nothing
     // commits in this pass — withholding has to be decided across the whole
     // batch (dedupe needs to see every ring).
-    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, no_ring: 0, over_budget: 0, implausible: 0, unresolved: 0, area_disagrees: 0, off_walls: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0 };
+    const withheld = { degenerate: 0, duplicate: 0, bubble: 0, unowned: 0, no_ring: 0, over_budget: 0, implausible: 0, unresolved: 0, area_disagrees: 0, off_walls: 0, overlaps_measured: 0, already_measured: 0, not_tried: 0, budget_wallclock: 0 };
     // every withheld label by name, with the reason it was counted under
     const withheldLabels: { label: string; reason: keyof typeof withheld }[] = [];
     const withhold = (label: string, reason: keyof typeof withheld) => { withheld[reason]++; withheldLabels.push({ label, reason }); };
-    // Time limits (defaults above; a host may set or, with 0, lift them): a per-room budget, shared by
-    // every flood and check one label tries, turns a room that runs away into "no outline here"
-    // (over_budget); a per-call budget stops the sweep
-    // and reports the labels not reached, which a repeat call picks up — labels
-    // inside a room this sheet already measured are skipped, never re-measured.
-    const seedBudgetMs = budgetMs("OPENTAKEOFF_SEED_BUDGET_MS", SEED_BUDGET_MS);
-    const callBudgetMs = budgetMs("OPENTAKEOFF_CALL_BUDGET_MS", CALL_BUDGET_MS);
-    const callDeadline = callBudgetMs ? Date.now() + callBudgetMs : 0;
+    // Work limits (defaults above; a host may set or, with 0, lift them), in mask cells filled: a
+    // per-room budget, shared by every flood and check one label tries, turns a room that runs away
+    // into "no outline here" (over_budget); a per-call budget stops the sweep and reports the labels
+    // not reached (not_tried), which a repeat call picks up — labels inside a room this sheet already
+    // measured are skipped, never re-measured. Both are deterministic. The wall-clock cap is a safety
+    // net only, checked between labels and reported apart (budget_wallclock).
+    const maskCells = mask.mw * mask.mh;
+    const seedBudget = Math.round(budgetOf("OPENTAKEOFF_SEED_BUDGET", SEED_BUDGET_MASKS) * maskCells);
+    const callBudget = Math.round(budgetOf("OPENTAKEOFF_CALL_BUDGET", CALL_BUDGET_MASKS) * maskCells);
+    const wallclockMs = budgetOf("OPENTAKEOFF_CALL_BUDGET_MS", CALL_WALLCLOCK_MS);
+    const callDeadline = wallclockMs ? Date.now() + wallclockMs : 0;
+    let callWork = 0, wallclockHit = false;
     // a room counts as measured when the agent committed a floor shape around
     // this label and no other: a hand-traced or whole-floor outline holds many
     // labels and never silences the rooms inside it
@@ -2151,13 +2238,17 @@ export class Session {
     if (strict && s.upp != null) await this.prepareFloorCheck(name);
     const walls = strict ? this.wallFacesOf(s) : null;
     const judgeWalls = !!walls && hasWallFaces(walls.faces);
+    try {
+    setFloodBudget(seedBudget);   // counting starts here: the sweep's own floods only
     for (const lb of labels) {
-      if (callDeadline && Date.now() > callDeadline) { withhold(lb.str, "not_tried"); continue; }
+      callWork += floodWorkDone();   // the previous label's work
+      // one budget for everything this label tries: ladder rungs, walls-only masks, wall checks
+      setFloodBudget(seedBudget);
+      if (callBudget && callWork > callBudget) { withhold(lb.str, "not_tried"); continue; }
+      if (wallclockHit || (callDeadline && Date.now() > callDeadline)) { wallclockHit = true; withhold(lb.str, "budget_wallclock"); continue; }
       const [cx, cy] = labelAt(lb);
       if (measuredRings.some((r) => pointInPoly(cx, cy, r))) { withhold(lb.str, "already_measured"); continue; }
-      // one deadline for everything this label tries: ladder rungs, walls-only masks, wall checks
-      const labelDeadline = seedBudgetMs ? Date.now() + seedBudgetMs : 0;
-      const overBudget = () => !!labelDeadline && Date.now() > labelDeadline;
+      const overBudget = () => !!seedBudget && floodWorkDone() > seedBudget;
       let ranOut = false;
       // more text inside a room already found on the drawn walls (its name's
       // neighbours: a finish, a height) floods to that room again: counted there
@@ -2173,14 +2264,11 @@ export class Session {
         // so a batch detection and a canvas click at the same seed can never
         // measure different square footage again
         let f: ReturnType<typeof floodAtSeed>;
-        setFloodDeadline(labelDeadline);
         try {
           f = floodAtSeed(m, probe[0], probe[1], opts.sensitivity ?? SENS_BALANCED, mppf);
         } catch (error) {
-          if (error instanceof FloodDeadline) { ranOut = true; break; }   // this room's budget is spent: no outline from here on
+          if (error instanceof FloodBudget) { ranOut = true; break; }   // this room's budget is spent: no outline from here on
           throw error;
-        } finally {
-          setFloodDeadline(0);
         }
         if (f.status !== "ok") continue;
         // raster trace differences mirror oneClick (#154): looser eps, no snap
@@ -2304,6 +2392,10 @@ export class Session {
       byRing.set(key, cand);
       order.push(cand);
     }
+    callWork += floodWorkDone();
+    } finally {
+      setFloodBudget(0);   // the budget is this sweep's; a click after it floods unbudgeted
+    }
 
     const upp = s.upp;
     const rooms = order
@@ -2420,7 +2512,8 @@ export class Session {
         seed_norm: [u.seed[0] / s.widthPx, u.seed[1] / s.heightPx] as [number, number],
       }));
     }
-    const withheldTotal = withheld.degenerate + withheld.duplicate + withheld.bubble + withheld.unowned + withheld.no_ring + withheld.over_budget + withheld.implausible + withheld.unresolved + withheld.area_disagrees + withheld.off_walls + withheld.not_tried;
+    // every count, so the total is what was withheld (overlaps_measured and already_measured were left out once)
+    const withheldTotal = Object.values(withheld).reduce((a, n) => a + n, 0);
     return {
       detected: rooms.length,
       rooms,
@@ -2439,9 +2532,12 @@ export class Session {
       ...(unmatched.length ? { labels_unmatched: unmatched } : {}),
       // every withheld label by name: the room behind each count above
       withheld_labels: withheldLabels,
+      work_cells: callWork,
+      ...Session.textFields(text),
+      ...(wallclockHit ? { budget_wallclock: true as const } : {}),
       ...(s.detected?.multi ? { multiple_scales: true as const } : {}),
       ...(withheldTotal
-        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable${withheld.no_ring ? `, ${withheld.no_ring} with no clean flood at any probe` : ""}${withheld.over_budget ? `, ${withheld.over_budget} over the per-room time budget` : ""}, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the time budget ran out — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
+        ? { note: `${withheldTotal} seed(s) withheld — ${withheld.duplicate} duplicate region(s), ${withheld.bubble} label-bubble(s), ${withheld.unowned} unowned (every clean flood was a neighbouring space or door pocket — takeoff_rooms {action: "at"} inside the room), ${withheld.implausible} under ${minAreaSf} SF, ${withheld.degenerate} untraceable${withheld.no_ring ? `, ${withheld.no_ring} with no clean flood at any probe` : ""}${withheld.over_budget ? `, ${withheld.over_budget} over the per-room work budget` : ""}, ${withheld.area_disagrees} disagreeing with the room's printed area (see area_disagrees[])${withheld.off_walls ? `, ${withheld.off_walls} with no printed area whose outline does not follow the drawn walls (see off_walls[])` : ""}${withheld.overlaps_measured ? `, ${withheld.overlaps_measured} sharing floor with a room already measured` : ""}${withheld.not_tried ? `, ${withheld.not_tried} not tried before the call's work budget ran out — call detect_rooms again to continue` : ""}${withheld.budget_wallclock ? `, ${withheld.budget_wallclock} not tried because the wall-clock safety cap was hit (budget_wallclock: the machine was slow, not the drawing) — call detect_rooms again to continue` : ""}${withheld.already_measured ? `; ${withheld.already_measured} label(s) skipped inside rooms already measured` : ""}${assign ? `, ${withheld.unresolved} unresolved against the schedule (see unresolved[])` : ""}.` }
         : {}),
       ...(s.upp == null ? { warning: `No scale set for ${s.key} — quantities unavailable. Call set_scale${s.detected ? ` (detected: ${s.detected.label})` : ""}.` } : {}),
     };
@@ -2464,6 +2560,7 @@ export class Session {
       this.refuseLayersOnRaster(opts.layers);
       mask = await this.ensureRasterMask(s);
     }
+    const text = await this.requireTextLayer(name, "cover");
     if (!s.spans) s.spans = textSpans(s.page);
     // metric sheets: a zone with no printed area answers to the drawn-walls check like every floor outline there
     const drawnWalls = !raster && this.drawnWallsApply(s);
@@ -2525,7 +2622,7 @@ export class Session {
           : [{ at: norm(c.piece!.at), m2: c.piece!.m2 }]);
       }
     }
-    return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}) };
+    return { ...out, ...(opts.mark ? { clouds: marked } : {}), ...(removed ? { clouds_removed: removed } : {}), ...Session.textFields(text) };
   }
 
   /** What a cover note is placed clear of on a sheet (normalized boxes): the text the sheet prints, and its
@@ -4422,7 +4519,7 @@ export class Session {
     return (s.ink = out);
   }
 
-  private countLadders = new Map<string, { candidates: SeedCandidate[]; angles: number[]; partial: boolean }>();
+  private countLadders = new Map<string, { candidates: SeedCandidate[]; angles: number[]; partial: boolean; wallclock: boolean }>();
 
   /** count_symbol — count every copy of a symbol from ONE point on an example.
    * symbol_sweep asks the caller for a tight marquee in sheet pixels, which a
@@ -4447,8 +4544,10 @@ export class Session {
       let l = this.countLadders.get(key);
       if (!l) {
         const angles = wing ? wingRotations(ink, c, 220) : [];
-        const { candidates, partial } = evaluateLadder(ink, c, sizes, { angles, budgetMs: 90_000, clock: () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; } });
-        l = { candidates, angles, partial };
+        // a deterministic work budget (placements scored) decides how far the ladder goes; the wall-clock
+        // cap is a safety net, reported apart (budget_wallclock) and never a silent change of the count
+        const { candidates, partial, wallclock } = evaluateLadder(ink, c, sizes, { angles, budgetWork: LADDER_BUDGET_CANDIDATES, wallclockMs: LADDER_WALLCLOCK_MS });
+        l = { candidates, angles, partial, wallclock };
         this.countLadders.set(key, l);
         if (this.countLadders.size > 24) this.countLadders.delete(this.countLadders.keys().next().value as string);
       }
@@ -4466,7 +4565,7 @@ export class Session {
         if (repeats(alt) || !ladder.candidates.length) { ladder = alt; snappedTo = near; }
       }
     }
-    const { candidates, angles, partial } = ladder;
+    const { candidates, angles, partial, wallclock } = ladder;
     if (!candidates.length) throw new UserError(`No linework near (${round1(at[0])}, ${round1(at[1])}) — give a point on or next to the example symbol (image px), e.g. the middle of the fixture or door swing.`);
     const level = opts.level ?? pickCandidate(candidates);
     const cand = candidates[level - 1];
@@ -4548,7 +4647,8 @@ export class Session {
     else if (bigger) flags.push(`A larger seed (level ${bigger.level}) still repeats but finds only ${bigger.points.length} against ${cand.points.length} here — the extra marks may be look-alikes sharing part of the symbol; if the picture shows marks off the symbol, pass level:${bigger.level}.`);
     if (cand.points.length === 1) flags.push("Only the example itself matched: it may be unique, or the point sits on a variant — try another level or another example.");
     if (!cand.complete) flags.push("The sweep hit its work ceiling: this count is a floor, not a total.");
-    if (partial) flags.push("Not every seed size was tried within the time budget.");
+    if (partial) flags.push("Not every seed size was tried within the work budget.");
+    if (wallclock) flags.push("The wall-clock safety cap stopped the seed ladder (budget_wallclock): the machine was slow, not the drawing — the seed sizes after it were not tried; call again to retry.");
     const main = marks.filter((m) => !m.loose), loose = marks.filter((m) => m.loose && !m.already);
     if (loose.length) flags.push(`${loose.length} purple LOOSE mark(s): a smaller seed also matches there — other variants of this symbol, or look-alikes. Judge them on the picture; include_loose:true counts them (drop the wrong ones by number).`);
     const n = main.filter((m) => !m.already).length;
@@ -4564,7 +4664,8 @@ export class Session {
         withheld: withheld.map((w, i) => ({ id: `W${i + 1}`, at: [round1(w.at[0]), round1(w.at[1])], score: w.score })),
         seeds_tried: candidates.map((c) => ({ level: c.level, segments: c.segments, footprint_px: round1(c.footprint), found: c.points.length })),
         rotations_searched: [0, 90, 180, 270, ...angles],
-        complete: cand.complete && !partial,
+        complete: cand.complete && !partial && !wallclock,
+        ...(wallclock ? { budget_wallclock: true as const } : {}),
         ...(flags.length ? { flags } : {}),
         ...(committed ? { committed: committed.committed, ea_total: committed.ea_total, shape_ids: committed.shape_ids } : {}),
         image: { region: view.meta.region, img_px: view.meta.img_px, zoom: view.meta.zoom },
@@ -6427,10 +6528,11 @@ export class Session {
    * whole thing at once — this tool doesn't merge runs into lines. Reuses the
    * bbox spans sheet_context lazily builds (same cache, same textSpans()
    * call), so calling both on one sheet costs the extraction once. */
-  findText(name: string, q: string, opts: { region?: { x0: number; y0: number; x1: number; y1: number }; limit?: number } = {}) {
+  async findText(name: string, q: string, opts: { region?: { x0: number; y0: number; x1: number; y1: number }; limit?: number } = {}) {
     const query = q.trim();
     if (!query) throw new UserError("q must be a non-empty string.");
     const s = this.sheet(name);
+    const text = await this.requireTextLayer(name, "find_text");
     if (!s.spans) s.spans = textSpans(s.page);
     const r = opts.region;
     const needle = query.toLowerCase();
@@ -6442,6 +6544,6 @@ export class Session {
       bbox: [sp.x0, sp.y0, sp.x1, sp.y1] as [number, number, number, number],
       center: [round1((sp.x0 + sp.x1) / 2), round1((sp.y0 + sp.y1) / 2)] as [number, number],
     }));
-    return { sheet: s.key, q: query, count: all.length, truncated: all.length > hits.length, hits };
+    return { sheet: s.key, q: query, count: all.length, truncated: all.length > hits.length, hits, ...Session.textFields(text) };
   }
 }

@@ -186,3 +186,21 @@ test("a combined zone is refused when its sum disagrees, or when a printed total
   const total = await sheetWith([span("9,3 m²", 180, 180), span("9,3 m²", 540, 180), span("BRA 18,6 m²", 360, 300), span("5,0 m²", 2000, 2000)]);
   assert.throws(() => commitZone(total, true), /PRINTED_AREA_DISAGREES/);
 });
+
+test("a zone in several pieces is outlined by its largest piece, never the first cell's; the share says how much that is", async () => {
+  const { zonePieces, zoneRing } = await import("../../web/src/lib/floorcover.ts");
+  const { ringArea } = await import("../../web/src/lib/oneclick.ts");
+  // a zone folded together across drawn lines (splitZone) whose pieces a wall keeps apart: a 1 m × 1 m
+  // pocket in the top-left corner (first in scan order) and the 30 m × 15 m room below it
+  const cells: number[] = [];
+  for (let y = 12; y < 22; y++) for (let x = 12; x < 22; x++) cells.push(y * W + x);
+  for (let y = 40; y < 190; y++) for (let x = 12; x < 312; x++) cells.push(y * W + x);
+  const z = { cells: Int32Array.from(cells), labels: [0], m2: cells.length / (PX_PER_M * PX_PER_M), leaks: false, wallShare: 1, at: [100, 100] as [number, number], bbox: [12, 12, 312, 190] as [number, number, number, number] };
+  const p = zonePieces(z, W, H, 1);
+  assert.equal(p.rings.length, 2);
+  assert.ok(Math.abs(p.share - 45000 / 45100) < 1e-6, `share ${p.share}`);
+  const largest = ringArea(p.ring) / (PX_PER_M * PX_PER_M);
+  assert.ok(Math.abs(largest - 450) < 10, `largest piece ${largest} m² (the pocket is 1 m²)`);
+  assert.ok(ringArea(p.rings[1]) / (PX_PER_M * PX_PER_M) < 1.5, "the pocket is the other piece");
+  assert.equal(ringArea(zoneRing(z, W, H, 1)), ringArea(p.ring), "zoneRing is the largest piece's outline");
+});

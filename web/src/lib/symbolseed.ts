@@ -115,10 +115,13 @@ export interface LadderOptions {
   rotations?: boolean;
   mirror?: boolean;
   tolPx?: number;
-  /** Stop after this many ms of `clock`; the candidates so far are returned. */
-  budgetMs?: number;
-  /** Milliseconds counter for the budget (default wall clock; a server passes CPU time so
-   * a busy machine does not shorten the ladder). */
+  /** Stop once this many placements have been scored over the seeds tried (matchSymbol's
+   *  candidates.considered, summed); the candidates so far are returned as `partial`. Work,
+   *  not time: the same point on the same sheet stops at the same seed on every machine. */
+  budgetWork?: number;
+  /** Wall-clock safety cap (ms of `clock`), checked between seeds only; when it stops the
+   *  ladder the result says so (`wallclock`), so a slow machine never changes a count silently. */
+  wallclockMs?: number;
   clock?: () => number;
   maxCandidates?: number;
 }
@@ -127,12 +130,12 @@ export interface LadderOptions {
  * the example itself four seeds running: a seed that cuts through the symbol's own
  * outline collapses too (the count comes back at the size that holds it whole), so
  * one or two collapses prove nothing, but four in a row are wall. */
-export function evaluateLadder(segs: number[], click: Point, halfSizes: number[], opts: LadderOptions = {}): { candidates: SeedCandidate[]; partial: boolean } {
+export function evaluateLadder(segs: number[], click: Point, halfSizes: number[], opts: LadderOptions = {}): { candidates: SeedCandidate[]; partial: boolean; wallclock: boolean } {
   const now = opts.clock ?? Date.now;
   const started = now();
   const seen = new Set<string>();
   const candidates: SeedCandidate[] = [];
-  let collapsed = 0, hadRepeat = false, partial = false;
+  let collapsed = 0, hadRepeat = false, partial = false, wallclock = false, work = 0;
   for (const h of halfSizes) {
     const rect: Rect = [[click[0] - h, click[1] - h], [click[0] + h, click[1] + h]];
     let fp;
@@ -140,7 +143,8 @@ export function evaluateLadder(segs: number[], click: Point, halfSizes: number[]
     const key = `${fp.segments}:${Math.round(fp.totalLen)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (opts.budgetMs && now() - started > opts.budgetMs) { partial = true; break; }
+    if (opts.budgetWork && work > opts.budgetWork) { partial = true; break; }
+    if (opts.wallclockMs && now() - started > opts.wallclockMs) { wallclock = true; break; }
     const t0 = now();
     const m = matchSymbol(fp, segs, {
       excludeCenter: fp.center,
@@ -160,11 +164,12 @@ export function evaluateLadder(segs: number[], click: Point, halfSizes: number[]
       complete: m.complete,
       ms: Math.round(now() - t0),
     });
+    work += m.candidates.considered;
     const n = m.matches.length + 1;
     if (n >= 2) { hadRepeat = true; collapsed = 0; } else if (hadRepeat) collapsed++;
     if (collapsed >= 4) break;
   }
-  return { candidates, partial };
+  return { candidates, partial, wallclock };
 }
 
 /** Runs of consecutive seeds whose counts agree — each within STEADY_RATIO of the

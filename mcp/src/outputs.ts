@@ -63,6 +63,8 @@ export const sheetInfoOutput = {
   ...sheetSummary,
   seg_count: z.number().int().describe("Vector segment count"),
   has_vector_linework: z.boolean().describe("takeoff_rooms floods vector linework"),
+  text_status: z.enum(["text_layer", "outlined", "partial", "none"]).describe("Where the sheet's words are: text_layer = in the text layer, what find_text and the room labels read; outlined = the sheet has no text layer and draws its words as linework or stencil masks (a plotter that rasterised its fonts, text converted to curves) — OCR or your own reading of view_sheet is needed, and detect, cover and find_text refuse with that reason; partial = a text layer AND drawn words (a logo's few, or room tags you cannot search — outlined_words says how many); none = no text and no drawn words"),
+  outlined_words: z.number().int().optional().describe("Words drawn as linework or stencil masks (glyph-sized stroke clusters in rows, type-sized masks) — present when any"),
   scale_set: z.boolean(),
   upp: z.number().optional().describe("Real feet per image px at render scale 2.0 — present once the scale is set"),
   shape_count: z.number().int().describe("Committed shapes on this sheet"),
@@ -147,14 +149,15 @@ export const detectRoomsOutput = {
     bubble: z.number().int().describe("Labels whose every clean flood was their own label BUBBLE (ring bbox ≈ label bbox — plans box their room numbers). Scale-free, so it guards unscaled previews too"),
     unowned: z.number().int().describe("Labels whose every clean, non-bubble flood did not SURROUND the label's box — a ladder rung stepped past the wall into a neighbouring space or a door-swing pocket. Withheld rather than committed under the tag (#373); takeoff_rooms {action: \"at\"} inside the room answers it"),
     no_ring: z.number().int().describe("Labels with no clean flood at any probe (the flood leaked, or ran into dense linework) — no outline to report. Always present"),
-    over_budget: z.number().int().describe("Labels whose per-room time budget (OPENTAKEOFF_SEED_BUDGET_MS, default 10 s, shared by all the floods and checks one room tries) ran out before an outline was found or checked. Always present"),
+    over_budget: z.number().int().describe("Labels whose per-room work budget (OPENTAKEOFF_SEED_BUDGET, in whole-mask fills, default 40, shared by all the floods and checks one room tries) ran out before an outline was found or checked — deterministic: the same sheet withholds the same rooms on every machine. Always present"),
     implausible: z.number().int().describe("Enclosed, clean, non-bubble, but smaller than min_area_sf — a door swing or wall cavity rather than a room"),
     unresolved: z.number().int().describe("Assign mode: rooms the schedule could not answer for (no row, no FLOOR cell, or a compound cell) — withheld into unresolved[], never committed under a guess. Always present; 0 outside assign mode"),
     area_disagrees: z.number().int().describe("Rooms labelled by a printed area whose trace disagrees with that area beyond rounding — withheld into area_disagrees[] rather than committed under a number the drawing contradicts. Always present"),
     off_walls: z.number().int().describe("Rooms with no printed area to check against whose every candidate outline leaves the drawn walls (an edge along furniture, text or open floor) or holds a wall inside or two separate room labels (two rooms as one) — withheld into off_walls[]. Always present"),
     overlaps_measured: z.number().int().describe("Rooms whose trace would share floor with an outline of the same condition already measured — withheld rather than counted twice. Always present"),
     already_measured: z.number().int().describe("Labels skipped because they sit inside a floor shape this sheet already has — a repeat call continues, never re-measures. Always present"),
-    not_tried: z.number().int().describe("Labels not reached before the call's time budget (OPENTAKEOFF_CALL_BUDGET_MS, default 100 s) ran out — call takeoff_rooms again to continue. Always present"),
+    not_tried: z.number().int().describe("Labels not reached before the call's work budget (OPENTAKEOFF_CALL_BUDGET, in whole-mask fills, default 300) ran out — call takeoff_rooms again to continue. Always present"),
+    budget_wallclock: z.number().int().describe("Labels not reached because the call's wall-clock SAFETY cap (OPENTAKEOFF_CALL_BUDGET_MS, default 100 s, checked between rooms only) was hit — the machine was slow, not the drawing; the reply also carries budget_wallclock: true. Call again to continue. Always present"),
     min_area_sf: z.number().optional().describe("The plausibility floor applied (scaled mode only)"),
   }).describe("What detection skipped and why — a withheld room is a question the caller can ask; a silently dropped one is a hole in a bid"),
   unresolved: z.array(z.object({
@@ -178,8 +181,13 @@ export const detectRoomsOutput = {
   labels_unmatched: z.array(z.string()).optional().describe("labels passed that the sheet does not print (or not near `at`) — nothing was seeded for them"),
   withheld_labels: z.array(z.object({
     label: z.string().describe("The label that was withheld"),
-    reason: z.string().describe("The withheld count it falls under: bubble, unowned, degenerate, no_ring, over_budget, duplicate, implausible, not_tried, already_measured, off_walls, area_disagrees, overlaps_measured or unresolved"),
+    reason: z.string().describe("The withheld count it falls under: bubble, unowned, degenerate, no_ring, over_budget, duplicate, implausible, not_tried, budget_wallclock, already_measured, off_walls, area_disagrees, overlaps_measured or unresolved"),
   })).describe("Every withheld label by name — the rooms behind the counts in withheld. Always present"),
+  work_cells: z.number().int().describe("Mask cells the call's floods filled — the unit the work budgets are in; deterministic for a sheet"),
+  text_status: z.enum(["partial", "none"]).optional().describe("Present when the sheet's words are not all in its text layer (open_drawings info text_status): partial = it also draws words, which were never seeds (outlined_words says how many); none = it has no words at all, so there was nothing to seed from (reason says so). A sheet whose words are ALL drawn (outlined) is refused with that reason instead"),
+  outlined_words: z.number().int().optional(),
+  reason: z.string().optional().describe("text_status none: \"no text layer; OCR needed\""),
+  budget_wallclock: z.literal(true).optional().describe("Present when the wall-clock safety cap stopped the sweep: the rooms after it are withheld as budget_wallclock, never silently dropped"),
   note: z.string().optional().describe("Human-readable summary of what was withheld, when anything was"),
   multiple_scales: z.literal(true).optional().describe("Several DISTINCT scale notes on this sheet (#153) — rooms inside an enlarged viewport may be figured at the wrong scale"),
   warning: z.string().optional().describe("Preview mode (no scale): why quantities are unavailable and what to do"),
@@ -199,7 +207,7 @@ export const coverFloorOutput = {
     zone_m2: z.number().optional().describe("The floor zone round the label, m²"),
     walls_pct: z.number().optional().describe("Share of the zone's edge that is wall or a measured room, %"),
     reason: z.string().optional().describe("Why a flagged room was not measured, with the numbers"),
-    code: z.enum(["open_to_outside", "unplaced_label", "untraceable", "surrounds_void", "label_outside_outline", "area_differs", "several_printed_sum_differs", "several_labels_no_printed_area", "total_stamp_inside", "too_small", "off_drawn_walls", "not_walled", "overlaps_measured", "refused", "ready_to_commit"]).optional()
+    code: z.enum(["open_to_outside", "unplaced_label", "untraceable", "surrounds_void", "label_outside_outline", "area_differs", "several_printed_sum_differs", "several_labels_no_printed_area", "total_stamp_inside", "too_small", "off_drawn_walls", "not_walled", "overlaps_measured", "refused", "ready_to_commit", "zone_in_pieces"]).optional()
       .describe("flagged: the reason as a stable code, for a caller that words it itself (numbers in zone_m2, outline_m2, printed_m2, sum_m2)"),
     outline_m2: z.number().optional().describe("The outline traced from the zone, m², where the reason compares it"),
     sum_m2: z.number().optional().describe("Several printed areas in one zone: their sum, m²"),
@@ -795,6 +803,9 @@ export const findTextOutput = {
     bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).describe("[x0, y0, x1, y1] image px"),
     center: z.tuple([z.number(), z.number()]).describe("Bbox center, image px — feed straight into takeoff_rooms {action: \"at\"}'s seed"),
   })),
+  text_status: z.enum(["partial", "none"]).optional().describe("Present when the sheet's words are not all in its text layer (open_drawings info text_status): partial = it also draws words, which are never found (outlined_words says how many); none = it has no words at all (reason says so). A sheet whose words are ALL drawn (outlined) is refused with that reason instead"),
+  outlined_words: z.number().int().optional(),
+  reason: z.string().optional().describe("text_status none: \"no text layer; OCR needed\""),
 };
 
 /** editMaterials — session.ts's MaterialRow, verbatim. */
@@ -1095,6 +1106,8 @@ export const sheetContextOutput = {
   sheet_px: z.array(z.number()).length(2),
   region: z.array(z.number()).length(4).describe("The region actually resolved, post-clamp — pass this same rect to view_sheet and the render is in the same frame by construction"),
   has_vector_linework: z.boolean().describe("false = a scan: vectors and hatch are empty because there are none, not because the region is blank"),
+  text_status: z.enum(["text_layer", "outlined", "partial", "none"]).describe("Where the sheet's words are: text_layer = in the text layer, what find_text and the room labels read; outlined = the sheet has no text layer and draws its words as linework or stencil masks (a plotter that rasterised its fonts, text converted to curves) — OCR or your own reading of view_sheet is needed, and detect, cover and find_text refuse with that reason; partial = a text layer AND drawn words (a logo's few, or room tags you cannot search — outlined_words says how many); none = no text and no drawn words"),
+  outlined_words: z.number().int().optional().describe("Words drawn as linework or stencil masks (glyph-sized stroke clusters in rows, type-sized masks) — present when any"),
   vectors: z.object({
     segments: z.array(z.array(z.number()).length(4)).describe("[x0, y0, x1, y1] per segment, image px, endpoints exactly as drawn — clipped by KEEPING whole intersecting segments, never by rewriting them"),
     meta: z.array(z.number().int()).describe("One byte per segment, aligned with segments: bit 1 = curve chord, bit 2 = clip-only, bit 4 = filled-not-stroked; high nibble = device pen width"),

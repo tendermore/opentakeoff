@@ -37,6 +37,8 @@ export interface OpList { fnArray: number[]; argsArray: any[]; }  // per-op args
 export type OpsTable = Record<string, number>;
 /** meta: one byte per segment — SEG_* bits + device line width in the high nibble.
  *  imageArea: total placed image area in device px² (scan/photo underlay detection).
+ *  imageMasks: the placed box (image px) of every stencil mask painted — a plotter that
+ *  rasterises its fonts stamps each word as one (textstatus.ts reads them).
  *  layerOf/layerIds (#85): per-segment index into layerIds (−1 = outside any
  *  Optional Content Group); layerIds carries pdf.js OCG ids in first-seen
  *  order. The id→name/visibility mapping is the CALLER's (pdf.js API side) —
@@ -88,7 +90,7 @@ export interface TextMark { x: number; y: number; w: number; h: number }
  *  keeps hand-built geometry (rastermask, tests) and stitched composites
  *  working unchanged. */
 export interface InkContext { subpaths?: SubPath[] | null; texts?: TextMark[] | null; dimTexts?: DimTextMark[] | null }
-export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; }
+export interface VectorGeometry { points: Point[]; segs: number[]; meta: Uint8Array; imageArea: number; lum?: Uint8Array; layerOf?: Int32Array; layerIds?: string[]; subpaths?: SubPath[]; imageMasks?: [number, number, number, number][]; }
 export interface MaskObj { mask: Uint8Array; mw: number; mh: number; ws: number; softCount: number; mppf?: number; }  // mppf: mask px per foot (0/absent = scale unknown)
 export interface RegionResult { region: Uint8Array; mw: number; mh: number; ws: number; count?: number; }
 export type FloodResult =
@@ -433,6 +435,12 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
     if (b[1] < sp.y0) sp.y0 = b[1]; if (b[1] > sp.y1) sp.y1 = b[1];
   };
   let imageArea = 0;
+  const imageMasks: [number, number, number, number][] = [];
+  // the placed box of an image's unit square under transform t (image px)
+  const placedBox = (t: number[]): [number, number, number, number] => {
+    const xs = [t[4], t[0] + t[4], t[2] + t[4], t[0] + t[2] + t[4]], ys = [t[5], t[1] + t[5], t[3] + t[5], t[1] + t[3] + t[5]];
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  };
   let m = transform.slice();
   let lw = 1;                          // graphics-state line width (user space)
   // graphics-state STROKE luminance (#260). PDF's initial stroke color is
@@ -523,6 +531,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       // flags scan wrappers / photo underlays (a plan-area scan covers most of
       // the sheet; logos and stamps are ≪ 2%).
       imageArea += Math.abs(m[0] * m[3] - m[1] * m[2]);
+      if (fn === OPS.paintImageMaskXObject) imageMasks.push(placedBox(m));
     }
     else if (fn === OPS.paintImageXObjectRepeat) {
       // pdf.js FOLDS a run of identical placements into one op — no per-instance
@@ -540,6 +549,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       const [, ra, rb, rc, rd, positions] = args;
       const count = positions ? positions.length >> 1 : 0;
       imageArea += Math.abs(m[0] * m[3] - m[1] * m[2]) * Math.abs(ra * rd - rb * rc) * count;
+      for (let k = 0; k < count; k++) imageMasks.push(placedBox(mul(m, [ra, rb, rc, rd, positions[2 * k], positions[2 * k + 1]])));
     }
     else if (fn === OPS.paintImageMaskXObjectGroup) {
       // args: [images] — each images[k].transform is that instance's own local
@@ -548,7 +558,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
       const ctmDet = Math.abs(m[0] * m[3] - m[1] * m[2]);
       for (const im of args[0] || []) {
         const t = im && im.transform;
-        if (t) imageArea += ctmDet * Math.abs(t[0] * t[3] - t[1] * t[2]);
+        if (t) { imageArea += ctmDet * Math.abs(t[0] * t[3] - t[1] * t[2]); imageMasks.push(placedBox(mul(m, t))); }
       }
     }
     else if (fn === OPS.paintInlineImageXObjectGroup) {
@@ -612,7 +622,7 @@ export function extractVectorGeometry(opList: OpList, transform: number[], OPS: 
   sealSub();
   const meta = Uint8Array.from(metaArr);
   markPolylineArcs(segs, meta);
-  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths };
+  return { points, segs, meta, imageArea, lum: Uint8Array.from(lumArr), layerOf: Int32Array.from(layerOfArr), layerIds, subpaths, imageMasks };
 }
 
 // ── 1b. polyline arc detection ─────────────────────────────────────────────
@@ -2075,7 +2085,7 @@ function dropRegion(b: Uint8Array): void {
 // softHits count blocking encounters so the caller can tell a wall-bounded
 // region from a hatch-bounded one.
 function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   const { mask, mw, mh, ws } = maskObj;
   // virtual dilation (see DilatedMask): identical bits, no 9 MB buffer
   const dilDT = (maskObj as DilatedMask).dilDT;
@@ -2151,7 +2161,7 @@ function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): F
     // of the function returned "leak" anyway. Nothing between here and there
     // can change that verdict or is read after it, so returning now is the
     // same value for up to a third of a raster less work (A8).
-    if (x0 === 0 || x1 === mw - 1 || py === 0 || py === mh - 1) { dropRegion(region); return { status: "leak" }; }
+    if (x0 === 0 || x1 === mw - 1 || py === 0 || py === mh - 1) { floodWork += count; dropRegion(region); return { status: "leak" }; }
     if (x0 < bx0) bx0 = x0; if (x1 > bx1) bx1 = x1; if (py < by0) by0 = py; if (py > by1) by1 = py;
     let upOpen = false, downOpen = false;
     for (let x = x0; x <= x1; x++) {
@@ -2171,8 +2181,9 @@ function floodPass(maskObj: MaskObj, ix: number, iy: number, barrier: number): F
         else { if (db & barrier) { if (db & 1) hardHits++; else softHits++; } downOpen = false; }
       }
     }
-    if (count > cap) { dropRegion(region); return { status: "leak" }; }
+    if (count > cap) { floodWork += count; dropRegion(region); return { status: "leak" }; }
   }
+  floodWork += count;
   // hatch/text slivers: plenty of cells but no room-like thickness
   if (count < tinyPx || bx1 - bx0 + 1 < minThick || by1 - by0 + 1 < minThick) { dropRegion(region); return { status: "tiny", count }; }
   regionBox.set(region, { x0: bx0, y0: by0, x1: bx1, y1: by1 });
@@ -2234,16 +2245,21 @@ export function dilateHard(maskObj: MaskObj, r: number): MaskObj {
 // The wrapper MaskObj is rebuilt from the caller's `mo` each time so the
 // riding fields (ws, softCount, mppf) always match the caller's view.
 const bridgeCache = new WeakMap<Uint8Array, (Uint8Array | undefined)[]>();
-/** Host-set wall-clock deadline for the flood ladders (0 = none). Some seeds on
- *  large flattened sheets spend minutes in the seal/bridge/wedge retries; a batch
- *  caller sets a per-seed budget and treats the thrown FloodDeadline as "no
- *  outline here". */
-let floodDeadline = 0;
-export class FloodDeadline extends Error {}
-export function setFloodDeadline(at: number): void { floodDeadline = at; }
-function checkFloodDeadline(): void { if (floodDeadline && Date.now() > floodDeadline) throw new FloodDeadline("flood deadline"); }
+/** Host-set WORK budget for the flood ladders, in mask cells filled (0 = none). Some
+ *  seeds on large flattened sheets spend minutes in the seal/bridge/wedge retries; a
+ *  batch caller sets a per-seed budget and treats the thrown FloodBudget as "no outline
+ *  here". Work, not time: the cells a fill visits are a function of the mask and the
+ *  seed alone, so the same input spends the budget at the same point on every machine
+ *  and under any load, and a batch's result set is reproducible. */
+let floodBudget = 0, floodWork = 0;
+export class FloodBudget extends Error {}
+/** Start counting: the budget (cells) every fill from here on shares; 0 = unlimited. */
+export function setFloodBudget(cells: number): void { floodBudget = cells; floodWork = 0; }
+/** Cells filled since the last setFloodBudget. */
+export function floodWorkDone(): number { return floodWork; }
+function checkFloodBudget(): void { if (floodBudget && floodWork > floodBudget) throw new FloodBudget("flood budget"); }
 function bridgedMask(mo: MaskObj, r: number): MaskObj {
-  checkFloodDeadline();
+  checkFloodBudget();
   let per = bridgeCache.get(mo.mask);
   if (!per) { per = []; bridgeCache.set(mo.mask, per); }
   let m = per[r];
@@ -2295,7 +2311,7 @@ export function floodRegion(maskObj: MaskObj, ix: number, iy: number, sensitivit
 // wrong geometry at the wrong cost. Bridging joins the sealed ladder exactly
 // once, as its last rung (see floodRegionSealedInner).
 function floodRegionLadder(maskObj: MaskObj, ix: number, iy: number, sensitivity: number): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   const r1 = floodPass(maskObj, ix, iy, 3);
   if (!maskObj.softCount) return r1;
   if (r1.status === "leak") return r1;
@@ -3149,7 +3165,7 @@ function ascendSeed(dt: Uint8Array, mw: number, mh: number, ws: number, ix: numb
 // refused: `base` is bounded only when the min-passage flood produced no
 // bounded region at all, and then there is nothing to report.
 function sealAttempt(mo: MaskObj, ix: number, iy: number, sensitivity: number, radii: number[], minPassPx = 0, given?: SealScratch): FloodResult {
-  checkFloodDeadline();
+  checkFloodBudget();
   // `given` is the caller's own scratch — the per-arc-cluster retries run
   // against a REUSED mask buffer, which the sealCache (keyed on mask identity)
   // must never see: it would hand back the previous cluster's distance field.

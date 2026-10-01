@@ -742,12 +742,49 @@ export function zoneCuts(segs: ArrayLike<number>, meta: ArrayLike<number>, wallS
   return cuts;
 }
 
-/** A zone's outline (image px), traced like a flood region. */
+/** A zone's outline (image px): the outline of its LARGEST connected piece (zonePieces). */
 export function zoneRing(z: CoverZone, mw: number, mh: number, ws: number): Point[] {
+  return zonePieces(z, mw, mh, ws).ring;
+}
+
+/** A zone's connected pieces, each traced like a flood region. A zone folded together across
+ *  drawn lines (splitZone) can be several 8-connected pieces — the cut cells between them went
+ *  to a neighbour, or a wall runs between a pocket and its room — and the contour trace of the
+ *  first cell in scan order outlines only the piece that cell is in. So every piece is traced and
+ *  the largest is the zone's outline; `share` is the largest piece's share of the zone's cells,
+ *  and `rings` holds every piece, largest first, for a caller that can use them all. */
+export function zonePieces(z: CoverZone, mw: number, mh: number, ws: number): { ring: Point[]; share: number; rings: Point[][] } {
   const { x0, y0, lw, lh, toLocal } = localBox(z.cells, mw, mh, 1);
-  const region = new Uint8Array(lw * lh);
-  for (const i of toLocal(z.cells)) region[i] = 1;
-  return traceRegion({ region, mw: lw, mh: lh, ws }).map(([x, y]) => [x + x0 / ws, y + y0 / ws] as Point);
+  const local = toLocal(z.cells);
+  const inZone = new Uint8Array(lw * lh);
+  for (const i of local) inZone[i] = 1;
+  // 8-connected pieces (the Moore trace walks diagonals, so a diagonal join is one piece to it)
+  const piece = new Int32Array(lw * lh).fill(-1);
+  const pieces: number[][] = [];
+  const stack: number[] = [];
+  for (const start of local) {
+    if (piece[start] >= 0) continue;
+    const k = pieces.length, cells: number[] = [];
+    piece[start] = k; stack.push(start);
+    while (stack.length) {
+      const i = stack.pop()!, x = i % lw, y = (i / lw) | 0;
+      cells.push(i);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= lw || yy >= lh) continue;
+        const j = yy * lw + xx;
+        if (inZone[j] && piece[j] < 0) { piece[j] = k; stack.push(j); }
+      }
+    }
+    pieces.push(cells);
+  }
+  pieces.sort((a, b) => b.length - a.length);
+  const rings = pieces.map((cells) => {
+    const region = new Uint8Array(lw * lh);
+    for (const i of cells) region[i] = 1;
+    return traceRegion({ region, mw: lw, mh: lh, ws }).map(([x, y]) => [x + x0 / ws, y + y0 / ws] as Point);
+  });
+  return { ring: rings[0] ?? [], share: local.length ? (pieces[0]?.length ?? 0) / local.length : 0, rings };
 }
 
 /** A rectangle side grows while this share of its new row or column is the zone's floor. */
