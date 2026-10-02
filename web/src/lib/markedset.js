@@ -1,3 +1,4 @@
+import { createLayerPreservingPageCopier } from './pdfLayerCopy.js';
 import { annotationScene, pathString } from './annotationTools.js';
 // Marked-Set PDF export — distribute the takeoff off-app, fully client-side.
 //
@@ -254,7 +255,8 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
   const uA = (sf) => (M ? sf * 0.09290304 : sf);
   const uL = (lf) => (M ? lf * 0.3048 : lf);
   const AU = T.areaUnit[M ? "metric" : "imperial"], LU = T.lengthUnit[M ? "metric" : "imperial"], EA = T.countUnit;
-  const { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, BlendMode } = await import("pdf-lib");
+  const pdfLib = await import("pdf-lib");
+  const { PDFDocument, StandardFonts, rgb, degrees, LineCapStyle, BlendMode } = pdfLib;
   const condById = Object.fromEntries(conditions.map((c) => [c.id, c]));
   // resolve a linked markup's RFI number for the on-sheet marker (ASCII, WinAnsi-safe)
   const rfiNum = new Map((rfis || []).map((r) => [r.id, r.number]));
@@ -273,6 +275,7 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
   const markedShapes = marked.flatMap((sh) => shapesBy.get(sh.key) || []);
 
   const doc = await PDFDocument.create();
+  const layerPages = createLayerPreservingPageCopier(doc, pdfLib);
   // Provenance on the deliverable itself: a marked set leaves this app and gets
   // emailed around, so it should say what produced it. It also lets the MCP
   // export recognize its own prior output and overwrite that without ceremony,
@@ -579,7 +582,7 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
           const { m, vpR } = pages[i], pm = plan.members[i];
           const src = await srcDocFor(m.file);
           const { bbox, matrix } = memberEmbed(vpR.transform, pm, pageH, RENDER_SCALE);
-          const emb = await doc.embedPage(src.getPage(m.page - 1), bbox, matrix);
+          const emb = await doc.embedPage(layerPages.copyPage(src, m.page - 1), bbox, matrix);
           pg.drawPage(emb, { x: 0, y: 0 });
         }
       }
@@ -615,7 +618,7 @@ export async function buildMarkedSetPdf({ projectName, dark, sheets, shapes, mar
     } else {
       // vector copy of the source page; image px → PDF user space through the
       // inverse viewport transform (rotation + viewBox offsets included)
-      const [copied] = await doc.copyPages(src, [sh.page - 1]);
+      const copied = layerPages.copyPage(src, sh.page - 1);
       pg = doc.addPage(copied);
       const [a, b, c, d, e, f] = vpR.transform;
       const det = a * d - b * c;
